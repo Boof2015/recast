@@ -2,6 +2,18 @@ import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties
 import { createPortal } from 'react-dom';
 import { Check, ChevronDown } from 'lucide-react';
 
+export function ColorSetting({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
+  const hint = useId();
+  return <label className="setting-row color-row">
+    <span className="setting-label"><span>{label}</span><small id={hint}>For transparent areas</small></span>
+    <span className="color-control">
+      <span className="color-swatch" style={{ backgroundColor: value }} aria-hidden="true" />
+      <span aria-hidden="true">{value.toUpperCase()}</span>
+      <input type="color" aria-label={`${label} color`} aria-describedby={hint} value={value} onChange={event => onChange(event.target.value)} />
+    </span>
+  </label>;
+}
+
 export function CheckboxSetting({ label, checked, onChange, disabled = false }: { label: string; checked: boolean; onChange: (checked: boolean) => void; disabled?: boolean }) {
   return <label className={`setting-row checkbox-row ${disabled ? 'is-disabled' : ''}`}>
     <span>{label}</span>

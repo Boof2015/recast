@@ -18,6 +18,7 @@ export interface GroupSettings {
   quality: number;
   lossless: boolean;
   metadata: boolean;
+  background: string;
   resize: string;
   bitrate: string;
   resolution: string;
@@ -81,7 +82,7 @@ export function destinationsFor(kind: MediaKind, files: InputFile[], preview = f
 
 export function defaultSettings(): Record<MediaKind, GroupSettings> {
   const settings: GroupSettings = {
-    target: null, quality: 85, lossless: false, metadata: true,
+    target: null, quality: 85, lossless: false, metadata: true, background: '#ffffff',
     resize: 'Original', bitrate: '192 kbps', resolution: 'Original', frameRate: 'Original',
   };
   return { images: { ...settings }, audio: { ...settings }, video: { ...settings } };

@@ -1,4 +1,4 @@
-use crate::inputs;
+use crate::{image_format::ImageFormat, inputs};
 use serde::{Deserialize, Serialize};
 use std::{
     fs::File,
@@ -24,18 +24,32 @@ pub struct ImageOptions {
     pub lossless: bool,
     pub resize: u8,
     pub metadata: bool,
+    #[serde(default = "default_background")]
+    pub background: String,
+}
+
+fn default_background() -> String {
+    "#ffffff".into()
 }
 
 impl ImageOptions {
     pub fn validate(&self) -> Result<(), String> {
-        if self.target != "webp" {
-            return Err("Only WebP output is available in this build.".into());
-        }
+        ImageFormat::from_id(&self.target)?;
         if !(1..=100).contains(&self.quality) {
             return Err("Quality must be between 1 and 100.".into());
         }
         if ![100, 75, 50, 25].contains(&self.resize) {
             return Err("Choose Original, 75%, 50%, or 25% for resize.".into());
+        }
+        if self.background.len() != 7
+            || !self.background.starts_with('#')
+            || !self.background.as_bytes()[1..]
+                .iter()
+                .all(u8::is_ascii_hexdigit)
+        {
+            return Err(
+                "Choose a background color using six hexadecimal digits, such as #ffffff.".into(),
+            );
         }
         Ok(())
     }
@@ -106,6 +120,7 @@ impl ImageBackend {
         cancel: &AtomicBool,
     ) -> Result<OutputFile, ConversionError> {
         options.validate()?;
+        let format = ImageFormat::from_id(&options.target)?;
         check_cancel(cancel)?;
         let input = inputs::require_supported(source)?;
         let source = Path::new(&input.path);
@@ -146,7 +161,7 @@ impl ImageBackend {
         inputs::require_supported(&staged)?;
         let output = tempfile::Builder::new()
             .prefix(".recast-")
-            .suffix(".webp")
+            .suffix(&format!(".{}", format.extension()))
             .tempfile_in(parent)
             .map_err(|_| {
                 "Cannot write to this output folder. Choose another folder and try again."
@@ -163,35 +178,59 @@ impl ImageBackend {
         if options.resize != 100 {
             command.args(["-resize", &format!("{}%", options.resize)]);
         }
-        // WebP stores RGB pixels. Convert embedded profiles (including CMYK)
+        // Normalize color for all destinations. Convert profiles (including CMYK)
         // before encoding so retained ICC data describes the resulting pixels.
         // The colorspace fallback also handles unprofiled CMYK/gray inputs.
         command
             .arg("-profile")
             .arg(self.root.join("sRGB.icc"))
             .args(["-colorspace", "sRGB"]);
+        if format == ImageFormat::Jpeg {
+            // Composite in the output colorspace; removing alpha alone would
+            // expose the invisible RGB values instead of the chosen background.
+            command.args([
+                "-background",
+                &options.background,
+                "-alpha",
+                "remove",
+                "-alpha",
+                "off",
+            ]);
+        }
         if !options.metadata {
             command.arg("-strip");
         }
-        command.args([
-            "-quality",
-            &if options.lossless {
-                "100".into()
-            } else {
-                options.quality.to_string()
-            },
-        ]);
-        command.args([
-            "-define",
-            if options.lossless {
-                "webp:lossless=true"
-            } else {
-                "webp:lossless=false"
-            },
-            "-define",
-            "webp:exact=true",
-            "webp:-",
-        ]);
+        match format {
+            ImageFormat::WebP => {
+                command.args([
+                    "-quality",
+                    &if options.lossless {
+                        "100".into()
+                    } else {
+                        options.quality.to_string()
+                    },
+                ]);
+                command.args([
+                    "-define",
+                    if options.lossless {
+                        "webp:lossless=true"
+                    } else {
+                        "webp:lossless=false"
+                    },
+                    "-define",
+                    "webp:exact=true",
+                ]);
+            }
+            ImageFormat::Jpeg => {
+                command.args(["-quality", &options.quality.to_string()]);
+            }
+            ImageFormat::Png => {
+                // PNG is always lossless. Do not inherit a JPEG/WebP quality
+                // value or an input's compression settings as PNG encoder knobs.
+                command.args(["-define", "png:compression-level=6"]);
+            }
+        }
+        command.arg(format!("{}:-", format.id()));
         command.stdout(Stdio::from(
             output
                 .reopen()
@@ -237,28 +276,17 @@ impl ImageBackend {
                 .trim_start_matches("magick: ");
             return Err(format!("Conversion failed: {detail}").into());
         }
-        let bytes = output
-            .as_file()
-            .metadata()
-            .map_err(|_| "The output could not be verified.".to_string())?
-            .len();
-        let mut header = [0; 12];
-        File::open(output.path())
-            .and_then(|mut file| file.read_exact(&mut header))
-            .map_err(|_| "The converter did not produce a complete WebP file.".to_string())?;
-        if &header[..4] != b"RIFF"
-            || &header[8..] != b"WEBP"
-            || u32::from_le_bytes(header[4..8].try_into().unwrap()) as u64 + 8 != bytes
-        {
-            return Err("The converter did not produce a valid WebP file."
-                .to_string()
-                .into());
-        }
+        let bytes = format.validate_output(output.path())?;
         output.as_file().sync_all().map_err(|_| {
             "The output could not be saved. Check available disk space.".to_string()
         })?;
         check_cancel(cancel)?;
-        let path = publish(output, source.file_stem().unwrap_or_default(), parent)?;
+        let path = publish(
+            output,
+            source.file_stem().unwrap_or_default(),
+            parent,
+            format,
+        )?;
         Ok(OutputFile {
             path: path.to_string_lossy().into_owned(),
             bytes,
@@ -278,13 +306,14 @@ fn publish(
     mut temporary: NamedTempFile,
     stem: &std::ffi::OsStr,
     folder: &Path,
+    format: ImageFormat,
 ) -> Result<PathBuf, String> {
     for index in 0..10_000 {
         let mut name = stem.to_os_string();
         if index > 0 {
             name.push(format!(" ({index})"));
         }
-        name.push(".webp");
+        name.push(format!(".{}", format.extension()));
         let destination = folder.join(name);
         // Atomic no-clobber publication also protects concurrent windows and
         // unrelated processes creating the same destination during conversion.

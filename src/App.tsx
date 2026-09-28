@@ -5,7 +5,7 @@ import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { open } from '@tauri-apps/plugin-dialog';
 import { defaultSettings, destinationsFor, formatCounts, kindLabels, kinds, unitLabels, type Appearance, type Destination, type GroupSettings, type InputFile, type MediaKind } from './model';
 import { sampleFiles, type Scenario } from './fixtures';
-import { CheckboxSetting, QualitySetting, SelectSetting } from './controls';
+import { CheckboxSetting, ColorSetting, QualitySetting, SelectSetting } from './controls';
 import { GroupStack } from './GroupStack';
 import { useConversion } from './useConversion';
 
@@ -51,6 +51,7 @@ function FormatSettings({ kind, destination, value, onChange }: { kind: MediaKin
     {hasQuality && <QualitySetting value={value.quality} disabled={hasLossless && value.lossless} onChange={(quality) => onChange({ quality })} />}
     {hasLossless && <CheckboxSetting label="Lossless" checked={value.lossless} onChange={(lossless) => onChange({ lossless })} />}
     {isImage && <SelectSetting label="Resize" value={value.resize} options={['Original', '75%', '50%', '25%']} onChange={(resize) => onChange({ resize })} />}
+    {isImage && destination.id === 'jpeg' && <ColorSetting label="Background" value={value.background} onChange={(background) => onChange({ background })} />}
     {isAudio && ['mp3', 'm4a', 'opus', 'ogg'].includes(destination.id) && <SelectSetting label="Bitrate" value={value.bitrate} options={['128 kbps', '192 kbps', '256 kbps', '320 kbps']} onChange={(bitrate) => onChange({ bitrate })} />}
     {isAudio && <p className="settings-note">Keep the original sample rate and channels.</p>}
     {isVideo && destination.id !== 'gif' && <>
@@ -68,7 +69,7 @@ function DestinationBrowser({ formats, onChoose }: { formats: Destination[]; onC
   const categories = [...new Set(formats.map((format) => format.category))];
   return <div className="destination-browser">
     <h2>Convert to</h2>
-    {formats.length === 0 && <p className="settings-note">These files don’t share an available output yet. This build converts PNG and JPEG images to WebP.</p>}
+    {formats.length === 0 && <p className="settings-note">These files don’t share an available output yet. This build converts still PNG, JPEG, and WebP images.</p>}
     {categories.map((category) => <section className="destination-category" key={category}>
       <h3>{category}</h3>
       <div className="destination-list">{formats.filter((format) => format.category === category).map((format) => <button key={format.id} className="destination-option" onClick={() => onChoose(format.id)}>
@@ -124,7 +125,7 @@ export default function App() {
   const failed = job?.files.filter(file => file.status === 'failed') ?? [];
   const retryCount = job ? job.files.length - succeeded.length : 0;
   const currentFile = job?.files.find(file => file.status === 'running');
-  const canConvert = conversion.backendReady && !previewCatalog && allConfigured && !inspecting && !busy && files.every(file => file.kind === 'images' && file.path) && settings.images.target === 'webp';
+  const canConvert = conversion.backendReady && !previewCatalog && allConfigured && !inspecting && !busy && files.every(file => file.kind === 'images' && file.path);
   const jobText = conversion.starting ? 'Preparing conversion…' : job?.status === 'cancelling' ? 'Cancelling…' : busy && job ? `Converting ${Math.min(succeeded.length + failed.length + 1, job.files.length)} of ${job.files.length}` : job ? `${succeeded.length} converted${failed.length ? ` · ${failed.length} failed` : ''}${job.status === 'cancelled' ? ' · Cancelled' : ''}` : '';
 
   useEffect(() => {

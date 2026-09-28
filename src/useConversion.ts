@@ -51,7 +51,7 @@ export function useConversion() {
         onProgress: channel,
         ...(!retry ? { request: {
           paths: files.map(file => file.path), outputFolder,
-          options: { target: settings.target, quality: settings.quality, lossless: settings.lossless, resize: settings.resize === 'Original' ? 100 : Number.parseInt(settings.resize, 10), metadata: settings.metadata },
+          options: { target: settings.target, quality: settings.quality, lossless: settings.lossless, resize: settings.resize === 'Original' ? 100 : Number.parseInt(settings.resize, 10), metadata: settings.metadata, background: settings.background },
         } } : {}),
       });
       if (token === generation.current) accept(snapshot);

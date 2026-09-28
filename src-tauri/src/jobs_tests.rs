@@ -30,6 +30,7 @@ fn options() -> ImageOptions {
         lossless: false,
         resize: 100,
         metadata: true,
+        background: "#ffffff".into(),
     }
 }
 fn copy(name: &str, destination: &Path) -> PathBuf {
@@ -66,6 +67,336 @@ fn no_partials(folder: &Path) {
         .file_name()
         .to_string_lossy()
         .starts_with(".recast-")));
+}
+
+#[test]
+fn converts_every_still_image_pair_and_same_format_without_overwriting() {
+    for (name, format) in [
+        ("rgba.png", "png"),
+        ("photo.jpg", "jpeg"),
+        ("rgba.webp", "webp"),
+        ("photo.webp", "webp"),
+    ] {
+        for target in crate::image_format::ImageFormat::ALL {
+            let dir = tempfile::tempdir().unwrap();
+            let source = copy(name, &dir.path().join(name));
+            let original = fs::read(&source).unwrap();
+            let mut settings = options();
+            settings.target = target.id().into();
+            let input = crate::inputs::inspect(&source).unwrap();
+            let json = serde_json::to_value(input).unwrap();
+            assert_eq!(json["targets"], serde_json::json!(["webp", "jpeg", "png"]));
+            let output = backend()
+                .convert(&source, None, &settings, &AtomicBool::new(false))
+                .unwrap();
+            let output_path = Path::new(&output.path);
+            assert_eq!(output_path.extension().unwrap(), target.extension());
+            assert_eq!(
+                identify(output_path, "%m %w %h %n"),
+                format!("{} 32 20 1", target.id().to_uppercase())
+            );
+            assert_eq!(fs::read(&source).unwrap(), original);
+            assert_ne!(output_path, source);
+            if target.id() == format {
+                assert!(output_path
+                    .file_stem()
+                    .unwrap()
+                    .to_string_lossy()
+                    .ends_with(" (1)"));
+            }
+            let second = backend()
+                .convert(&source, None, &settings, &AtomicBool::new(false))
+                .unwrap();
+            assert_ne!(output.path, second.path);
+            assert_eq!(fs::metadata(output_path).unwrap().len(), output.bytes);
+            no_partials(dir.path());
+        }
+    }
+}
+
+#[test]
+fn png_output_preserves_rgba_and_ignores_lossy_settings() {
+    for name in ["rgba.png", "rgba.webp"] {
+        let dir = tempfile::tempdir().unwrap();
+        let source = copy(name, &dir.path().join(name));
+        let mut settings = options();
+        settings.target = "png".into();
+        settings.quality = 1;
+        settings.lossless = false;
+        let output = backend()
+            .convert(&source, None, &settings, &AtomicBool::new(false))
+            .unwrap();
+        let pixels = "%[pixel:p{0,0}]|%[pixel:p{1,0}]|%[pixel:p{15,9}]|%[pixel:p{7,0}]";
+        assert_eq!(
+            identify(&source, pixels),
+            identify(Path::new(&output.path), pixels)
+        );
+        settings.quality = 100;
+        settings.lossless = true;
+        let high = backend()
+            .convert(&source, None, &settings, &AtomicBool::new(false))
+            .unwrap();
+        assert_eq!(
+            identify(Path::new(&output.path), pixels),
+            identify(Path::new(&high.path), pixels)
+        );
+    }
+}
+
+#[test]
+fn jpeg_composites_transparency_over_the_selected_background() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("transparent.png");
+    let result = backend()
+        .command()
+        .arg(fixture("rgba.png"))
+        .args(["-alpha", "transparent"])
+        .arg(&source)
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let mut settings = options();
+    settings.target = "jpeg".into();
+    settings.quality = 100;
+    settings.lossless = true; // A previous WebP choice must not override JPEG quality.
+    for (background, expected) in [
+        ("#ffffff", [255, 255, 255]),
+        ("#000000", [0, 0, 0]),
+        ("#287ec4", [40, 126, 196]),
+    ] {
+        settings.background = background.into();
+        let output = backend()
+            .convert(&source, None, &settings, &AtomicBool::new(false))
+            .unwrap();
+        let channels = identify(
+            Path::new(&output.path),
+            "%[fx:round(255*r)] %[fx:round(255*g)] %[fx:round(255*b)]",
+        );
+        let channels: Vec<i32> = channels
+            .split_whitespace()
+            .map(|n| n.parse().unwrap())
+            .collect();
+        assert!(
+            channels
+                .iter()
+                .zip(expected)
+                .all(|(actual, expected)| (actual - expected).abs() <= 2),
+            "{background}: {channels:?}"
+        );
+        assert_eq!(identify(Path::new(&output.path), "%[opaque]"), "True");
+    }
+}
+
+#[test]
+fn jpeg_composites_partial_alpha_instead_of_discarding_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("half-red.png");
+    let result = backend()
+        .command()
+        .arg(fixture("rgba.png"))
+        .args([
+            "-fill",
+            "#ff0000",
+            "-colorize",
+            "100%",
+            "-alpha",
+            "set",
+            "-channel",
+            "A",
+            "-evaluate",
+            "set",
+            "50%",
+            "+channel",
+        ])
+        .arg(&source)
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let mut settings = options();
+    settings.target = "jpeg".into();
+    settings.quality = 100;
+    let output = backend()
+        .convert(&source, None, &settings, &AtomicBool::new(false))
+        .unwrap();
+    let channels = identify(
+        Path::new(&output.path),
+        "%[fx:round(255*r)] %[fx:round(255*g)] %[fx:round(255*b)]",
+    );
+    let channels: Vec<i32> = channels
+        .split_whitespace()
+        .map(|n| n.parse().unwrap())
+        .collect();
+    assert!(
+        channels
+            .iter()
+            .zip([255, 127, 127])
+            .all(|(actual, expected)| (actual - expected).abs() <= 2),
+        "{channels:?}"
+    );
+}
+
+#[test]
+fn jpeg_quality_is_independent_of_hidden_webp_lossless_setting() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = copy("rgb.png", &dir.path().join("source.png"));
+    let mut settings = options();
+    settings.target = "jpeg".into();
+    settings.lossless = true;
+    settings.quality = 10;
+    let low = backend()
+        .convert(&source, None, &settings, &AtomicBool::new(false))
+        .unwrap();
+    settings.quality = 95;
+    let high = backend()
+        .convert(&source, None, &settings, &AtomicBool::new(false))
+        .unwrap();
+    assert_eq!(identify(Path::new(&low.path), "%Q"), "10");
+    assert_eq!(identify(Path::new(&high.path), "%Q"), "95");
+    assert_ne!(fs::read(low.path).unwrap(), fs::read(high.path).unwrap());
+}
+
+#[test]
+fn mixed_image_batch_creates_one_output_per_input_for_each_target() {
+    for target in crate::image_format::ImageFormat::ALL {
+        let dir = tempfile::tempdir().unwrap();
+        let sources: Vec<_> = ["rgba.png", "photo.jpg", "rgba.webp"]
+            .into_iter()
+            .map(|name| copy(name, &dir.path().join(name)))
+            .collect();
+        let manager = JobManager::default();
+        let mut request = request(&sources, dir.path());
+        request.options.target = target.id().into();
+        let job = manager.prepare("mixed", request, false).unwrap();
+        run_job(&job, &backend(), |_| {});
+        let snapshot = job.snapshot();
+        assert_eq!(snapshot.status, BatchStatus::Completed);
+        assert_eq!(snapshot.files.len(), sources.len());
+        let mut paths = HashSet::new();
+        for file in snapshot.files {
+            assert_eq!(file.status, FileStatus::Succeeded, "{:?}", file.error);
+            let path = file.output_path.unwrap();
+            assert_eq!(Path::new(&path).extension().unwrap(), target.extension());
+            assert!(paths.insert(path));
+        }
+        no_partials(dir.path());
+    }
+}
+
+#[test]
+fn all_formats_resize_after_orientation_and_handle_metadata() {
+    for name in ["metadata.png", "rotated.jpg", "rotated.webp"] {
+        for target in crate::image_format::ImageFormat::ALL {
+            let dir = tempfile::tempdir().unwrap();
+            let source = copy(name, &dir.path().join(name));
+            let mut settings = options();
+            settings.target = target.id().into();
+            settings.resize = 50;
+            let retained = backend()
+                .convert(&source, None, &settings, &AtomicBool::new(false))
+                .unwrap();
+            settings.metadata = false;
+            let stripped = backend()
+                .convert(&source, None, &settings, &AtomicBool::new(false))
+                .unwrap();
+            assert_eq!(
+                identify(Path::new(&retained.path), "%w %h"),
+                "10 16",
+                "{name} -> {target:?}"
+            );
+            assert_eq!(identify(Path::new(&stripped.path), "%w %h"), "10 16");
+            let profiles = identify(Path::new(&retained.path), "%[profiles]");
+            assert!(
+                profiles.contains("exif") && profiles.contains("icc"),
+                "{name} -> {target:?}: {profiles}"
+            );
+            assert!(!identify(Path::new(&retained.path), "%[EXIF:Orientation]").contains('6'));
+            assert!(identify(Path::new(&stripped.path), "%[profiles]").is_empty());
+        }
+    }
+}
+
+#[test]
+fn rejects_animated_webp_for_every_target_without_publishing() {
+    for target in crate::image_format::ImageFormat::ALL {
+        let dir = tempfile::tempdir().unwrap();
+        let source = copy("animated.webp", &dir.path().join("animated.webp"));
+        let mut settings = options();
+        settings.target = target.id().into();
+        let result = backend().convert(&source, None, &settings, &AtomicBool::new(false));
+        assert!(
+            matches!(result, Err(ConversionError::Failed(reason)) if reason.contains("Animated WebP"))
+        );
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+}
+
+#[test]
+fn rejects_truncated_webp_and_inconsistent_animation_flags() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut truncated = fs::read(fixture("rgba.webp")).unwrap();
+    truncated.truncate(truncated.len() - 3);
+    let source = dir.path().join("truncated.webp");
+    fs::write(&source, truncated).unwrap();
+    assert!(crate::inputs::require_supported(&source)
+        .unwrap_err()
+        .contains("incomplete"));
+    let mut animation = fs::read(fixture("animated.webp")).unwrap();
+    assert_eq!(&animation[12..16], b"VP8X");
+    animation[20] &= !0x02;
+    fs::write(&source, animation).unwrap();
+    assert!(crate::inputs::require_supported(&source)
+        .unwrap_err()
+        .contains("Animated WebP"));
+}
+
+#[test]
+fn invalid_target_and_background_fail_before_writing() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = copy("rgba.png", &dir.path().join("source.png"));
+    let mut settings = options();
+    settings.target = "gif".into();
+    assert!(backend()
+        .convert(&source, None, &settings, &AtomicBool::new(false))
+        .is_err());
+    settings.target = "jpeg".into();
+    for invalid in ["white", "#fff", "#gg0000", "#ffffff-extra", "#é0000"] {
+        settings.background = invalid.into();
+        assert!(backend()
+            .convert(&source, None, &settings, &AtomicBool::new(false))
+            .is_err());
+    }
+    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+}
+
+#[test]
+fn verifies_output_container_and_terminator_before_publication() {
+    let dir = tempfile::tempdir().unwrap();
+    for (format, name) in [
+        (crate::image_format::ImageFormat::Png, "rgb.png"),
+        (crate::image_format::ImageFormat::Jpeg, "photo.jpg"),
+        (crate::image_format::ImageFormat::WebP, "rgba.webp"),
+    ] {
+        assert!(format.validate_output(&fixture(name)).is_ok());
+        let path = dir.path().join(name);
+        let mut bytes = fs::read(fixture(name)).unwrap();
+        bytes.truncate(bytes.len() - 1);
+        fs::write(&path, bytes).unwrap();
+        assert!(format.validate_output(&path).is_err());
+        for other in crate::image_format::ImageFormat::ALL
+            .into_iter()
+            .filter(|other| *other != format)
+        {
+            assert!(other.validate_output(&fixture(name)).is_err());
+        }
+    }
 }
 
 #[test]

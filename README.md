@@ -2,7 +2,7 @@
 
 A local file converter, built with Tauri 2, React, TypeScript, and Rust.
 
-The first real conversion is connected: **still PNG and JPEG → WebP**, with quality, lossless, resize, and metadata options. Batches preserve original files and existing outputs, report per-file results, support cancellation, and retry unfinished files. The approved design framework remains in place. More image formats, audio, and video are later milestones.
+Recast converts **still PNG, JPEG, and WebP in all directions**, including same-format conversion. Settings follow the output: JPEG has quality and a transparency background color (white by default), WebP has quality/lossless, and PNG is always lossless. All three support resizing and metadata options. Batches preserve original files and existing outputs, report per-file results, support cancellation, and retry unfinished files. Animated PNG/WebP are identified and rejected rather than flattened. More image formats, audio, and video are later milestones.
 
 ## Development
 
@@ -14,7 +14,7 @@ npm run backend:prepare
 npm run desktop
 ```
 
-Choose or drop PNG/JPEG files, select WebP, adjust the group settings, and convert. Outputs go beside their sources by default; a different folder can be selected. Click a completed output to reveal it in Finder.
+Choose or drop PNG/JPEG/WebP files, select an output, adjust the group settings, and convert. Outputs go beside their sources by default; a different folder can be selected. Existing names, including the original during same-format conversion, get a numbered alternative. JPEG outputs use `.jpg`. Click a completed output to reveal it in its folder.
 
 For the development-only sample UI:
 

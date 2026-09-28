@@ -1,4 +1,5 @@
 mod image_backend;
+mod image_format;
 mod inputs;
 mod jobs;
 use tauri::Manager;
