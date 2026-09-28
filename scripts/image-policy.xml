@@ -12,6 +12,6 @@
   <policy domain="filter" rights="none" pattern="*"/>
   <policy domain="coder" rights="none" pattern="*"/>
   <policy domain="coder" rights="read" pattern="{ICC,ICM}"/>
-  <policy domain="coder" rights="read|write" pattern="{PNG,JPEG,WEBP}"/>
+  <policy domain="coder" rights="read|write" pattern="{PNG,JPEG,WEBP,BMP}"/>
   <policy domain="path" rights="none" pattern="@*"/>
 </policymap>

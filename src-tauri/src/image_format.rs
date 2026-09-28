@@ -9,16 +9,17 @@ pub enum ImageFormat {
     WebP,
     Jpeg,
     Png,
+    Bmp,
 }
 
 impl ImageFormat {
-    pub const ALL: [Self; 3] = [Self::WebP, Self::Jpeg, Self::Png];
+    pub const ALL: [Self; 4] = [Self::WebP, Self::Jpeg, Self::Png, Self::Bmp];
 
     pub fn from_id(id: &str) -> Result<Self, String> {
         Self::ALL
             .into_iter()
             .find(|format| format.id() == id)
-            .ok_or_else(|| "Choose PNG, JPEG, or WebP for the output.".into())
+            .ok_or_else(|| "Choose PNG, JPEG, WebP, or BMP for the output.".into())
     }
 
     pub fn id(self) -> &'static str {
@@ -26,6 +27,7 @@ impl ImageFormat {
             Self::WebP => "webp",
             Self::Jpeg => "jpeg",
             Self::Png => "png",
+            Self::Bmp => "bmp",
         }
     }
 
@@ -41,6 +43,7 @@ impl ImageFormat {
             Self::WebP => "WebP",
             Self::Jpeg => "JPEG",
             Self::Png => "PNG",
+            Self::Bmp => "BMP",
         }
     }
 
@@ -74,6 +77,29 @@ impl ImageFormat {
                         && &header[..8] == b"\x89PNG\r\n\x1a\n"
                         && header[8..12] == [0, 0, 0, 13]
                         && &end == b"\0\0\0\0IEND\xae\x42\x60\x82"
+                }
+                Self::Bmp => {
+                    let mut bmp = [0; 54];
+                    file.rewind()?;
+                    file.read_exact(&mut bmp)?;
+                    let u32_at =
+                        |start| u32::from_le_bytes(bmp[start..start + 4].try_into().unwrap());
+                    let width = i32::from_le_bytes(bmp[18..22].try_into().unwrap());
+                    let height = i32::from_le_bytes(bmp[22..26].try_into().unwrap());
+                    // Recast writes precisely a V3 header + bottom-up, padded
+                    // 24-bit RGB rows. Reject short or unexpected output layouts.
+                    let row_bytes = (u64::from(width.unsigned_abs()) * 3).div_ceil(4) * 4;
+                    let pixels = row_bytes * u64::from(height.unsigned_abs());
+                    &bmp[..2] == b"BM"
+                        && u64::from(u32_at(2)) == bytes
+                        && u32_at(10) == 54
+                        && u32_at(14) == 40
+                        && width > 0
+                        && height > 0
+                        && bmp[26..30] == [1, 0, 24, 0]
+                        && u32_at(30) == 0
+                        && u64::from(u32_at(34)) == pixels
+                        && bytes == 54 + pixels
                 }
             };
             Ok(valid.then_some(bytes))

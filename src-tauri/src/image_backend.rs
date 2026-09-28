@@ -94,6 +94,13 @@ impl ImageBackend {
     }
 
     pub fn verify(&self) -> Result<(), String> {
+        if std::fs::read_to_string(self.root.join("policy.xml"))
+            .ok()
+            .as_deref()
+            != Some(include_str!("../../scripts/image-policy.xml"))
+        {
+            return Err("The bundled image converter is out of date. Rebuild Recast with its current image backend.".into());
+        }
         let result = self.command().arg("-version").output().map_err(|_| {
             "The bundled image converter is missing. Rebuild Recast with its image backend."
                 .to_string()
@@ -174,7 +181,13 @@ impl ImageBackend {
         command
             .current_dir(work.path())
             .env("MAGICK_TEMPORARY_PATH", work.path());
-        command.arg(&staged).arg("-auto-orient");
+        // ImageMagick's list-length limit is exclusive: 2 allows one image.
+        // This rejects BMP sequences even if a misleading header passed the
+        // lightweight inspection. Never encode or silently flatten a sequence.
+        command
+            .args(["-limit", "list-length", "2"])
+            .arg(&staged)
+            .arg("-auto-orient");
         if options.resize != 100 {
             command.args(["-resize", &format!("{}%", options.resize)]);
         }
@@ -185,7 +198,7 @@ impl ImageBackend {
             .arg("-profile")
             .arg(self.root.join("sRGB.icc"))
             .args(["-colorspace", "sRGB"]);
-        if format == ImageFormat::Jpeg {
+        if matches!(format, ImageFormat::Jpeg | ImageFormat::Bmp) {
             // Composite in the output colorspace; removing alpha alone would
             // expose the invisible RGB values instead of the chosen background.
             command.args([
@@ -197,7 +210,7 @@ impl ImageBackend {
                 "off",
             ]);
         }
-        if !options.metadata {
+        if !options.metadata || format == ImageFormat::Bmp {
             command.arg("-strip");
         }
         match format {
@@ -228,6 +241,20 @@ impl ImageBackend {
                 // PNG is always lossless. Do not inherit a JPEG/WebP quality
                 // value or an input's compression settings as PNG encoder knobs.
                 command.args(["-define", "png:compression-level=6"]);
+            }
+            ImageFormat::Bmp => {
+                // Predictable, widely readable V3 output: opaque 24-bit RGB,
+                // without palettes, RLE compression, alpha, or metadata profiles.
+                command.args([
+                    "-type",
+                    "TrueColor",
+                    "-depth",
+                    "8",
+                    "-compress",
+                    "None",
+                    "-define",
+                    "bmp:format=bmp3",
+                ]);
             }
         }
         command.arg(format!("{}:-", format.id()));

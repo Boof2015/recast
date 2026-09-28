@@ -15,4 +15,18 @@ All images are 32 × 20 pixels before orientation. The RGB pattern and RGBA patt
 
 The WebP fixtures were generated with the pinned ImageMagick 7.1.2-32 worker. Tests also modify RIFF lengths and animation flags to exercise malformed WebP handling.
 
+The BMP fixtures were assembled from their headers and pixel rows in Python, independently of the converter under test. Their RGB pattern uses `R = 8x`, `G = 12y`, and `B = 5(x+y) mod 256`:
+
+- `rgb.bmp`: 24-bit Windows V3, uncompressed, bottom-up rows.
+- `top-down.bmp`: the same RGB pixels with negative height and top-down rows.
+- `core.bmp`: the same RGB pixels with a 12-byte OS/2 core header.
+- `rgba.bmp`: Windows V4 with explicit RGBA bit masks; alpha cycles through 0, 128, and 255 by column. Tagged as sRGB.
+- `palette.bmp`: uncompressed 8-bit V3; pixel index is `x + 3y`, palette RGB is `(i, 255-i, 5i mod 256)`.
+- `rle.bmp`: the same indexed pixels encoded as RLE8, with explicit row/end markers.
+- `rle4.bmp`: RLE4 with a 16-color palette and pixel index `(x + 3y) mod 16`.
+- `rgb565.bmp`: 16-bit V3 bitfields with RGB565 masks; channels are `(x, 3y mod 64, (x+y) mod 32)` before expansion.
+- `profiled.bmp`: RGB pixels in a V5 BMP with the synthetic linear-gamma ICC profile from `linear-rgb.png` embedded after the pixels.
+
+BMP tests independently inspect exported 24-bit pixel bytes, padding, and header layout. They create odd-width, truncated, malformed-header, embedded-image-wrapper, bitmap-array, and concatenated/forged-size variants in temporary directories.
+
 The tests create corrupt and animated-PNG-marker variants in temporary directories. Existing outputs, output naming conflicts, and cancellation files are also isolated to temporary directories.

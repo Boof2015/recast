@@ -76,6 +76,15 @@ fn converts_every_still_image_pair_and_same_format_without_overwriting() {
         ("photo.jpg", "jpeg"),
         ("rgba.webp", "webp"),
         ("photo.webp", "webp"),
+        ("rgb.bmp", "bmp"),
+        ("rgba.bmp", "bmp"),
+        ("top-down.bmp", "bmp"),
+        ("palette.bmp", "bmp"),
+        ("rle.bmp", "bmp"),
+        ("rle4.bmp", "bmp"),
+        ("rgb565.bmp", "bmp"),
+        ("profiled.bmp", "bmp"),
+        ("core.bmp", "bmp"),
     ] {
         for target in crate::image_format::ImageFormat::ALL {
             let dir = tempfile::tempdir().unwrap();
@@ -85,7 +94,10 @@ fn converts_every_still_image_pair_and_same_format_without_overwriting() {
             settings.target = target.id().into();
             let input = crate::inputs::inspect(&source).unwrap();
             let json = serde_json::to_value(input).unwrap();
-            assert_eq!(json["targets"], serde_json::json!(["webp", "jpeg", "png"]));
+            assert_eq!(
+                json["targets"],
+                serde_json::json!(["webp", "jpeg", "png", "bmp"])
+            );
             let output = backend()
                 .convert(&source, None, &settings, &AtomicBool::new(false))
                 .unwrap();
@@ -93,7 +105,14 @@ fn converts_every_still_image_pair_and_same_format_without_overwriting() {
             assert_eq!(output_path.extension().unwrap(), target.extension());
             assert_eq!(
                 identify(output_path, "%m %w %h %n"),
-                format!("{} 32 20 1", target.id().to_uppercase())
+                format!(
+                    "{} 32 20 1",
+                    if target == crate::image_format::ImageFormat::Bmp {
+                        "BMP3".into()
+                    } else {
+                        target.id().to_uppercase()
+                    }
+                )
             );
             assert_eq!(fs::read(&source).unwrap(), original);
             assert_ne!(output_path, source);
@@ -267,7 +286,7 @@ fn jpeg_quality_is_independent_of_hidden_webp_lossless_setting() {
 fn mixed_image_batch_creates_one_output_per_input_for_each_target() {
     for target in crate::image_format::ImageFormat::ALL {
         let dir = tempfile::tempdir().unwrap();
-        let sources: Vec<_> = ["rgba.png", "photo.jpg", "rgba.webp"]
+        let sources: Vec<_> = ["rgba.png", "photo.jpg", "rgba.webp", "rgb.bmp"]
             .into_iter()
             .map(|name| copy(name, &dir.path().join(name)))
             .collect();
@@ -313,10 +332,14 @@ fn all_formats_resize_after_orientation_and_handle_metadata() {
             );
             assert_eq!(identify(Path::new(&stripped.path), "%w %h"), "10 16");
             let profiles = identify(Path::new(&retained.path), "%[profiles]");
-            assert!(
-                profiles.contains("exif") && profiles.contains("icc"),
-                "{name} -> {target:?}: {profiles}"
-            );
+            if target == crate::image_format::ImageFormat::Bmp {
+                assert!(profiles.is_empty());
+            } else {
+                assert!(
+                    profiles.contains("exif") && profiles.contains("icc"),
+                    "{name} -> {target:?}: {profiles}"
+                );
+            }
             assert!(!identify(Path::new(&retained.path), "%[EXIF:Orientation]").contains('6'));
             assert!(identify(Path::new(&stripped.path), "%[profiles]").is_empty());
         }
@@ -383,6 +406,7 @@ fn verifies_output_container_and_terminator_before_publication() {
         (crate::image_format::ImageFormat::Png, "rgb.png"),
         (crate::image_format::ImageFormat::Jpeg, "photo.jpg"),
         (crate::image_format::ImageFormat::WebP, "rgba.webp"),
+        (crate::image_format::ImageFormat::Bmp, "rgb.bmp"),
     ] {
         assert!(format.validate_output(&fixture(name)).is_ok());
         let path = dir.path().join(name);
@@ -398,6 +422,9 @@ fn verifies_output_container_and_terminator_before_publication() {
         }
     }
 }
+
+#[path = "bmp_tests.rs"]
+mod bmp;
 
 #[test]
 fn converts_png_and_jpeg_preserving_sources_and_existing_outputs() {

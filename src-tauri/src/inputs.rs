@@ -45,6 +45,9 @@ pub fn inspect(path: &Path) -> Result<InputFile, String> {
     let read = file
         .read(&mut header)
         .map_err(|_| "This file could not be read.")?;
+    if header[..read].starts_with(b"BA") {
+        return Err("BMP bitmap arrays are not supported. Choose a single-image BMP.".into());
+    }
     let detected = infer::get(&header[..read]).ok_or("This file type is not recognized yet.")?;
     let kind = match detected.mime_type().split('/').next() {
         Some("image") => "images",
@@ -60,8 +63,9 @@ pub fn inspect(path: &Path) -> Result<InputFile, String> {
         "jpg" => None,
         "png" => png_conversion_issue(&mut file),
         "webp" => webp_conversion_issue(&mut file),
+        "bmp" => bmp_conversion_issue(&mut file),
         _ => Some(
-            "This build converts still PNG, JPEG, and WebP images. This file is not supported yet."
+            "This build converts still PNG, JPEG, WebP, and BMP images. This file is not supported yet."
                 .into(),
         ),
     };
@@ -91,6 +95,73 @@ pub fn inspect(path: &Path) -> Result<InputFile, String> {
         has_audio: None,
         targets,
         conversion_issue,
+    })
+}
+
+fn bmp_conversion_issue(file: &mut File) -> Option<String> {
+    let mut check = || -> std::io::Result<Option<String>> {
+        let invalid = || std::io::Error::new(std::io::ErrorKind::InvalidData, "Incomplete BMP");
+        file.rewind()?;
+        let length = file.metadata()?.len();
+        let mut header = [0; 18];
+        file.read_exact(&mut header)?;
+        let file_size = u64::from(u32::from_le_bytes(header[2..6].try_into().unwrap()));
+        let offset = u64::from(u32::from_le_bytes(header[10..14].try_into().unwrap()));
+        let dib_size = u32::from_le_bytes(header[14..18].try_into().unwrap());
+        // A normal BMP has one file header and one bitmap. This also rejects
+        // ordinary concatenated BMPs instead of sending a sequence to an encoder.
+        if &header[..2] != b"BM"
+            || file_size != length
+            || ![12, 40, 52, 56, 64, 78, 108, 124].contains(&dib_size)
+            || offset < 14 + u64::from(dib_size)
+            || offset >= length
+        {
+            return Err(invalid());
+        }
+        let mut dib = [0; 124];
+        dib[..4].copy_from_slice(&header[14..18]);
+        file.read_exact(&mut dib[4..dib_size as usize])?;
+        let (width, height, planes, bits, compression) = if dib_size == 12 {
+            (
+                i32::from(u16::from_le_bytes(dib[4..6].try_into().unwrap())),
+                i32::from(u16::from_le_bytes(dib[6..8].try_into().unwrap())),
+                u16::from_le_bytes(dib[8..10].try_into().unwrap()),
+                u16::from_le_bytes(dib[10..12].try_into().unwrap()),
+                0,
+            )
+        } else {
+            (
+                i32::from_le_bytes(dib[4..8].try_into().unwrap()),
+                i32::from_le_bytes(dib[8..12].try_into().unwrap()),
+                u16::from_le_bytes(dib[12..14].try_into().unwrap()),
+                u16::from_le_bytes(dib[14..16].try_into().unwrap()),
+                u32::from_le_bytes(dib[16..20].try_into().unwrap()),
+            )
+        };
+        // Embedded PNG/JPEG can hide a different container (including APNG).
+        // Supporting those wrappers needs their own inspection path first.
+        if [4, 5].contains(&compression) {
+            return Ok(Some("BMP files containing embedded PNG or JPEG are not supported yet. Remove this file to convert the rest.".into()));
+        }
+        if width <= 0
+            || height == 0
+            || planes != 1
+            || ![1, 4, 8, 16, 24, 32].contains(&bits)
+            || ![0, 1, 2, 3, 6].contains(&compression)
+        {
+            return Err(invalid());
+        }
+        if [0, 3, 6].contains(&compression) {
+            let row_bytes = (width as u64 * u64::from(bits)).div_ceil(32) * 4;
+            let pixel_end = offset + row_bytes * u64::from(height.unsigned_abs());
+            if pixel_end > length {
+                return Err(invalid());
+            }
+        }
+        Ok(None)
+    };
+    check().unwrap_or_else(|_| {
+        Some("This BMP is incomplete, unreadable, or contains more than one bitmap.".into())
     })
 }
 

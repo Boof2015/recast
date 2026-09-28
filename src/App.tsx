@@ -5,7 +5,8 @@ import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { open } from '@tauri-apps/plugin-dialog';
 import { defaultSettings, destinationsFor, formatCounts, kindLabels, kinds, unitLabels, type Appearance, type Destination, type GroupSettings, type InputFile, type MediaKind } from './model';
 import { sampleFiles, type Scenario } from './fixtures';
-import { CheckboxSetting, ColorSetting, QualitySetting, SelectSetting } from './controls';
+import { CheckboxSetting, QualitySetting, SelectSetting } from './controls';
+import { ColorSetting } from './ColorSetting';
 import { GroupStack } from './GroupStack';
 import { useConversion } from './useConversion';
 
@@ -41,7 +42,7 @@ function ScrollArea({ children, className = '', onScroll }: { children: ReactNod
   return <div className={`scroll-area ${className}`} data-top={edges.top} data-bottom={edges.bottom} ref={ref} onScroll={onScroll}>{children}</div>;
 }
 
-function FormatSettings({ kind, destination, value, onChange }: { kind: MediaKind; destination: Destination; value: GroupSettings; onChange: (change: Partial<GroupSettings>) => void }) {
+function FormatSettings({ kind, destination, value, onChange, disabled }: { kind: MediaKind; destination: Destination; value: GroupSettings; onChange: (change: Partial<GroupSettings>) => void; disabled: boolean }) {
   const isImage = kind === 'images';
   const isAudio = kind === 'audio' || destination.category === 'Audio only';
   const isVideo = kind === 'video' && !isAudio;
@@ -51,7 +52,7 @@ function FormatSettings({ kind, destination, value, onChange }: { kind: MediaKin
     {hasQuality && <QualitySetting value={value.quality} disabled={hasLossless && value.lossless} onChange={(quality) => onChange({ quality })} />}
     {hasLossless && <CheckboxSetting label="Lossless" checked={value.lossless} onChange={(lossless) => onChange({ lossless })} />}
     {isImage && <SelectSetting label="Resize" value={value.resize} options={['Original', '75%', '50%', '25%']} onChange={(resize) => onChange({ resize })} />}
-    {isImage && destination.id === 'jpeg' && <ColorSetting label="Background" value={value.background} onChange={(background) => onChange({ background })} />}
+    {isImage && ['jpeg', 'bmp'].includes(destination.id) && <ColorSetting label="Background" value={value.background} disabled={disabled} onChange={(background) => onChange({ background })} />}
     {isAudio && ['mp3', 'm4a', 'opus', 'ogg'].includes(destination.id) && <SelectSetting label="Bitrate" value={value.bitrate} options={['128 kbps', '192 kbps', '256 kbps', '320 kbps']} onChange={(bitrate) => onChange({ bitrate })} />}
     {isAudio && <p className="settings-note">Keep the original sample rate and channels.</p>}
     {isVideo && destination.id !== 'gif' && <>
@@ -69,7 +70,7 @@ function DestinationBrowser({ formats, onChoose }: { formats: Destination[]; onC
   const categories = [...new Set(formats.map((format) => format.category))];
   return <div className="destination-browser">
     <h2>Convert to</h2>
-    {formats.length === 0 && <p className="settings-note">These files don’t share an available output yet. This build converts still PNG, JPEG, and WebP images.</p>}
+    {formats.length === 0 && <p className="settings-note">These files don’t share an available output yet. This build converts still PNG, JPEG, WebP, and BMP images.</p>}
     {categories.map((category) => <section className="destination-category" key={category}>
       <h3>{category}</h3>
       <div className="destination-list">{formats.filter((format) => format.category === category).map((format) => <button key={format.id} className="destination-option" onClick={() => onChoose(format.id)}>
@@ -286,7 +287,7 @@ export default function App() {
             <fieldset className="conversion-fields" disabled={busy}>
             {selectedFormat ? <>
               <button className="format-back" onClick={() => updateSettings({ target: null })} aria-label="Change output format"><ArrowLeft size={18} strokeWidth={1.7} /><h2>{selectedFormat.label}</h2></button>
-              <FormatSettings kind={activeKind} destination={selectedFormat} value={activeSettings} onChange={updateSettings} />
+              <FormatSettings kind={activeKind} destination={selectedFormat} value={activeSettings} onChange={updateSettings} disabled={busy} />
             </> : <DestinationBrowser formats={formats} onChoose={(target) => updateSettings({ target })} />}
             </fieldset>
             {!unresolvedTarget && !formats.length && !previewCatalog && <button className="text-button" onClick={() => setExpanded(current => current.includes(activeKind) ? current : [...current, activeKind])}>Show files<ChevronRight size={13} /></button>}

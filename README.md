@@ -2,7 +2,7 @@
 
 A local file converter, built with Tauri 2, React, TypeScript, and Rust.
 
-Recast converts **still PNG, JPEG, and WebP in all directions**, including same-format conversion. Settings follow the output: JPEG has quality and a transparency background color (white by default), WebP has quality/lossless, and PNG is always lossless. All three support resizing and metadata options. Batches preserve original files and existing outputs, report per-file results, support cancellation, and retry unfinished files. Animated PNG/WebP are identified and rejected rather than flattened. More image formats, audio, and video are later milestones.
+Recast converts **still PNG, JPEG, WebP, and BMP in all directions**, including same-format conversion. Settings follow the output: JPEG has quality, WebP has quality/lossless, PNG is always lossless, and BMP writes uncompressed 24-bit files. JPEG and BMP fill transparency with a shared background color, white by default, selected through Recast's built-in picker. All four support resizing; PNG/JPEG/WebP offer metadata retention, while BMP output omits profiles and other metadata after color normalization. Batches preserve originals and existing outputs, report per-file results, support cancellation, and retry unfinished files. Animated PNG/WebP and multi-image BMPs are rejected. BMP wrappers containing embedded PNG/JPEG are not yet supported. More image formats, audio, and video are later milestones.
 
 ## Development
 
@@ -14,7 +14,7 @@ npm run backend:prepare
 npm run desktop
 ```
 
-Choose or drop PNG/JPEG/WebP files, select an output, adjust the group settings, and convert. Outputs go beside their sources by default; a different folder can be selected. Existing names, including the original during same-format conversion, get a numbered alternative. JPEG outputs use `.jpg`. Click a completed output to reveal it in its folder.
+Choose or drop PNG/JPEG/WebP/BMP files, select an output, adjust the group settings, and convert. Outputs go beside their sources by default; a different folder can be selected. Existing names, including the original during same-format conversion, get a numbered alternative. JPEG outputs use `.jpg`. Click a completed output to reveal it in its folder.
 
 For the development-only sample UI:
 
