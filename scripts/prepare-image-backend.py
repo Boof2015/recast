@@ -45,7 +45,7 @@ def download(source):
     archive = downloads / source['archive']
     if not archive.exists():
         print(f'Downloading {source["archive"]}…', flush=True)
-        with tempfile.NamedTempFile(dir=downloads, delete=False) as partial:
+        with tempfile.NamedTemporaryFile(dir=downloads, delete=False) as partial:
             partial_path = Path(partial.name)
         try:
             urllib.request.urlretrieve(source['url'], partial_path)

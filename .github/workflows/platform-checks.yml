@@ -59,6 +59,7 @@ jobs:
           path: .backend-build/downloads
           key: image-sources-${{ hashFiles('scripts/image-backend.lock.json') }}
       - run: npm ci
+      - run: python3 -m unittest discover -s scripts/tests -v
       - run: npm run backend:prepare
       - run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
       - run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
@@ -79,6 +80,7 @@ jobs:
         with:
           name: logs-${{ matrix.name }}
           path: .backend-build/**/logs/*.log
+          include-hidden-files: true
   windows:
     runs-on: windows-2022
     timeout-minutes: 60
@@ -111,7 +113,9 @@ jobs:
           key: image-sources-${{ hashFiles('scripts/image-backend.lock.json') }}
       - name: Build native Windows worker from pinned sources
         shell: msys2 {0}
-        run: /usr/bin/python scripts/prepare-image-backend.py
+        run: |
+          /usr/bin/python -m unittest discover -s scripts/tests -v
+          /usr/bin/python scripts/prepare-image-backend.py
       - run: npm ci
       - run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
       - run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
@@ -132,3 +136,4 @@ jobs:
         with:
           name: logs-windows-x86_64
           path: .backend-build/**/logs/*.log
+          include-hidden-files: true

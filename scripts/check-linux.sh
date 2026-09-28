@@ -11,6 +11,7 @@ if [ -d /source/.backend-build/downloads ]; then
 fi
 npm ci
 rustup component add rustfmt clippy
+python3 -m unittest discover -s scripts/tests -v
 python3 scripts/prepare-image-backend.py
 cargo fmt --manifest-path src-tauri/Cargo.toml --check
 cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
