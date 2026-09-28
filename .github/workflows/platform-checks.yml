@@ -1,0 +1,134 @@
+name: Platform packages
+on:
+  workflow_dispatch:
+  pull_request:
+    paths-ignore: ['**.md', 'design-studies/**']
+  push:
+    branches: [main]
+    paths-ignore: ['**.md', 'design-studies/**']
+permissions:
+  contents: read
+concurrency:
+  group: platform-checks-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  unix:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            name: macos-arm64
+            bundle: app
+            package: src-tauri/target/release/bundle/macos/Recast.app
+          - os: macos-15-intel
+            name: macos-x86_64
+            bundle: app
+            package: src-tauri/target/release/bundle/macos/Recast.app
+          - os: ubuntu-22.04
+            name: linux-x86_64
+            bundle: deb,appimage
+            package: src-tauri/target/release/bundle/deb
+          - os: ubuntu-24.04-arm
+            name: linux-arm64
+            bundle: deb
+            package: src-tauri/target/release/bundle/deb
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Rust toolchain
+        run: rustup toolchain install 1.98.1 --profile minimal --component rustfmt,clippy && rustup default 1.98.1
+      - name: macOS build dependencies
+        if: runner.os == 'macOS'
+        run: brew install cmake pkg-config nasm
+      - name: Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake pkg-config nasm libwebkit2gtk-4.1-dev libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf xdg-utils
+      - uses: actions/cache@v4
+        with:
+          path: .backend-build/downloads
+          key: image-sources-${{ hashFiles('scripts/image-backend.lock.json') }}
+      - run: npm ci
+      - run: npm run backend:prepare
+      - run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
+      - run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+      - run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+      - run: npm run tauri -- build --bundles ${{ matrix.bundle }} -- --locked
+      - run: python3 scripts/check-package.py --package '${{ matrix.package }}' --output artifacts
+      - name: Preserve Linux AppImage for native desktop testing
+        if: matrix.name == 'linux-x86_64'
+        run: cp src-tauri/target/release/bundle/appimage/*.AppImage artifacts/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: recast-${{ matrix.name }}
+          path: artifacts/
+          if-no-files-found: error
+      - name: Build logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-${{ matrix.name }}
+          path: .backend-build/**/logs/*.log
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Rust toolchain
+        run: |
+          rustup toolchain install 1.98.1 --profile minimal --component rustfmt,clippy
+          rustup default 1.98.1
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            python make diffutils
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-pkgconf
+            mingw-w64-ucrt-x86_64-nasm
+      - uses: actions/cache@v4
+        with:
+          path: .backend-build/downloads
+          key: image-sources-${{ hashFiles('scripts/image-backend.lock.json') }}
+      - name: Build native Windows worker from pinned sources
+        shell: msys2 {0}
+        run: /usr/bin/python scripts/prepare-image-backend.py
+      - run: npm ci
+      - run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
+      - run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+      - run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+      - run: npm run tauri -- build --bundles nsis -- --locked
+      - name: Check extracted installer resources
+        run: |
+          $env:PATH += ';C:\msys64\ucrt64\bin;C:\Program Files\7-Zip'
+          python scripts/check-package.py --package src-tauri/target/release/bundle/nsis --output artifacts
+      - uses: actions/upload-artifact@v4
+        with:
+          name: recast-windows-x86_64
+          path: artifacts/
+          if-no-files-found: error
+      - name: Build logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-windows-x86_64
+          path: .backend-build/**/logs/*.log

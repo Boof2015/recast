@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main-window",
+  "description": "Local input selection and desktop window controls.",
+  "windows": ["main"],
+  "permissions": ["core:default", "dialog:allow-open"]
+}
