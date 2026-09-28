@@ -98,6 +98,7 @@ jobs:
           rustup toolchain install 1.98.1 --profile minimal --component rustfmt,clippy
           rustup default 1.98.1
       - uses: msys2/setup-msys2@v2
+        id: msys2
         with:
           msystem: UCRT64
           update: true
@@ -122,8 +123,10 @@ jobs:
       - run: cargo test --locked --manifest-path src-tauri/Cargo.toml
       - run: npm run tauri -- build --bundles nsis -- --locked
       - name: Check extracted installer resources
+        env:
+          MSYS2_ROOT: ${{ steps.msys2.outputs.msys2-location }}
         run: |
-          $env:PATH += ';C:\msys64\ucrt64\bin;C:\Program Files\7-Zip'
+          $env:PATH += ";$env:MSYS2_ROOT\ucrt64\bin;C:\Program Files\7-Zip"
           python scripts/check-package.py --package src-tauri/target/release/bundle/nsis --output artifacts
       - uses: actions/upload-artifact@v4
         with:

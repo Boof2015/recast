@@ -1,4 +1,4 @@
-"""Exercise source-download integrity from an empty cache, without network access."""
+"""Exercise source-download integrity and platform dependency audits."""
 import hashlib
 import importlib.util
 from pathlib import Path
@@ -61,6 +61,50 @@ class SourceDownloadTests(unittest.TestCase):
         cached.write_bytes(b'corrupt cache')
         with self.assertRaisesRegex(SystemExit, 'checksum mismatch'):
             builder.download(self.source)
+
+
+class WindowsAuditTests(unittest.TestCase):
+    def test_windows_system_dlls_are_allowed(self):
+        headers = '\n'.join(f'DLL Name: {name}' for name in ['KERNEL32.dll', 'urlmon.dll', 'api-ms-win-crt-runtime-l1-1-0.dll'])
+        with patch.object(builder.subprocess, 'check_output', return_value=headers):
+            result = builder.audit(Path('magick.exe'), 'windows', 'x86_64')
+        self.assertIn('urlmon.dll', result['dynamicLibraries'])
+
+    def test_build_environment_dlls_are_rejected(self):
+        for dependency in ['libwinpthread-1.dll', 'zlib1.dll', 'libstdc++-6.dll']:
+            with self.subTest(dependency=dependency):
+                with patch.object(builder.subprocess, 'check_output', return_value=f'DLL Name: {dependency}'):
+                    with self.assertRaisesRegex(SystemExit, 'non-system DLLs'):
+                        builder.audit(Path('magick.exe'), 'windows', 'x86_64')
+
+
+class LinuxAuditTests(unittest.TestCase):
+    # Dependency list reported by the Ubuntu 24.04 ARM64 CI worker.
+    ARM_HEADERS = '\n'.join(
+        f' 0x0000000000000001 (NEEDED) Shared library: [{name}]'
+        for name in ['libm.so.6', 'libc.so.6', 'ld-linux-aarch64.so.1']
+    )
+
+    def test_system_loader_is_allowed_as_a_direct_dependency(self):
+        with patch.object(builder.subprocess, 'check_output', side_effect=[self.ARM_HEADERS, 'libc.so.6 => /lib/aarch64-linux-gnu/libc.so.6']):
+            result = builder.audit(Path('magick'), 'linux', 'arm64')
+        self.assertEqual(result['dynamicLibraries'], ['libm.so.6', 'libc.so.6', 'ld-linux-aarch64.so.1'])
+
+    def test_loader_for_another_architecture_is_rejected(self):
+        with patch.object(builder.subprocess, 'check_output', return_value=self.ARM_HEADERS):
+            with self.assertRaisesRegex(SystemExit, 'unexpected shared libraries'):
+                builder.audit(Path('magick'), 'linux', 'x86_64')
+
+    def test_dynamic_codec_dependency_is_still_rejected(self):
+        headers = self.ARM_HEADERS + '\n (NEEDED) Shared library: [libwebp.so.7]'
+        with patch.object(builder.subprocess, 'check_output', return_value=headers):
+            with self.assertRaisesRegex(SystemExit, 'unexpected shared libraries'):
+                builder.audit(Path('magick'), 'linux', 'arm64')
+
+    def test_unresolved_system_dependency_is_rejected(self):
+        with patch.object(builder.subprocess, 'check_output', side_effect=[self.ARM_HEADERS, 'libm.so.6 => not found']):
+            with self.assertRaisesRegex(SystemExit, 'Missing worker dependency'):
+                builder.audit(Path('magick'), 'linux', 'arm64')
 
 
 if __name__ == '__main__':

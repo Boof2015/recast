@@ -90,7 +90,7 @@ def audit(worker, system, arch):
     if system == 'windows':
         headers = subprocess.check_output(['objdump', '-p', str(worker)], text=True)
         linked = re.findall(r'DLL Name:\s*(\S+)', headers)
-        allowed = {'kernel32.dll', 'msvcrt.dll', 'ucrtbase.dll', 'advapi32.dll', 'bcrypt.dll', 'user32.dll', 'gdi32.dll', 'ole32.dll', 'shell32.dll', 'ws2_32.dll', 'winmm.dll', 'version.dll', 'ntdll.dll', 'secur32.dll', 'crypt32.dll'}
+        allowed = {'kernel32.dll', 'msvcrt.dll', 'ucrtbase.dll', 'advapi32.dll', 'bcrypt.dll', 'user32.dll', 'gdi32.dll', 'ole32.dll', 'shell32.dll', 'ws2_32.dll', 'winmm.dll', 'version.dll', 'ntdll.dll', 'secur32.dll', 'crypt32.dll', 'urlmon.dll'}
         unexpected = [lib for lib in linked if lib.lower() not in allowed and not lib.lower().startswith(('api-ms-win-', 'ext-ms-win-'))]
         if unexpected:
             raise SystemExit(f'Worker requires non-system DLLs: {unexpected}')
@@ -98,6 +98,8 @@ def audit(worker, system, arch):
     headers = subprocess.check_output(['readelf', '-d', str(worker)], text=True)
     linked = re.findall(r'Shared library: \[(.*?)\]', headers)
     allowed = {'libc.so.6', 'libm.so.6', 'libpthread.so.0', 'libdl.so.2', 'librt.so.1', 'libgcc_s.so.1', 'libstdc++.so.6'}
+    # glibc's loader can also appear as a direct dependency (Ubuntu ARM64).
+    allowed.add({'arm64': 'ld-linux-aarch64.so.1', 'x86_64': 'ld-linux-x86-64.so.2'}[arch])
     if set(linked) - allowed:
         raise SystemExit(f'Worker requires unexpected shared libraries: {linked}')
     resolved = subprocess.check_output(['ldd', str(worker)], text=True)
@@ -165,6 +167,7 @@ def main():
         cmake_common += [f'-DCMAKE_OSX_DEPLOYMENT_TARGET={LOCK["minimumMacOS"]}', f'-DCMAKE_OSX_ARCHITECTURES={arch}']
     if system == 'windows':
         cmake_common += ['-G', 'MSYS Makefiles']
+        options['libpng'] += [f'ZLIB_LIBRARY={stage / "lib/libz.a"}', f'ZLIB_INCLUDE_DIR={stage / "include"}']
     sources = {}
     for dependency in LOCK['dependencies']:
         name = dependency['name']
@@ -179,6 +182,10 @@ def main():
         run(['cmake', '-S', str(source), '-B', str(build), *cmake_common, *['-D' + option for option in options[name]]], env=env, log=log)
         run(['cmake', '--build', str(build), '--parallel', JOBS], env=env, log=log)
         run(['cmake', '--install', str(build)], env=env, log=log)
+        if system == 'windows' and name == 'zlib':
+            # zlib 1.3.2 installs libzs.a on Windows but its .pc file requests -lz.
+            # Supply that name from our pinned archive, never the MSYS2 copy.
+            shutil.copyfile(stage / 'lib/libzs.a', stage / 'lib/libz.a')
         marker.touch()
     unexpected = [path for path in (stage / 'lib').glob('*') if path.suffix in ('.so', '.dylib', '.dll') or '.dll.a' in path.name]
     if unexpected:
@@ -195,7 +202,12 @@ def main():
         configure += [f'--host={arch}-apple-darwin']
     print('Configuring and building ImageMagick…', flush=True)
     run(['sh', str(source / 'configure'), *configure], cwd=source, env=env, log=logs / 'imagemagick-configure.log')
-    run(['make', '-j', JOBS], cwd=source, env=env, log=logs / 'imagemagick-build.log')
+    make = ['make', '-j', JOBS, 'V=1']
+    if system == 'windows':
+        # Libtool consumes -static without passing it to the final compiler.
+        # -all-static also embeds compiler/pthread runtimes; retain Unicode argv.
+        make += ['UTILITIES_LDFLAGS_EXTRA=-municode -all-static']
+    run(make, cwd=source, env=env, log=logs / 'imagemagick-build.log')
     OUT.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='.image-backend-', dir=OUT.parent) as temporary:
         output = Path(temporary)
