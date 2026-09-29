@@ -2,6 +2,7 @@ mod image_backend;
 mod image_format;
 mod inputs;
 mod jobs;
+mod tiff;
 use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

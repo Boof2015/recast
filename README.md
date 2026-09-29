@@ -2,7 +2,11 @@
 
 A local file converter, built with Tauri 2, React, TypeScript, and Rust.
 
-Recast converts **still PNG, JPEG, WebP, and BMP in all directions**, including same-format conversion. Settings follow the output: JPEG has quality, WebP has quality/lossless, PNG is always lossless, and BMP writes uncompressed 24-bit files. JPEG and BMP fill transparency with a shared background color, white by default, selected through Recast's built-in picker. All four support resizing; PNG/JPEG/WebP offer metadata retention, while BMP output omits profiles and other metadata after color normalization. Batches preserve originals and existing outputs, report per-file results, support cancellation, and retry unfinished files. Animated PNG/WebP and multi-image BMPs are rejected. BMP wrappers containing embedded PNG/JPEG are not yet supported. More image formats, audio, and video are later milestones.
+Recast converts **still PNG, JPEG, WebP, BMP, and single-page TIFF in all directions**, including same-format conversion. Settings follow the output: JPEG has quality, WebP has quality/lossless, PNG and TIFF use lossless compression, and BMP writes uncompressed 24-bit files. JPEG and BMP fill transparency with a shared background color, white by default, selected through Recast's built-in picker. All five support resizing; BMP omits metadata after color normalization, while the other targets offer retention of supported metadata.
+
+TIFF accepts classic TIFF and BigTIFF, either byte order, with unsigned samples up to 16 bits. Output is ordinary single-page TIFF with Deflate compression and preserved transparency. Resize and Keep metadata are its only settings; XMP/IPTC, color profiles, and common TIFF tags can be retained, but camera EXIF is not fully carried over. Multipage/layered TIFF, raw camera containers, floating-point samples, and unsupported compression receive an explicit explanation.
+
+Batches preserve originals and existing outputs, report per-file results, support cancellation, and retry unfinished files. Animated PNG/WebP, multi-image BMPs, and BMP wrappers containing embedded PNG/JPEG are rejected. More image formats, audio, and video are later milestones.
 
 ## Development
 
@@ -14,7 +18,7 @@ npm run backend:prepare
 npm run desktop
 ```
 
-Choose or drop PNG/JPEG/WebP/BMP files, select an output, adjust the group settings, and convert. Outputs go beside their sources by default; a different folder can be selected. Existing names, including the original during same-format conversion, get a numbered alternative. JPEG outputs use `.jpg`. Click a completed output to reveal it in its folder.
+Choose or drop PNG/JPEG/WebP/BMP/TIFF files, select an output, adjust the group settings, and convert. Outputs go beside their sources by default; a different folder can be selected. Existing names, including the original during same-format conversion, get a numbered alternative. JPEG outputs use `.jpg`; TIFF outputs use `.tiff` (both `.tif` and `.tiff` inputs are recognized by content). Click a completed output to reveal it in its folder.
 
 For the development-only sample UI:
 

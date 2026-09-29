@@ -107,11 +107,19 @@ impl ImageBackend {
         })?;
         let text = String::from_utf8_lossy(&result.stdout);
         if !result.status.success()
-            || !["ImageMagick 7.1.2-32", "jpeg", "png", "webp", "lcms"]
-                .iter()
-                .all(|value| text.contains(value))
+            || ![
+                "ImageMagick 7.1.2-32",
+                "jpeg",
+                "png",
+                "webp",
+                "lcms",
+                "tiff",
+                "xml",
+            ]
+            .iter()
+            .all(|value| text.contains(value))
         {
-            return Err("The bundled image converter does not have the expected PNG, JPEG, WebP, and color support.".into());
+            return Err("The bundled image converter does not have the expected PNG, JPEG, WebP, TIFF, and color support.".into());
         }
         if !self.root.join("sRGB.icc").is_file() {
             return Err("The bundled color profile is missing.".into());
@@ -182,7 +190,7 @@ impl ImageBackend {
             .current_dir(work.path())
             .env("MAGICK_TEMPORARY_PATH", work.path());
         // ImageMagick's list-length limit is exclusive: 2 allows one image.
-        // This rejects BMP sequences even if a misleading header passed the
+        // This rejects image sequences even if a misleading header passed the
         // lightweight inspection. Never encode or silently flatten a sequence.
         command
             .args(["-limit", "list-length", "2"])
@@ -241,6 +249,41 @@ impl ImageBackend {
                 // PNG is always lossless. Do not inherit a JPEG/WebP quality
                 // value or an input's compression settings as PNG encoder knobs.
                 command.args(["-define", "png:compression-level=6"]);
+            }
+            ImageFormat::Tiff => {
+                if options.metadata {
+                    // The TIFF reader exposes these as properties, while its
+                    // writer accepts artifacts. Explicitly bridge the two.
+                    for tag in [
+                        "document",
+                        "hostcomputer",
+                        "artist",
+                        "timestamp",
+                        "make",
+                        "model",
+                        "software",
+                        "copyright",
+                    ] {
+                        command.args([
+                            "-set",
+                            &format!("artifact:tiff:{tag}"),
+                            &format!("%[tiff:{tag}]"),
+                        ]);
+                    }
+                }
+                // Lossless Deflate, straight alpha (including invisible RGB),
+                // and ordinary single-page TIFF. Keep the source's 8/16-bit
+                // precision; do not inherit lossy quality/compression choices.
+                command.args([
+                    "-compress",
+                    "Zip",
+                    "-quality",
+                    "60",
+                    "-define",
+                    "tiff:alpha=unassociated",
+                    "-define",
+                    "tiff:rows-per-strip=64",
+                ]);
             }
             ImageFormat::Bmp => {
                 // Predictable, widely readable V3 output: opaque 24-bit RGB,

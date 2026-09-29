@@ -48,8 +48,16 @@ pub fn inspect(path: &Path) -> Result<InputFile, String> {
     if header[..read].starts_with(b"BA") {
         return Err("BMP bitmap arrays are not supported. Choose a single-image BMP.".into());
     }
-    let detected = infer::get(&header[..read]).ok_or("This file type is not recognized yet.")?;
-    let kind = match detected.mime_type().split('/').next() {
+    let is_tiff = crate::tiff::has_signature(&header[..read]);
+    let detected = infer::get(&header[..read]);
+    // infer only recognizes classic TIFF; inspect BigTIFF by its full signature.
+    let (mime, extension) = if is_tiff {
+        ("image/tiff", "tiff")
+    } else {
+        let detected = detected.ok_or("This file type is not recognized yet.")?;
+        (detected.mime_type(), detected.extension())
+    };
+    let kind = match mime.split('/').next() {
         Some("image") => "images",
         Some("audio") => "audio",
         Some("video") => "video",
@@ -59,13 +67,14 @@ pub fn inspect(path: &Path) -> Result<InputFile, String> {
         .canonicalize()
         .map_err(|_| "This file is no longer available.")?;
     let path_string = canonical.to_string_lossy().into_owned();
-    let conversion_issue = match detected.extension() {
+    let conversion_issue = match extension {
         "jpg" => None,
         "png" => png_conversion_issue(&mut file),
         "webp" => webp_conversion_issue(&mut file),
         "bmp" => bmp_conversion_issue(&mut file),
+        "tiff" => crate::tiff::inspect(&mut file).err(),
         _ => Some(
-            "This build converts still PNG, JPEG, WebP, and BMP images. This file is not supported yet."
+            "This build converts still PNG, JPEG, WebP, BMP, and single-page TIFF images. This file is not supported yet."
                 .into(),
         ),
     };
@@ -86,7 +95,7 @@ pub fn inspect(path: &Path) -> Result<InputFile, String> {
             .into_owned(),
         path: path_string,
         kind: kind.into(),
-        format: match detected.extension() {
+        format: match extension {
             "jpg" => "JPEG".into(),
             "webp" => "WebP".into(),
             extension => extension.to_uppercase(),

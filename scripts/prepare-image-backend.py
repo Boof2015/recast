@@ -152,7 +152,7 @@ def main():
     env.update(CC=cc, CXX=cxx, CFLAGS=flags, CXXFLAGS=flags,
                CPPFLAGS=f'-I{shlex.quote(str(stage / "include"))}', LDFLAGS=linker,
                PKG_CONFIG='pkg-config --static', PKG_CONFIG_PATH='', PKG_CONFIG_LIBDIR=str(stage / 'lib/pkgconfig'))
-    for key in ['JPEG', 'PNG', 'WEBP', 'WEBPMUX', 'LCMS2', 'ZLIB']:
+    for key in ['JPEG', 'PNG', 'WEBP', 'WEBPMUX', 'LCMS2', 'ZLIB', 'TIFF', 'XML']:
         env.pop(f'{key}_CFLAGS', None)
         env.pop(f'{key}_LIBS', None)
     options = {
@@ -161,6 +161,12 @@ def main():
         'libpng': ['PNG_SHARED=OFF', 'PNG_STATIC=ON', 'PNG_FRAMEWORK=OFF', 'PNG_TESTS=OFF', 'PNG_TOOLS=OFF', f'ZLIB_ROOT={stage}'],
         'webp': ['BUILD_SHARED_LIBS=OFF', 'WEBP_LINK_STATIC=ON', 'WEBP_BUILD_LIBWEBPMUX=ON'] + [f'WEBP_BUILD_{name}=OFF' for name in ['ANIM_UTILS', 'CWEBP', 'DWEBP', 'GIF2WEBP', 'IMG2WEBP', 'VWEBP', 'WEBPINFO', 'WEBPMUX', 'EXTRAS']],
         'little-cms2': ['BUILD_SHARED_LIBS=OFF', 'LCMS2_BUILD_SHARED=OFF', 'LCMS2_BUILD_TOOLS=OFF', 'LCMS2_BUILD_TESTS=OFF'],
+        # ImageMagick drops XMP profiles entirely without XML support. Build the
+        # parser/serializer locally; no external encoding libraries or modules.
+        'libxml2': ['BUILD_SHARED_LIBS=OFF'] + [f'LIBXML2_WITH_{feature}=OFF' for feature in ['CATALOG', 'DEBUG', 'DOCS', 'HTML', 'HTTP', 'ICONV', 'ICU', 'LEGACY', 'MODULES', 'PROGRAMS', 'PYTHON', 'READLINE', 'TESTS', 'ZLIB', 'XINCLUDE', 'VALID']],
+        # Bind TIFF to our pinned JPEG/zlib archives on every platform. Optional
+        # codecs must not pick up unrelated libraries from the build machine.
+        'libtiff': ['BUILD_SHARED_LIBS=OFF', 'tiff-static=ON', 'tiff-tools=OFF', 'tiff-tests=OFF', 'tiff-contrib=OFF', 'tiff-docs=OFF', 'tiff-install=ON', 'tiff-cxx=OFF', 'jpeg=ON', 'jpeg-prefer-standard=ON', 'old-jpeg=OFF', 'zlib=ON', f'JPEG_LIBRARY={stage / "lib/libjpeg.a"}', f'JPEG_INCLUDE_DIR={stage / "include"}', f'ZLIB_LIBRARY={stage / "lib/libz.a"}', f'ZLIB_INCLUDE_DIR={stage / "include"}'] + [f'{codec}=OFF' for codec in ['jbig', 'lerc', 'lzma', 'zstd', 'webp', 'libdeflate', 'pixarlog', 'logluv']],
     }
     cmake_common = [f'-DCMAKE_INSTALL_PREFIX={stage}', '-DCMAKE_INSTALL_LIBDIR=lib', '-DCMAKE_BUILD_TYPE=Release', '-DCMAKE_POSITION_INDEPENDENT_CODE=ON', '-DCMAKE_FIND_FRAMEWORK=NEVER', '-DCMAKE_FIND_USE_PACKAGE_REGISTRY=OFF', f'-DCMAKE_PREFIX_PATH={stage}']
     if system == 'darwin':
@@ -194,8 +200,8 @@ def main():
     policy = (ROOT / 'scripts/image-policy.xml').read_text()
     private = source / 'MagickCore/policy-private.h'
     private.write_text(re.sub(r'\*ZeroConfigurationPolicy\s*=.*?;', lambda _: '*ZeroConfigurationPolicy = ' + json.dumps(policy) + ';', private.read_text(), flags=re.S))
-    configure = [f'--prefix={stage}', '--disable-shared', '--enable-static', '--enable-zero-configuration', '--disable-installed', '--disable-hdri', '--disable-openmp', '--disable-opencl', '--disable-docs', '--disable-dpc', '--disable-cipher', '--without-modules', '--without-magick-plus-plus', '--without-perl', '--with-quantum-depth=16', '--with-security-policy=open', '--with-jpeg=yes', '--with-png=yes', '--with-webp=yes', '--with-lcms=yes']
-    configure += [f'--without-{name}' for name in ['x', 'bzlib', 'zip', 'zstd', 'autotrace', 'dps', 'fftw', 'flif', 'fpx', 'djvu', 'fontconfig', 'freetype', 'raqm', 'gdi32', 'gslib', 'gvc', 'dmr', 'heic', 'jbig', 'jxl', 'openjp2', 'lqr', 'lzma', 'openexr', 'pango', 'raw', 'rsvg', 'tiff', 'uhdr', 'wmf', 'xml']]
+    configure = [f'--prefix={stage}', '--disable-shared', '--enable-static', '--enable-zero-configuration', '--disable-installed', '--disable-hdri', '--disable-openmp', '--disable-opencl', '--disable-docs', '--disable-dpc', '--disable-cipher', '--without-modules', '--without-magick-plus-plus', '--without-perl', '--with-quantum-depth=16', '--with-security-policy=open', '--with-jpeg=yes', '--with-png=yes', '--with-webp=yes', '--with-lcms=yes', '--with-tiff=yes', '--with-xml=yes']
+    configure += [f'--without-{name}' for name in ['x', 'bzlib', 'zip', 'zstd', 'autotrace', 'dps', 'fftw', 'flif', 'fpx', 'djvu', 'fontconfig', 'freetype', 'raqm', 'gdi32', 'gslib', 'gvc', 'dmr', 'heic', 'jbig', 'jxl', 'openjp2', 'lqr', 'lzma', 'openexr', 'pango', 'raw', 'rsvg', 'uhdr', 'wmf']]
     if system == 'windows':
         configure += ['--host=x86_64-w64-mingw32']
     if system == 'darwin' and arch != host_arch:
@@ -231,7 +237,7 @@ def main():
         version = None
         if arch == host_arch:
             version = subprocess.check_output([str(worker), '-version'], env=env, text=True)
-            if not all(value in version for value in [f'ImageMagick {LOCK["source"]["version"]}', 'Zero-configuration', 'jpeg', 'png', 'webp', 'lcms']):
+            if not all(value in version for value in [f'ImageMagick {LOCK["source"]["version"]}', 'Zero-configuration', 'jpeg', 'png', 'webp', 'lcms', 'tiff', 'xml']):
                 raise SystemExit(f'Required image capabilities missing:\n{version}')
         manifest = {'system': system, 'architecture': arch, 'recipeFingerprint': fingerprint, 'source': LOCK['source'], 'dependencies': LOCK['dependencies'], 'version': version, 'binarySha256': sha(worker), 'profileSha256': sha(profile), **audited}
         (output / 'build-manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')

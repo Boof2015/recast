@@ -41,7 +41,7 @@ const imageDestinations: Destination[] = [
   { id: 'jpeg', label: 'JPEG', description: 'Everyday photos', category: 'Image' },
   { id: 'png', label: 'PNG', description: 'Lossless & transparent', category: 'Image' },
   { id: 'avif', label: 'AVIF', description: 'Smaller photo files', category: 'Image' },
-  { id: 'tiff', label: 'TIFF', description: 'High-quality originals', category: 'Image' },
+  { id: 'tiff', label: 'TIFF', description: 'Lossless, single-page images', category: 'Image' },
   { id: 'gif', label: 'GIF', description: 'Limited-color images', category: 'Image' },
   { id: 'bmp', label: 'BMP', description: 'Uncompressed images', category: 'Image' },
 ];

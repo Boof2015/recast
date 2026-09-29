@@ -29,4 +29,21 @@ The BMP fixtures were assembled from their headers and pixel rows in Python, ind
 
 BMP tests independently inspect exported 24-bit pixel bytes, padding, and header layout. They create odd-width, truncated, malformed-header, embedded-image-wrapper, bitmap-array, and concatenated/forged-size variants in temporary directories.
 
+The TIFF fixtures are assembled independently by `python3 src-tauri/tests/fixtures/generate_tiff.py`, using the same RGB pattern as BMP. The script uses only Python's standard library:
+
+- `rgb-le.tiff`, `rgb-be.tiff`: classic TIFF in both byte orders.
+- `bigtiff-le.tiff`, `bigtiff-be.tiff`: the same pixels using BigTIFF directories and 64-bit offsets.
+- `rgba.tiff`: straight 8-bit alpha cycling through 0/128/255 by column, including nonzero hidden RGB.
+- `associated.tiff`: premultiplied version of that pattern; decoding involves 8-bit rounding.
+- `gray16.tiff`: unsigned 16-bit grayscale, `(1901x + 97y) mod 65536`; values intentionally differ from an 8-bit ramp.
+- `rgba16.tiff`: unsigned 16-bit RGBA, `(1901x, 3101y, 997(x+y))`, alpha 0/32768/65535; tests inspect actual exported sample bytes, including hidden RGB.
+- `planar.tiff`, `tiled.tiff`: separate RGB planes and 16×16 tiles, including partially used edge tiles.
+- `deflate.tiff`, `packbits.tiff`: independently encoded lossless compressed strips (Python zlib and literal PackBits runs).
+- `palette.tiff`: the indexed pattern and palette used by BMP.
+- `rotated.tiff`: orientation 6, description/artist, synthetic XMP and IPTC metadata.
+- `profiled.tiff`: the synthetic linear RGB ICC profile from `linear-rgb.png`.
+- `multipage.tiff`: two valid image directories sharing the pixel payload.
+
+TIFF tests also create LZW/JPEG/Group4 sources with the bundled worker, verify the actual compression tags, and convert them through Recast. Malformed directory counts, offsets, truncated pixels, corrupt Deflate, unsupported compression/samples, and subimage/layer/raw markers are exercised in temporary files. XMP retention/stripping is checked across PNG/JPEG/WebP/TIFF.
+
 The tests create corrupt and animated-PNG-marker variants in temporary directories. Existing outputs, output naming conflicts, and cancellation files are also isolated to temporary directories.

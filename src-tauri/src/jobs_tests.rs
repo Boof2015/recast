@@ -85,6 +85,17 @@ fn converts_every_still_image_pair_and_same_format_without_overwriting() {
         ("rgb565.bmp", "bmp"),
         ("profiled.bmp", "bmp"),
         ("core.bmp", "bmp"),
+        ("rgb-le.tiff", "tiff"),
+        ("rgb-be.tiff", "tiff"),
+        ("rgba.tiff", "tiff"),
+        ("bigtiff-le.tiff", "tiff"),
+        ("bigtiff-be.tiff", "tiff"),
+        ("deflate.tiff", "tiff"),
+        ("packbits.tiff", "tiff"),
+        ("tiled.tiff", "tiff"),
+        ("planar.tiff", "tiff"),
+        ("palette.tiff", "tiff"),
+        ("gray16.tiff", "tiff"),
     ] {
         for target in crate::image_format::ImageFormat::ALL {
             let dir = tempfile::tempdir().unwrap();
@@ -96,7 +107,7 @@ fn converts_every_still_image_pair_and_same_format_without_overwriting() {
             let json = serde_json::to_value(input).unwrap();
             assert_eq!(
                 json["targets"],
-                serde_json::json!(["webp", "jpeg", "png", "bmp"])
+                serde_json::json!(["webp", "jpeg", "png", "bmp", "tiff"])
             );
             let output = backend()
                 .convert(&source, None, &settings, &AtomicBool::new(false))
@@ -286,10 +297,16 @@ fn jpeg_quality_is_independent_of_hidden_webp_lossless_setting() {
 fn mixed_image_batch_creates_one_output_per_input_for_each_target() {
     for target in crate::image_format::ImageFormat::ALL {
         let dir = tempfile::tempdir().unwrap();
-        let sources: Vec<_> = ["rgba.png", "photo.jpg", "rgba.webp", "rgb.bmp"]
-            .into_iter()
-            .map(|name| copy(name, &dir.path().join(name)))
-            .collect();
+        let sources: Vec<_> = [
+            "rgba.png",
+            "photo.jpg",
+            "rgba.webp",
+            "rgb.bmp",
+            "rgb-le.tiff",
+        ]
+        .into_iter()
+        .map(|name| copy(name, &dir.path().join(name)))
+        .collect();
         let manager = JobManager::default();
         let mut request = request(&sources, dir.path());
         request.options.target = target.id().into();
@@ -336,7 +353,9 @@ fn all_formats_resize_after_orientation_and_handle_metadata() {
                 assert!(profiles.is_empty());
             } else {
                 assert!(
-                    profiles.contains("exif") && profiles.contains("icc"),
+                    profiles.contains("icc")
+                        && (target == crate::image_format::ImageFormat::Tiff
+                            || profiles.contains("exif")),
                     "{name} -> {target:?}: {profiles}"
                 );
             }
@@ -407,6 +426,7 @@ fn verifies_output_container_and_terminator_before_publication() {
         (crate::image_format::ImageFormat::Jpeg, "photo.jpg"),
         (crate::image_format::ImageFormat::WebP, "rgba.webp"),
         (crate::image_format::ImageFormat::Bmp, "rgb.bmp"),
+        (crate::image_format::ImageFormat::Tiff, "rgb-le.tiff"),
     ] {
         assert!(format.validate_output(&fixture(name)).is_ok());
         let path = dir.path().join(name);
@@ -425,6 +445,9 @@ fn verifies_output_container_and_terminator_before_publication() {
 
 #[path = "bmp_tests.rs"]
 mod bmp;
+
+#[path = "tiff_tests.rs"]
+mod tiff;
 
 #[test]
 fn converts_png_and_jpeg_preserving_sources_and_existing_outputs() {
