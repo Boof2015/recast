@@ -53,6 +53,8 @@ pub fn inspect(path: &Path) -> Result<InputFile, String> {
     // infer only recognizes classic TIFF; inspect BigTIFF by its full signature.
     let (mime, extension) = if is_tiff {
         ("image/tiff", "tiff")
+    } else if crate::avif::has_signature(&header[..read]) {
+        ("image/avif", "avif")
     } else {
         let detected = detected.ok_or("This file type is not recognized yet.")?;
         (detected.mime_type(), detected.extension())
@@ -73,8 +75,9 @@ pub fn inspect(path: &Path) -> Result<InputFile, String> {
         "webp" => webp_conversion_issue(&mut file),
         "bmp" => bmp_conversion_issue(&mut file),
         "tiff" => crate::tiff::inspect(&mut file).err(),
+        "avif" => crate::avif::inspect(&mut file).err(),
         _ => Some(
-            "This build converts still PNG, JPEG, WebP, BMP, and single-page TIFF images. This file is not supported yet."
+            "This build converts still PNG, JPEG, WebP, BMP, TIFF, and AVIF images. This file is not supported yet."
                 .into(),
         ),
     };

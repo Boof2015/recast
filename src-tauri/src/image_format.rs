@@ -11,16 +11,24 @@ pub enum ImageFormat {
     Png,
     Bmp,
     Tiff,
+    Avif,
 }
 
 impl ImageFormat {
-    pub const ALL: [Self; 5] = [Self::WebP, Self::Jpeg, Self::Png, Self::Bmp, Self::Tiff];
+    pub const ALL: [Self; 6] = [
+        Self::WebP,
+        Self::Jpeg,
+        Self::Png,
+        Self::Bmp,
+        Self::Tiff,
+        Self::Avif,
+    ];
 
     pub fn from_id(id: &str) -> Result<Self, String> {
         Self::ALL
             .into_iter()
             .find(|format| format.id() == id)
-            .ok_or_else(|| "Choose PNG, JPEG, WebP, BMP, or TIFF for the output.".into())
+            .ok_or_else(|| "Choose PNG, JPEG, WebP, BMP, TIFF, or AVIF for the output.".into())
     }
 
     pub fn id(self) -> &'static str {
@@ -30,6 +38,7 @@ impl ImageFormat {
             Self::Png => "png",
             Self::Bmp => "bmp",
             Self::Tiff => "tiff",
+            Self::Avif => "avif",
         }
     }
 
@@ -47,6 +56,7 @@ impl ImageFormat {
             Self::Png => "PNG",
             Self::Bmp => "BMP",
             Self::Tiff => "TIFF",
+            Self::Avif => "AVIF",
         }
     }
 
@@ -60,6 +70,7 @@ impl ImageFormat {
             file.read_exact(&mut header)?;
             let valid = match self {
                 Self::Tiff => crate::tiff::inspect(&mut file).is_ok(),
+                Self::Avif => crate::avif::inspect(&mut file).is_ok(),
                 Self::WebP => {
                     bytes > 20
                         && &header[..4] == b"RIFF"

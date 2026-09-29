@@ -121,6 +121,61 @@ def cmake_arguments(stage, system, arch):
     return arguments
 
 
+def configure_avif_encoder(source):
+    # The pinned ImageMagick writer exposes speed/chroma, but not lossless,
+    # alpha quality or thread count. Keep Recast's explicit lossless setting
+    # independent of quality=100 and preserve alpha even in lossy color mode.
+    path = source / 'coders/heic.c'
+    original = '''    /*
+      Get encoder for the specified format.
+    */'''
+    replacement = '''    /* Recast AVIF encoder controls (pinned-source adaptation). */
+    option=GetImageOption(image_info,"heic:lossless");
+    if ((encode_avif != MagickFalse) && (option != (const char *) NULL))
+      lossless=IsStringTrue(option);
+    /*
+      Get encoder for the specified format.
+    */'''
+    controls_at = '''    option=GetImageOption(image_info,"heic:speed");'''
+    controls = '''    if (encode_avif != MagickFalse)
+      {
+        error=heif_encoder_set_parameter_integer(heif_encoder,"threads",2);
+        if (IsHEIFSuccess(image,&error,exception) == MagickFalse)
+          break;
+        error=heif_encoder_set_parameter_boolean(heif_encoder,"lossless-alpha",1);
+        if (IsHEIFSuccess(image,&error,exception) == MagickFalse)
+          break;
+      }
+''' + controls_at
+    text = path.read_text()
+    if replacement in text:
+        return
+    if text.count(original) != 1 or text.count(controls_at) != 1:
+        raise SystemExit('Pinned ImageMagick AVIF adaptation no longer matches its source.')
+    text = text.replace(original, replacement).replace(controls_at, controls)
+    # The pinned still-image reader/writer uses bit shifts for 10/12-bit
+    # samples. That maps maximum alpha to <1 and fails exact sample round trips.
+    # Normalize by the full sample range instead, with rounding on both sides.
+    start = text.index('static MagickBooleanType ReadHEICImageHandle(')
+    end = text.index('static MagickBooleanType ReadHEICSequenceFrames(', start)
+    reader = text[start:end]
+    if reader.count(' << shift;') != 4 or reader.count('ScaleShortToQuantum(pixel)') != 4:
+        raise SystemExit('Pinned AVIF high-depth reader no longer matches its source.')
+    reader = reader.replace('    shift,\n', '').replace('  shift=(int) (16-image->depth);\n', '')
+    reader = reader.replace(' << shift;', ';').replace('ScaleShortToQuantum(pixel)', 'ScaleAnyToQuantum(pixel,((QuantumAny) 1 << image->depth)-1)')
+    text = text[:start] + reader + text[end:]
+    start = text.index('static MagickBooleanType WriteHEICImageRRGGBBAA(')
+    end = text.index('static MagickBooleanType WriteHEICSequenceImage(', start)
+    writer = text[start:end]
+    writer = writer.replace('    shift,\n', '').replace('  shift=(int) (16-depth);\n', '')
+    for channel in ['Red', 'Green', 'Blue', 'Alpha']:
+        original = f'ScaleQuantumToShort(GetPixel{channel}(image,p)) >> shift'
+        if writer.count(original) != 1:
+            raise SystemExit('Pinned AVIF high-depth writer no longer matches its source.')
+        writer = writer.replace(original, f'(int) (((unsigned long) ScaleQuantumToShort(GetPixel{channel}(image,p))*((1UL << depth)-1)+32767)/65535)')
+    path.write_text(text[:start] + writer + text[end:])
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--arch', choices=['arm64', 'x86_64'], help='macOS target architecture; other systems build natively')
@@ -165,7 +220,7 @@ def main():
     env.update(CC=cc, CXX=cxx, CFLAGS=flags, CXXFLAGS=flags,
                CPPFLAGS=f'-I{shlex.quote(str(stage / "include"))}', LDFLAGS=linker,
                PKG_CONFIG='pkg-config --static', PKG_CONFIG_PATH='', PKG_CONFIG_LIBDIR=str(stage / 'lib/pkgconfig'))
-    for key in ['JPEG', 'PNG', 'WEBP', 'WEBPMUX', 'LCMS2', 'ZLIB', 'TIFF', 'XML']:
+    for key in ['JPEG', 'PNG', 'WEBP', 'WEBPMUX', 'LCMS2', 'ZLIB', 'TIFF', 'XML', 'HEIF', 'AOM']:
         env.pop(f'{key}_CFLAGS', None)
         env.pop(f'{key}_LIBS', None)
     options = {
@@ -174,6 +229,10 @@ def main():
         'libpng': ['PNG_SHARED=OFF', 'PNG_STATIC=ON', 'PNG_FRAMEWORK=OFF', 'PNG_TESTS=OFF', 'PNG_TOOLS=OFF', f'ZLIB_ROOT={stage}'],
         'webp': ['BUILD_SHARED_LIBS=OFF', 'WEBP_LINK_STATIC=ON', 'WEBP_BUILD_LIBWEBPMUX=ON'] + [f'WEBP_BUILD_{name}=OFF' for name in ['ANIM_UTILS', 'CWEBP', 'DWEBP', 'GIF2WEBP', 'IMG2WEBP', 'VWEBP', 'WEBPINFO', 'WEBPMUX', 'EXTRAS']],
         'little-cms2': ['BUILD_SHARED_LIBS=OFF', 'LCMS2_BUILD_SHARED=OFF', 'LCMS2_BUILD_TOOLS=OFF', 'LCMS2_BUILD_TESTS=OFF'],
+        'aom': ['BUILD_SHARED_LIBS=OFF', 'ENABLE_TESTS=OFF', 'ENABLE_TOOLS=OFF', 'ENABLE_EXAMPLES=OFF', 'ENABLE_DOCS=OFF', 'CONFIG_AV1_HIGHBITDEPTH=1', f'AOM_TARGET_CPU={arch}'],
+        'libheif': ['BUILD_SHARED_LIBS=OFF', 'ENABLE_PLUGIN_LOADING=OFF', 'WITH_AOM_DECODER=ON', 'WITH_AOM_ENCODER=ON', 'WITH_AOM_DECODER_PLUGIN=OFF', 'WITH_AOM_ENCODER_PLUGIN=OFF', f'AOM_LIBRARY={stage / "lib/libaom.a"}', f'AOM_INCLUDE_DIR={stage / "include"}', 'ENABLE_PARALLEL_TILE_DECODING=OFF'] + [f'{option}=OFF' for option in [
+            'WITH_LIBDE265', 'WITH_X265', 'WITH_X264', 'WITH_OpenH264_DECODER', 'WITH_OpenH264_ENCODER', 'WITH_KVAZAAR', 'WITH_UVG266', 'WITH_VVDEC', 'WITH_VVENC', 'WITH_DAV1D', 'WITH_SvtEnc', 'WITH_RAV1E', 'WITH_JPEG_DECODER', 'WITH_JPEG_ENCODER', 'WITH_OpenJPEG_ENCODER', 'WITH_OpenJPEG_DECODER', 'WITH_FFMPEG_DECODER', 'WITH_OPENJPH_ENCODER', 'WITH_UNCOMPRESSED_CODEC', 'WITH_WEBCODECS', 'WITH_LIBSHARPYUV', 'WITH_HEADER_COMPRESSION', 'WITH_EXAMPLES', 'WITH_GDK_PIXBUF', 'BUILD_TESTING', 'BUILD_DOCUMENTATION', 'BUILD_DEVELOPMENT_TOOLS', 'WITH_FUZZERS',
+        ]],
         # ImageMagick drops XMP profiles entirely without XML support. Build the
         # parser/serializer locally; no external encoding libraries or modules.
         'libxml2': ['BUILD_SHARED_LIBS=OFF'] + [f'LIBXML2_WITH_{feature}=OFF' for feature in ['CATALOG', 'DEBUG', 'DOCS', 'HTML', 'HTTP', 'ICONV', 'ICU', 'LEGACY', 'MODULES', 'PROGRAMS', 'PYTHON', 'READLINE', 'TESTS', 'ZLIB', 'XINCLUDE', 'VALID']],
@@ -207,11 +266,13 @@ def main():
     if unexpected:
         raise SystemExit(f'Delegates must be static: {unexpected}')
     source = extract(LOCK['source'], work / 'sources/ImageMagick')
+    configure_avif_encoder(source)
     policy = (ROOT / 'scripts/image-policy.xml').read_text()
     private = source / 'MagickCore/policy-private.h'
     private.write_text(re.sub(r'\*ZeroConfigurationPolicy\s*=.*?;', lambda _: '*ZeroConfigurationPolicy = ' + json.dumps(policy) + ';', private.read_text(), flags=re.S))
     configure = [f'--prefix={stage}', '--disable-shared', '--enable-static', '--enable-zero-configuration', '--disable-installed', '--disable-hdri', '--disable-openmp', '--disable-opencl', '--disable-docs', '--disable-dpc', '--disable-cipher', '--without-modules', '--without-magick-plus-plus', '--without-perl', '--with-quantum-depth=16', '--with-security-policy=open', '--with-jpeg=yes', '--with-png=yes', '--with-webp=yes', '--with-lcms=yes', '--with-tiff=yes', '--with-xml=yes']
-    configure += [f'--without-{name}' for name in ['x', 'bzlib', 'zip', 'zstd', 'autotrace', 'dps', 'fftw', 'flif', 'fpx', 'djvu', 'fontconfig', 'freetype', 'raqm', 'gdi32', 'gslib', 'gvc', 'dmr', 'heic', 'jbig', 'jxl', 'openjp2', 'lqr', 'lzma', 'openexr', 'pango', 'raw', 'rsvg', 'uhdr', 'wmf']]
+    configure += ['--with-heic=yes']
+    configure += [f'--without-{name}' for name in ['x', 'bzlib', 'zip', 'zstd', 'autotrace', 'dps', 'fftw', 'flif', 'fpx', 'djvu', 'fontconfig', 'freetype', 'raqm', 'gdi32', 'gslib', 'gvc', 'dmr', 'jbig', 'jxl', 'openjp2', 'lqr', 'lzma', 'openexr', 'pango', 'raw', 'rsvg', 'uhdr', 'wmf']]
     if system == 'windows':
         configure += ['--host=x86_64-w64-mingw32']
     if system == 'darwin' and arch != host_arch:
@@ -247,7 +308,7 @@ def main():
         version = None
         if arch == host_arch:
             version = subprocess.check_output([str(worker), '-version'], env=env, text=True)
-            if not all(value in version for value in [f'ImageMagick {LOCK["source"]["version"]}', 'Zero-configuration', 'jpeg', 'png', 'webp', 'lcms', 'tiff', 'xml']):
+            if not all(value in version for value in [f'ImageMagick {LOCK["source"]["version"]}', 'Zero-configuration', 'jpeg', 'png', 'webp', 'lcms', 'tiff', 'xml', 'heic']):
                 raise SystemExit(f'Required image capabilities missing:\n{version}')
         manifest = {'system': system, 'architecture': arch, 'recipeFingerprint': fingerprint, 'source': LOCK['source'], 'dependencies': LOCK['dependencies'], 'version': version, 'binarySha256': sha(worker), 'profileSha256': sha(profile), **audited}
         (output / 'build-manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')

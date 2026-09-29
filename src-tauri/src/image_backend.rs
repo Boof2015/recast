@@ -115,11 +115,12 @@ impl ImageBackend {
                 "lcms",
                 "tiff",
                 "xml",
+                "heic",
             ]
             .iter()
             .all(|value| text.contains(value))
         {
-            return Err("The bundled image converter does not have the expected PNG, JPEG, WebP, TIFF, and color support.".into());
+            return Err("The bundled image converter does not have the expected PNG, JPEG, WebP, TIFF, AVIF, and color support.".into());
         }
         if !self.root.join("sRGB.icc").is_file() {
             return Err("The bundled color profile is missing.".into());
@@ -222,6 +223,34 @@ impl ImageBackend {
             command.arg("-strip");
         }
         match format {
+            ImageFormat::Avif => {
+                // The writer selects 8/10/12-bit storage directly. A separate
+                // -depth operation would quantize the pixels before encoding.
+                command.args([
+                    "-quality",
+                    &options.quality.to_string(),
+                    "-define",
+                    if options.lossless {
+                        "heic:lossless=true"
+                    } else {
+                        "heic:lossless=false"
+                    },
+                    "-define",
+                    "heic:speed=6",
+                    "-define",
+                    "heic:chroma=444",
+                    "-define",
+                    "heic:preserve-cicp=false",
+                    "-define",
+                    "heic:preserve-clli=false",
+                    "-define",
+                    if options.lossless {
+                        "heic:cicp=1/13/0/1"
+                    } else {
+                        "heic:cicp=1/13/6/1"
+                    },
+                ]);
+            }
             ImageFormat::WebP => {
                 command.args([
                     "-quality",
@@ -251,6 +280,9 @@ impl ImageBackend {
                 command.args(["-define", "png:compression-level=6"]);
             }
             ImageFormat::Tiff => {
+                // AVIF can supply 10/12-bit pixels. Store them in a standard
+                // 16-bit TIFF channel instead of emitting unusual packed depths.
+                command.args(["-depth", "%[fx:depth<=8?8:16]"]);
                 if options.metadata {
                     // The TIFF reader exposes these as properties, while its
                     // writer accepts artifacts. Explicitly bridge the two.

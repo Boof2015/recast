@@ -96,6 +96,10 @@ fn converts_every_still_image_pair_and_same_format_without_overwriting() {
         ("planar.tiff", "tiff"),
         ("palette.tiff", "tiff"),
         ("gray16.tiff", "tiff"),
+        ("rgb.avif", "avif"),
+        ("rgba.avif", "avif"),
+        ("rgba12.avif", "avif"),
+        ("gray10.avif", "avif"),
     ] {
         for target in crate::image_format::ImageFormat::ALL {
             let dir = tempfile::tempdir().unwrap();
@@ -107,11 +111,11 @@ fn converts_every_still_image_pair_and_same_format_without_overwriting() {
             let json = serde_json::to_value(input).unwrap();
             assert_eq!(
                 json["targets"],
-                serde_json::json!(["webp", "jpeg", "png", "bmp", "tiff"])
+                serde_json::json!(["webp", "jpeg", "png", "bmp", "tiff", "avif"])
             );
             let output = backend()
                 .convert(&source, None, &settings, &AtomicBool::new(false))
-                .unwrap();
+                .unwrap_or_else(|error| panic!("{name} -> {target:?}: {error:?}"));
             let output_path = Path::new(&output.path);
             assert_eq!(output_path.extension().unwrap(), target.extension());
             assert_eq!(
@@ -303,6 +307,7 @@ fn mixed_image_batch_creates_one_output_per_input_for_each_target() {
             "rgba.webp",
             "rgb.bmp",
             "rgb-le.tiff",
+            "rgba.avif",
         ]
         .into_iter()
         .map(|name| copy(name, &dir.path().join(name)))
@@ -328,7 +333,12 @@ fn mixed_image_batch_creates_one_output_per_input_for_each_target() {
 
 #[test]
 fn all_formats_resize_after_orientation_and_handle_metadata() {
-    for name in ["metadata.png", "rotated.jpg", "rotated.webp"] {
+    for name in [
+        "metadata.png",
+        "rotated.jpg",
+        "rotated.webp",
+        "rotated.avif",
+    ] {
         for target in crate::image_format::ImageFormat::ALL {
             let dir = tempfile::tempdir().unwrap();
             let source = copy(name, &dir.path().join(name));
@@ -427,6 +437,7 @@ fn verifies_output_container_and_terminator_before_publication() {
         (crate::image_format::ImageFormat::WebP, "rgba.webp"),
         (crate::image_format::ImageFormat::Bmp, "rgb.bmp"),
         (crate::image_format::ImageFormat::Tiff, "rgb-le.tiff"),
+        (crate::image_format::ImageFormat::Avif, "rgb.avif"),
     ] {
         assert!(format.validate_output(&fixture(name)).is_ok());
         let path = dir.path().join(name);
@@ -760,3 +771,6 @@ fn active_window_rejects_another_run_but_other_windows_are_independent() {
     assert_eq!(job.snapshot().status, BatchStatus::Cancelled);
     assert!(manager.0.lock().unwrap()["two"].active());
 }
+
+#[path = "avif_tests.rs"]
+mod avif;

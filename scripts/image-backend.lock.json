@@ -57,7 +57,9 @@
       "url": "https://download.osgeo.org/libtiff/tiff-4.7.2.tar.gz",
       "archive": "tiff-4.7.2.tar.gz",
       "sha256": "672bd7d10aee4606171afb864f3570b83340f6a33e2c186dc0512f7145ffdf6a",
-      "licenses": ["LICENSE.md"]
+      "licenses": [
+        "LICENSE.md"
+      ]
     },
     {
       "name": "libxml2",
@@ -65,7 +67,9 @@
       "url": "https://download.gnome.org/sources/libxml2/2.15/libxml2-2.15.4.tar.xz",
       "archive": "libxml2-2.15.4.tar.xz",
       "sha256": "98087fd181d9070724f3fbc65c7377db03038eb92bd882374daff44940138821",
-      "licenses": ["Copyright"]
+      "licenses": [
+        "Copyright"
+      ]
     },
     {
       "name": "little-cms2",
@@ -75,6 +79,27 @@
       "sha256": "6acc3eb5fac194acc85331194133ad1d4a60419dad16b3bc225a7d27380a5b3a",
       "licenses": [
         "LICENSE"
+      ]
+    },
+    {
+      "name": "aom",
+      "version": "3.14.1",
+      "url": "https://storage.googleapis.com/aom-releases/libaom-3.14.1.tar.gz",
+      "archive": "libaom-3.14.1.tar.gz",
+      "sha256": "44bf90dbd23e734d50e70a8c41c285193922938bd0d3bc2ee56764d181d55ef5",
+      "licenses": [
+        "LICENSE",
+        "PATENTS"
+      ]
+    },
+    {
+      "name": "libheif",
+      "version": "1.23.5",
+      "url": "https://github.com/strukturag/libheif/releases/download/v1.23.5/libheif-1.23.5.tar.gz",
+      "archive": "libheif-1.23.5.tar.gz",
+      "sha256": "fd9036064c4432f0550d15072ddf34956a248279ee9aeaff0fba3fa0f77d8f1a",
+      "licenses": [
+        "COPYING"
       ]
     }
   ]

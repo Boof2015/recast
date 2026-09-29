@@ -249,7 +249,7 @@ fn tiff_lzw_jpeg_and_fax_codecs_work_with_the_bundled_libraries() {
 fn xmp_is_retained_or_stripped_across_metadata_capable_formats() {
     let dir = tempfile::tempdir().unwrap();
     let source = copy("rotated.tiff", &dir.path().join("metadata.tiff"));
-    for target in ["png", "jpeg", "webp", "tiff"] {
+    for target in ["png", "jpeg", "webp", "tiff", "avif"] {
         let mut settings = options();
         settings.target = target.into();
         let retained = convert(&source, &settings);
