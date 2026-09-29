@@ -1,7 +1,11 @@
-"""Exercise source-download integrity and platform dependency audits."""
+"""Exercise source integrity, compiler isolation and platform dependency audits."""
 import hashlib
 import importlib.util
+import os
 from pathlib import Path
+import platform
+import shlex
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -12,6 +16,43 @@ SPEC = importlib.util.spec_from_file_location(
 )
 builder = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(builder)
+
+
+class CompilerIsolationTests(unittest.TestCase):
+    def test_pinned_imported_headers_take_precedence_over_host_headers(self):
+        # Apple Clang adds -I/usr/local/include on Intel Macs. A competing
+        # regular include must not outrank our pinned imported CMake targets.
+        with tempfile.TemporaryDirectory(prefix='recast-header-test-') as temporary:
+            root = Path(temporary)
+            stage = root / 'install'
+            pinned = stage / 'include'
+            host = root / 'host-include'
+            pinned.mkdir(parents=True)
+            host.mkdir()
+            (pinned / 'codec.h').write_text('#define CODEC_ABI 62\n')
+            (host / 'codec.h').write_text('#error "Picked up the incompatible host codec header"\n')
+            (root / 'consumer.c').write_text('#include <codec.h>\n_Static_assert(CODEC_ABI == 62, "Wrong codec ABI");\n')
+            (root / 'CMakeLists.txt').write_text('''cmake_minimum_required(VERSION 3.16)
+project(HeaderIsolation C)
+add_library(PinnedCodec INTERFACE IMPORTED)
+set_target_properties(PinnedCodec PROPERTIES
+    INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_INSTALL_PREFIX}/include")
+add_library(consumer OBJECT consumer.c)
+target_link_libraries(consumer PRIVATE PinnedCodec)
+''')
+            system = 'windows' if os.environ.get('MSYSTEM') else platform.system().lower()
+            arch = {'aarch64': 'arm64', 'amd64': 'x86_64'}.get(platform.machine().lower(), platform.machine().lower())
+            env = os.environ.copy()
+            env['CC'] = '/ucrt64/bin/gcc' if system == 'windows' else 'cc'
+            env['CFLAGS'] = f'-I{shlex.quote(str(host))}'
+            build = root / 'build'
+            commands = [
+                ['cmake', '-S', str(root), '-B', str(build), *builder.cmake_arguments(stage, system, arch)],
+                ['cmake', '--build', str(build)],
+            ]
+            for command in commands:
+                result = subprocess.run(command, env=env, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
 class SourceDownloadTests(unittest.TestCase):

@@ -108,6 +108,19 @@ def audit(worker, system, arch):
     return {'dynamicLibraries': linked, 'libc': platform.libc_ver()}
 
 
+def cmake_arguments(stage, system, arch):
+    arguments = [f'-DCMAKE_INSTALL_PREFIX={stage}', '-DCMAKE_INSTALL_LIBDIR=lib', '-DCMAKE_BUILD_TYPE=Release', '-DCMAKE_POSITION_INDEPENDENT_CODE=ON', '-DCMAKE_FIND_FRAMEWORK=NEVER', '-DCMAKE_FIND_USE_PACKAGE_REGISTRY=OFF', f'-DCMAKE_PREFIX_PATH={stage}']
+    # Imported codec targets otherwise become -isystem includes. Apple Clang's
+    # implicit -I/usr/local/include then wins, mixing Homebrew headers with our
+    # static archives (e.g. JPEG ABI 80 headers with the pinned ABI 62 library).
+    arguments += ['-DCMAKE_NO_SYSTEM_FROM_IMPORTED=ON']
+    if system == 'darwin':
+        arguments += [f'-DCMAKE_OSX_DEPLOYMENT_TARGET={LOCK["minimumMacOS"]}', f'-DCMAKE_OSX_ARCHITECTURES={arch}']
+    if system == 'windows':
+        arguments += ['-G', 'MSYS Makefiles']
+    return arguments
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--arch', choices=['arm64', 'x86_64'], help='macOS target architecture; other systems build natively')
@@ -168,11 +181,8 @@ def main():
         # codecs must not pick up unrelated libraries from the build machine.
         'libtiff': ['BUILD_SHARED_LIBS=OFF', 'tiff-static=ON', 'tiff-tools=OFF', 'tiff-tests=OFF', 'tiff-contrib=OFF', 'tiff-docs=OFF', 'tiff-install=ON', 'tiff-cxx=OFF', 'jpeg=ON', 'jpeg-prefer-standard=ON', 'old-jpeg=OFF', 'zlib=ON', f'JPEG_LIBRARY={stage / "lib/libjpeg.a"}', f'JPEG_INCLUDE_DIR={stage / "include"}', f'ZLIB_LIBRARY={stage / "lib/libz.a"}', f'ZLIB_INCLUDE_DIR={stage / "include"}'] + [f'{codec}=OFF' for codec in ['jbig', 'lerc', 'lzma', 'zstd', 'webp', 'libdeflate', 'pixarlog', 'logluv']],
     }
-    cmake_common = [f'-DCMAKE_INSTALL_PREFIX={stage}', '-DCMAKE_INSTALL_LIBDIR=lib', '-DCMAKE_BUILD_TYPE=Release', '-DCMAKE_POSITION_INDEPENDENT_CODE=ON', '-DCMAKE_FIND_FRAMEWORK=NEVER', '-DCMAKE_FIND_USE_PACKAGE_REGISTRY=OFF', f'-DCMAKE_PREFIX_PATH={stage}']
-    if system == 'darwin':
-        cmake_common += [f'-DCMAKE_OSX_DEPLOYMENT_TARGET={LOCK["minimumMacOS"]}', f'-DCMAKE_OSX_ARCHITECTURES={arch}']
+    cmake_common = cmake_arguments(stage, system, arch)
     if system == 'windows':
-        cmake_common += ['-G', 'MSYS Makefiles']
         options['libpng'] += [f'ZLIB_LIBRARY={stage / "lib/libz.a"}', f'ZLIB_INCLUDE_DIR={stage / "include"}']
     sources = {}
     for dependency in LOCK['dependencies']:
