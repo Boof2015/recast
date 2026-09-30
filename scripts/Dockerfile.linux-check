@@ -1,0 +1,20 @@
+# Build Linux artifacts in a Linux filesystem; do not overwrite the Mac worker.
+FROM node:24-bookworm AS node
+FROM python:3.12-bookworm AS python
+FROM rust:1.98.1-bookworm
+RUN rustup component add rustfmt clippy
+COPY --from=python /usr/local/bin/python3.12 /usr/local/bin/python3
+COPY --from=python /usr/local/lib/python3.12 /usr/local/lib/python3.12
+COPY --from=python /usr/local/lib/libpython3.12.so.1.0 /usr/local/lib/libpython3.12.so.1.0
+COPY --from=node /usr/local/bin/node /usr/local/bin/node
+COPY --from=node /usr/local/lib/node_modules /usr/local/lib/node_modules
+RUN ldconfig && ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && \
+    ln -s /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 cmake pkg-config nasm libwebkit2gtk-4.1-dev libxdo-dev \
+    libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf \
+    xdg-utils file xvfb xauth ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+WORKDIR /work
+# The sources are supplied separately to allow this toolchain image to be cached.
+CMD ["bash", "/source/scripts/check-linux.sh"]

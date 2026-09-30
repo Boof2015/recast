@@ -1,0 +1,424 @@
+#!/usr/bin/env python3
+"""Build Recast's isolated image worker from pinned sources (macOS/Linux/MSYS2)."""
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import platform
+import re
+import shlex
+import shutil
+import subprocess
+import tarfile
+import tempfile
+import urllib.request
+
+ROOT = Path(__file__).resolve().parents[1]
+LOCK = json.loads((ROOT / 'scripts/image-backend.lock.json').read_text())
+CACHE = ROOT / '.backend-build'
+OUT = ROOT / 'src-tauri/resources/image-backend'
+JOBS = str(min(os.cpu_count() or 2, 8))
+
+
+def sha(path):
+    with path.open('rb') as stream:
+        return hashlib.file_digest(stream, 'sha256').hexdigest()
+
+
+def run(args, *, log=None, **kwargs):
+    if log:
+        with log.open('a') as output:
+            output.write('\n' + shlex.join(str(a) for a in args) + '\n')
+            output.flush()
+            try:
+                return subprocess.run(args, check=True, stdout=output, stderr=subprocess.STDOUT, **kwargs)
+            except subprocess.CalledProcessError:
+                print('\n'.join(log.read_text(errors='replace').splitlines()[-35:]), flush=True)
+                raise SystemExit(f'Build failed. Full log: {log}')
+    return subprocess.run(args, check=True, **kwargs)
+
+
+def download(source):
+    downloads = CACHE / 'downloads'
+    downloads.mkdir(parents=True, exist_ok=True)
+    archive = downloads / source['archive']
+    if not archive.exists():
+        print(f'Downloading {source["archive"]}…', flush=True)
+        with tempfile.NamedTemporaryFile(dir=downloads, delete=False) as partial:
+            partial_path = Path(partial.name)
+        try:
+            urllib.request.urlretrieve(source['url'], partial_path)
+            if sha(partial_path) != source['sha256']:
+                raise SystemExit(f'Source checksum mismatch: {source["archive"]}')
+            partial_path.replace(archive)
+        finally:
+            partial_path.unlink(missing_ok=True)
+    if sha(archive) != source['sha256']:
+        raise SystemExit(f'Source checksum mismatch: {archive}')
+    return archive
+
+
+def extract(source, destination):
+    archive = download(source)
+    if destination.exists():
+        return destination
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=destination.parent) as temporary:
+        with tarfile.open(archive) as tar:
+            tar.extractall(temporary, filter='data')
+        roots = list(Path(temporary).iterdir())
+        if len(roots) != 1 or not roots[0].is_dir():
+            raise SystemExit(f'Expected one source directory in {archive}')
+        roots[0].rename(destination)
+    return destination
+
+
+def audit(worker, system, arch):
+    if system == 'darwin':
+        linked = subprocess.check_output(['otool', '-L', str(worker)], text=True).splitlines()[1:]
+        if any(not line.strip().startswith(('/usr/lib/', '/System/Library/')) for line in linked):
+            raise SystemExit('Worker depends on a non-system library:\n' + '\n'.join(linked))
+        headers = subprocess.check_output(['otool', '-l', str(worker)], text=True)
+        minimums = re.findall(r'\bminos\s+(\S+)', headers)
+        if not minimums or any(tuple(map(int, version.split('.'))) > tuple(map(int, LOCK['minimumMacOS'].split('.'))) for version in minimums):
+            raise SystemExit(f'Worker deployment target exceeds {LOCK["minimumMacOS"]}: {minimums}')
+        actual_arch = subprocess.check_output(['lipo', '-archs', str(worker)], text=True).strip()
+        if actual_arch != arch:
+            raise SystemExit(f'Worker architecture mismatch: {actual_arch} != {arch}')
+        return {'dynamicLibraries': [line.strip() for line in linked], 'minimumMacOS': minimums[0]}
+    if system == 'windows':
+        headers = subprocess.check_output(['objdump', '-p', str(worker)], text=True)
+        linked = re.findall(r'DLL Name:\s*(\S+)', headers)
+        allowed = {'kernel32.dll', 'msvcrt.dll', 'ucrtbase.dll', 'advapi32.dll', 'bcrypt.dll', 'user32.dll', 'gdi32.dll', 'ole32.dll', 'shell32.dll', 'ws2_32.dll', 'winmm.dll', 'version.dll', 'ntdll.dll', 'secur32.dll', 'crypt32.dll', 'urlmon.dll'}
+        unexpected = [lib for lib in linked if lib.lower() not in allowed and not lib.lower().startswith(('api-ms-win-', 'ext-ms-win-'))]
+        if unexpected:
+            raise SystemExit(f'Worker requires non-system DLLs: {unexpected}')
+        return {'dynamicLibraries': linked}
+    headers = subprocess.check_output(['readelf', '-d', str(worker)], text=True)
+    linked = re.findall(r'Shared library: \[(.*?)\]', headers)
+    allowed = {'libc.so.6', 'libm.so.6', 'libpthread.so.0', 'libdl.so.2', 'librt.so.1', 'libgcc_s.so.1', 'libstdc++.so.6'}
+    # glibc's loader can also appear as a direct dependency (Ubuntu ARM64).
+    allowed.add({'arm64': 'ld-linux-aarch64.so.1', 'x86_64': 'ld-linux-x86-64.so.2'}[arch])
+    if set(linked) - allowed:
+        raise SystemExit(f'Worker requires unexpected shared libraries: {linked}')
+    resolved = subprocess.check_output(['ldd', str(worker)], text=True)
+    if 'not found' in resolved:
+        raise SystemExit(f'Missing worker dependency:\n{resolved}')
+    return {'dynamicLibraries': linked, 'libc': platform.libc_ver()}
+
+
+def cmake_arguments(stage, system, arch):
+    arguments = [f'-DCMAKE_INSTALL_PREFIX={stage}', '-DCMAKE_INSTALL_LIBDIR=lib', '-DCMAKE_BUILD_TYPE=Release', '-DCMAKE_POSITION_INDEPENDENT_CODE=ON', '-DCMAKE_FIND_FRAMEWORK=NEVER', '-DCMAKE_FIND_USE_PACKAGE_REGISTRY=OFF', f'-DCMAKE_PREFIX_PATH={stage}']
+    # Imported codec targets otherwise become -isystem includes. Apple Clang's
+    # implicit -I/usr/local/include then wins, mixing Homebrew headers with our
+    # static archives (e.g. JPEG ABI 80 headers with the pinned ABI 62 library).
+    arguments += ['-DCMAKE_NO_SYSTEM_FROM_IMPORTED=ON']
+    if system == 'darwin':
+        arguments += [f'-DCMAKE_OSX_DEPLOYMENT_TARGET={LOCK["minimumMacOS"]}', f'-DCMAKE_OSX_ARCHITECTURES={arch}']
+    if system == 'windows':
+        arguments += ['-G', 'MSYS Makefiles']
+    return arguments
+
+
+def configure_avif_encoder(source):
+    # The pinned ImageMagick writer exposes speed/chroma, but not lossless,
+    # alpha quality or thread count. Keep Recast's explicit lossless setting
+    # independent of quality=100 and preserve alpha even in lossy color mode.
+    path = source / 'coders/heic.c'
+    original = '''    /*
+      Get encoder for the specified format.
+    */'''
+    replacement = '''    /* Recast AVIF encoder controls (pinned-source adaptation). */
+    option=GetImageOption(image_info,"heic:lossless");
+    if ((encode_avif != MagickFalse) && (option != (const char *) NULL))
+      lossless=IsStringTrue(option);
+    /*
+      Get encoder for the specified format.
+    */'''
+    controls_at = '''    option=GetImageOption(image_info,"heic:speed");'''
+    controls = '''    if (encode_avif != MagickFalse)
+      {
+        error=heif_encoder_set_parameter_integer(heif_encoder,"threads",2);
+        if (IsHEIFSuccess(image,&error,exception) == MagickFalse)
+          break;
+        error=heif_encoder_set_parameter_boolean(heif_encoder,"lossless-alpha",1);
+        if (IsHEIFSuccess(image,&error,exception) == MagickFalse)
+          break;
+      }
+''' + controls_at
+    text = path.read_text()
+    if replacement in text:
+        return
+    if text.count(original) != 1 or text.count(controls_at) != 1:
+        raise SystemExit('Pinned ImageMagick AVIF adaptation no longer matches its source.')
+    text = text.replace(original, replacement).replace(controls_at, controls)
+    # The pinned still-image reader/writer uses bit shifts for 10/12-bit
+    # samples. That maps maximum alpha to <1 and fails exact sample round trips.
+    # Normalize by the full sample range instead, with rounding on both sides.
+    start = text.index('static MagickBooleanType ReadHEICImageHandle(')
+    end = text.index('static MagickBooleanType ReadHEICSequenceFrames(', start)
+    reader = text[start:end]
+    if reader.count(' << shift;') != 4 or reader.count('ScaleShortToQuantum(pixel)') != 4:
+        raise SystemExit('Pinned AVIF high-depth reader no longer matches its source.')
+    reader = reader.replace('    shift,\n', '').replace('  shift=(int) (16-image->depth);\n', '')
+    reader = reader.replace(' << shift;', ';').replace('ScaleShortToQuantum(pixel)', 'ScaleAnyToQuantum(pixel,((QuantumAny) 1 << image->depth)-1)')
+    text = text[:start] + reader + text[end:]
+    start = text.index('static MagickBooleanType WriteHEICImageRRGGBBAA(')
+    end = text.index('static MagickBooleanType WriteHEICSequenceImage(', start)
+    writer = text[start:end]
+    writer = writer.replace('    shift,\n', '').replace('  shift=(int) (16-depth);\n', '')
+    for channel in ['Red', 'Green', 'Blue', 'Alpha']:
+        original = f'ScaleQuantumToShort(GetPixel{channel}(image,p)) >> shift'
+        if writer.count(original) != 1:
+            raise SystemExit('Pinned AVIF high-depth writer no longer matches its source.')
+        writer = writer.replace(original, f'(int) (((unsigned long) ScaleQuantumToShort(GetPixel{channel}(image,p))*((1UL << depth)-1)+32767)/65535)')
+    path.write_text(text[:start] + writer + text[end:])
+
+
+
+def configure_webp_animation(source):
+    # Preserve millisecond timing and every composed frame, including identical
+    # and zero-delay frames. The stock animation optimizer rounds delays and
+    # substitutes 100 ms for short frames. Full-canvas frames avoid that change.
+    path = source / 'coders/webp.c'
+    text = path.read_text()
+    marker = '/* Recast full-frame animation writer. */'
+    if marker in text:
+        return
+    old = '    image->ticks_per_second=100;\n    image->delay=(size_t) round(iter.duration/10.0);'
+    if text.count(old) != 1:
+        raise SystemExit('Pinned WebP animation reader no longer matches its source.')
+    text = text.replace(old, '    image->ticks_per_second=1000;\n    image->delay=(size_t) iter.duration;')
+    # Decode the first frame as its real rectangle. The stock reader expands
+    # it to the canvas before coalescing and loses transparent padding when
+    # that frame's payload is opaque; it also changes its disposal bounds.
+    first = 'iter.fragment.bytes,iter.fragment.size,configure,exception,\n          MagickTrue);'
+    if text.count(first) != 1:
+        raise SystemExit('Pinned WebP first-frame reader no longer matches its source.')
+    text = text.replace(first, first.replace('MagickTrue', 'MagickFalse'))
+    # The stock animated reader decodes frame fragments, so its single-frame
+    # profile extraction never sees the container's ICC/EXIF/XMP chunks.
+    # Reuse the existing extractor for both still data and animated containers.
+    profile_start = text.index('#if defined(MAGICKCORE_WEBPMUX_DELEGATE)\n  {\n    StringInfo', text.index('static int ReadSingleWEBPImage('))
+    profile_end = text.index('#endif\n  return(webp_status);', profile_start) + len('#endif')
+    profile_block = text[profile_start:profile_end]
+    helper = ('#if defined(MAGICKCORE_WEBPMUX_DELEGATE)\n'
+              'static void ReadWEBPProfiles(Image *image,const uint8_t *stream,\n'
+              '  size_t length,ExceptionInfo *exception)\n{\n' +
+              profile_block.split('\n', 1)[1].rsplit('#endif', 1)[0] + '}\n#endif\n\n')
+    text = text[:profile_start] + '#if defined(MAGICKCORE_WEBPMUX_DELEGATE)\n  ReadWEBPProfiles(image,stream,length,exception);\n#endif' + text[profile_end:]
+    text = text.replace('static int ReadSingleWEBPImage(', helper + 'static int ReadSingleWEBPImage(', 1)
+    frame_end = '    image_count++;\n  } while (WebPDemuxNextFrame(&iter));'
+    if text.count(frame_end) != 1:
+        raise SystemExit('Pinned WebP animation profile reader no longer matches its source.')
+    text = text.replace(frame_end, '    ReadWEBPProfiles(image,stream,length,exception);\n' + frame_end)
+    start = text.index('static void *WebPDestroyMemoryInfo(')
+    end = text.index('static MagickBooleanType WriteWEBPImageProfile(', start)
+    text = text[:start] + r'''/* Recast full-frame animation writer. */
+static MagickBooleanType WriteAnimatedWEBPImage(const ImageInfo *image_info,
+  Image *image,const WebPConfig *configure,WebPData *webp_data,
+  ExceptionInfo *exception)
+{
+  Image *frame;
+  MagickBooleanType status=MagickTrue;
+  WebPMux *mux=WebPMuxNew();
+  WebPMuxAnimParams params;
+  if (mux == (WebPMux *) NULL)
+    return(MagickFalse);
+  params.bgcolor=0;
+  params.loop_count=(int) image->iterations;
+  if ((WebPMuxSetCanvasSize(mux,(int) image->columns,(int) image->rows) !=
+      WEBP_MUX_OK) || (WebPMuxSetAnimationParams(mux,&params) != WEBP_MUX_OK))
+    status=MagickFalse;
+  for (frame=image; (frame != (Image *) NULL) && (status != MagickFalse);
+       frame=GetNextImageInList(frame))
+    {
+      WebPMemoryWriter writer;
+      WebPMuxFrameInfo info;
+      WebPMemoryWriterInit(&writer);
+      status=WriteSingleWEBPImage(image_info,frame,configure,&writer,exception);
+      memset(&info,0,sizeof(info));
+      info.bitstream.bytes=writer.mem;
+      info.bitstream.size=writer.size;
+      info.id=WEBP_CHUNK_ANMF;
+      info.duration=(int) (((uint64_t) frame->delay*1000)/
+        MagickMax((size_t) frame->ticks_per_second,1));
+      info.dispose_method=WEBP_MUX_DISPOSE_NONE;
+      info.blend_method=WEBP_MUX_NO_BLEND;
+      if ((status != MagickFalse) &&
+          (WebPMuxPushFrame(mux,&info,1) != WEBP_MUX_OK))
+        status=MagickFalse;
+      WebPMemoryWriterClear(&writer);
+    }
+  if ((status != MagickFalse) &&
+      (WebPMuxAssemble(mux,webp_data) != WEBP_MUX_OK))
+    status=MagickFalse;
+  WebPMuxDelete(mux);
+  if (status == MagickFalse)
+    (void) ThrowMagickException(exception,GetMagickModule(),CoderError,
+      "UnableToEncodeImageFile","`%s'",image->filename);
+  return(status);
+}
+
+''' + text[end:]
+    path.write_text(text)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--arch', choices=['arm64', 'x86_64'], help='macOS target architecture; other systems build natively')
+    args = parser.parse_args()
+    host_arch = {'aarch64': 'arm64', 'amd64': 'x86_64'}.get(platform.machine().lower(), platform.machine().lower())
+    system = platform.system().lower()
+    if os.environ.get('MSYSTEM'):
+        if os.environ['MSYSTEM'] != 'UCRT64' or os.name == 'nt':
+            raise SystemExit('On Windows run /usr/bin/python scripts/prepare-image-backend.py in MSYS2 UCRT64. See BACKEND.md.')
+        system = 'windows'
+        host_arch = 'x86_64'
+    if system not in ('darwin', 'linux', 'windows') or host_arch not in ('arm64', 'x86_64'):
+        raise SystemExit(f'Unsupported build host: {system}/{host_arch}. See BACKEND.md.')
+    arch = args.arch or host_arch
+    if system != 'darwin' and arch != host_arch:
+        raise SystemExit('Only macOS architecture cross-builds are configured. Use a native Linux/Windows runner.')
+    for tool in ['cmake', 'make', 'pkg-config', 'cc', 'c++']:
+        if not shutil.which(tool):
+            raise SystemExit(f'Missing build tool: {tool}. See BACKEND.md.')
+    fingerprint = hashlib.sha256((json.dumps(LOCK, sort_keys=True) + Path(__file__).read_text() + (ROOT / 'scripts/image-policy.xml').read_text()).encode()).hexdigest()[:12]
+    work = CACHE / f'{system}-{arch}-{fingerprint}'
+    work.mkdir(parents=True, exist_ok=True)
+    stage = work / 'install'
+    logs = work / 'logs'
+    logs.mkdir(exist_ok=True)
+    env = os.environ.copy()
+    # Never inherit a developer's search paths or converter flags.
+    for key in ['CPATH', 'C_INCLUDE_PATH', 'CPLUS_INCLUDE_PATH', 'LIBRARY_PATH', 'SDKROOT', 'CMAKE_PREFIX_PATH', 'LIBS']:
+        env.pop(key, None)
+    cc, cxx = ('clang', 'clang++') if system == 'darwin' else ('gcc', 'g++')
+    flags = '-O2 -fPIC'
+    linker = f'-L{shlex.quote(str(stage / "lib"))}'
+    if system == 'darwin':
+        flags += f' -arch {arch} -mmacosx-version-min={LOCK["minimumMacOS"]}'
+        linker += f' -arch {arch} -mmacosx-version-min={LOCK["minimumMacOS"]}'
+        env['MACOSX_DEPLOYMENT_TARGET'] = LOCK['minimumMacOS']
+    elif system == 'windows':
+        cc, cxx = '/ucrt64/bin/gcc', '/ucrt64/bin/g++'
+        linker += ' -static -static-libgcc -static-libstdc++'
+    else:
+        linker += ' -static-libgcc -static-libstdc++'
+    env.update(CC=cc, CXX=cxx, CFLAGS=flags, CXXFLAGS=flags,
+               CPPFLAGS=f'-I{shlex.quote(str(stage / "include"))}', LDFLAGS=linker,
+               PKG_CONFIG='pkg-config --static', PKG_CONFIG_PATH='', PKG_CONFIG_LIBDIR=str(stage / 'lib/pkgconfig'))
+    for key in ['JPEG', 'PNG', 'WEBP', 'WEBPMUX', 'LCMS2', 'ZLIB', 'TIFF', 'XML', 'HEIF', 'AOM']:
+        env.pop(f'{key}_CFLAGS', None)
+        env.pop(f'{key}_LIBS', None)
+    options = {
+        'zlib': ['ZLIB_BUILD_SHARED=OFF', 'ZLIB_BUILD_STATIC=ON', 'ZLIB_BUILD_TESTING=OFF'],
+        'jpeg-turbo': ['ENABLE_SHARED=OFF', 'ENABLE_STATIC=ON', 'WITH_TURBOJPEG=OFF', 'WITH_TOOLS=OFF', 'WITH_TESTS=OFF'],
+        'libpng': ['PNG_SHARED=OFF', 'PNG_STATIC=ON', 'PNG_FRAMEWORK=OFF', 'PNG_TESTS=OFF', 'PNG_TOOLS=OFF', f'ZLIB_ROOT={stage}'],
+        'webp': ['BUILD_SHARED_LIBS=OFF', 'WEBP_LINK_STATIC=ON', 'WEBP_BUILD_LIBWEBPMUX=ON'] + [f'WEBP_BUILD_{name}=OFF' for name in ['ANIM_UTILS', 'CWEBP', 'DWEBP', 'GIF2WEBP', 'IMG2WEBP', 'VWEBP', 'WEBPINFO', 'WEBPMUX', 'EXTRAS']],
+        'little-cms2': ['BUILD_SHARED_LIBS=OFF', 'LCMS2_BUILD_SHARED=OFF', 'LCMS2_BUILD_TOOLS=OFF', 'LCMS2_BUILD_TESTS=OFF'],
+        'aom': ['BUILD_SHARED_LIBS=OFF', 'ENABLE_TESTS=OFF', 'ENABLE_TOOLS=OFF', 'ENABLE_EXAMPLES=OFF', 'ENABLE_DOCS=OFF', 'CONFIG_AV1_HIGHBITDEPTH=1', f'AOM_TARGET_CPU={arch}'],
+        'libheif': ['BUILD_SHARED_LIBS=OFF', 'ENABLE_PLUGIN_LOADING=OFF', 'WITH_AOM_DECODER=ON', 'WITH_AOM_ENCODER=ON', 'WITH_AOM_DECODER_PLUGIN=OFF', 'WITH_AOM_ENCODER_PLUGIN=OFF', f'AOM_LIBRARY={stage / "lib/libaom.a"}', f'AOM_INCLUDE_DIR={stage / "include"}', 'ENABLE_PARALLEL_TILE_DECODING=OFF'] + [f'{option}=OFF' for option in [
+            'WITH_LIBDE265', 'WITH_X265', 'WITH_X264', 'WITH_OpenH264_DECODER', 'WITH_OpenH264_ENCODER', 'WITH_KVAZAAR', 'WITH_UVG266', 'WITH_VVDEC', 'WITH_VVENC', 'WITH_DAV1D', 'WITH_SvtEnc', 'WITH_RAV1E', 'WITH_JPEG_DECODER', 'WITH_JPEG_ENCODER', 'WITH_OpenJPEG_ENCODER', 'WITH_OpenJPEG_DECODER', 'WITH_FFMPEG_DECODER', 'WITH_OPENJPH_ENCODER', 'WITH_UNCOMPRESSED_CODEC', 'WITH_WEBCODECS', 'WITH_LIBSHARPYUV', 'WITH_HEADER_COMPRESSION', 'WITH_EXAMPLES', 'WITH_GDK_PIXBUF', 'BUILD_TESTING', 'BUILD_DOCUMENTATION', 'BUILD_DEVELOPMENT_TOOLS', 'WITH_FUZZERS',
+        ]],
+        # ImageMagick drops XMP profiles entirely without XML support. Build the
+        # parser/serializer locally; no external encoding libraries or modules.
+        'libxml2': ['BUILD_SHARED_LIBS=OFF'] + [f'LIBXML2_WITH_{feature}=OFF' for feature in ['CATALOG', 'DEBUG', 'DOCS', 'HTML', 'HTTP', 'ICONV', 'ICU', 'LEGACY', 'MODULES', 'PROGRAMS', 'PYTHON', 'READLINE', 'TESTS', 'ZLIB', 'XINCLUDE', 'VALID']],
+        # Bind TIFF to our pinned JPEG/zlib archives on every platform. Optional
+        # codecs must not pick up unrelated libraries from the build machine.
+        'libtiff': ['BUILD_SHARED_LIBS=OFF', 'tiff-static=ON', 'tiff-tools=OFF', 'tiff-tests=OFF', 'tiff-contrib=OFF', 'tiff-docs=OFF', 'tiff-install=ON', 'tiff-cxx=OFF', 'jpeg=ON', 'jpeg-prefer-standard=ON', 'old-jpeg=OFF', 'zlib=ON', f'JPEG_LIBRARY={stage / "lib/libjpeg.a"}', f'JPEG_INCLUDE_DIR={stage / "include"}', f'ZLIB_LIBRARY={stage / "lib/libz.a"}', f'ZLIB_INCLUDE_DIR={stage / "include"}'] + [f'{codec}=OFF' for codec in ['jbig', 'lerc', 'lzma', 'zstd', 'webp', 'libdeflate', 'pixarlog', 'logluv']],
+    }
+    cmake_common = cmake_arguments(stage, system, arch)
+    if system == 'windows':
+        options['libpng'] += [f'ZLIB_LIBRARY={stage / "lib/libz.a"}', f'ZLIB_INCLUDE_DIR={stage / "include"}']
+    sources = {}
+    for dependency in LOCK['dependencies']:
+        name = dependency['name']
+        source = extract(dependency, work / 'sources' / name)
+        sources[name] = source
+        marker = work / f'{name}.done'
+        if marker.exists():
+            continue
+        print(f'Building {name} {dependency["version"]} for {system}/{arch}…', flush=True)
+        build = work / 'build' / name
+        log = logs / f'{name}.log'
+        run(['cmake', '-S', str(source), '-B', str(build), *cmake_common, *['-D' + option for option in options[name]]], env=env, log=log)
+        run(['cmake', '--build', str(build), '--parallel', JOBS], env=env, log=log)
+        run(['cmake', '--install', str(build)], env=env, log=log)
+        if system == 'windows' and name == 'zlib':
+            # zlib 1.3.2 installs libzs.a on Windows but its .pc file requests -lz.
+            # Supply that name from our pinned archive, never the MSYS2 copy.
+            shutil.copyfile(stage / 'lib/libzs.a', stage / 'lib/libz.a')
+        marker.touch()
+    unexpected = [path for path in (stage / 'lib').glob('*') if path.suffix in ('.so', '.dylib', '.dll') or '.dll.a' in path.name]
+    if unexpected:
+        raise SystemExit(f'Delegates must be static: {unexpected}')
+    source = extract(LOCK['source'], work / 'sources/ImageMagick')
+    configure_avif_encoder(source)
+    configure_webp_animation(source)
+    policy = (ROOT / 'scripts/image-policy.xml').read_text()
+    private = source / 'MagickCore/policy-private.h'
+    private.write_text(re.sub(r'\*ZeroConfigurationPolicy\s*=.*?;', lambda _: '*ZeroConfigurationPolicy = ' + json.dumps(policy) + ';', private.read_text(), flags=re.S))
+    configure = [f'--prefix={stage}', '--disable-shared', '--enable-static', '--enable-zero-configuration', '--disable-installed', '--disable-hdri', '--disable-openmp', '--disable-opencl', '--disable-docs', '--disable-dpc', '--disable-cipher', '--without-modules', '--without-magick-plus-plus', '--without-perl', '--with-quantum-depth=16', '--with-security-policy=open', '--with-jpeg=yes', '--with-png=yes', '--with-webp=yes', '--with-lcms=yes', '--with-tiff=yes', '--with-xml=yes']
+    configure += ['--with-heic=yes']
+    configure += [f'--without-{name}' for name in ['x', 'bzlib', 'zip', 'zstd', 'autotrace', 'dps', 'fftw', 'flif', 'fpx', 'djvu', 'fontconfig', 'freetype', 'raqm', 'gdi32', 'gslib', 'gvc', 'dmr', 'jbig', 'jxl', 'openjp2', 'lqr', 'lzma', 'openexr', 'pango', 'raw', 'rsvg', 'uhdr', 'wmf']]
+    if system == 'windows':
+        configure += ['--host=x86_64-w64-mingw32']
+    if system == 'darwin' and arch != host_arch:
+        configure += [f'--host={arch}-apple-darwin']
+    print('Configuring and building ImageMagick…', flush=True)
+    run(['sh', str(source / 'configure'), *configure], cwd=source, env=env, log=logs / 'imagemagick-configure.log')
+    make = ['make', '-j', JOBS, 'V=1']
+    if system == 'windows':
+        # Libtool consumes -static without passing it to the final compiler.
+        # -all-static also embeds compiler/pthread runtimes; retain Unicode argv.
+        make += ['UTILITIES_LDFLAGS_EXTRA=-municode -all-static']
+    run(make, cwd=source, env=env, log=logs / 'imagemagick-build.log')
+    OUT.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix='.image-backend-', dir=OUT.parent) as temporary:
+        output = Path(temporary)
+        worker = output / ('magick.exe' if system == 'windows' else 'magick')
+        shutil.copy2(source / 'utilities' / worker.name, worker)
+        run(['strip', '-x' if system == 'darwin' else '--strip-unneeded', str(worker)])
+        if system == 'darwin':
+            run(['codesign', '--force', '--sign', '-', str(worker)])
+        audited = audit(worker, system, arch)
+        profile = ROOT / 'scripts/sRGB.icc'
+        if sha(profile) != LOCK['profileSha256']:
+            raise SystemExit('Bundled sRGB profile checksum mismatch.')
+        shutil.copyfile(profile, output / 'sRGB.icc')
+        shutil.copyfile(ROOT / 'scripts/image-policy.xml', output / 'policy.xml')
+        notices = output / 'licenses'
+        notices.mkdir()
+        shutil.copyfile(source / 'LICENSE', notices / 'ImageMagick-LICENSE')
+        for dependency in LOCK['dependencies']:
+            for license_file in dependency['licenses']:
+                shutil.copyfile(sources[dependency['name']] / license_file, notices / f'{dependency["name"]}-{Path(license_file).name}')
+        version = None
+        if arch == host_arch:
+            version = subprocess.check_output([str(worker), '-version'], env=env, text=True)
+            if not all(value in version for value in [f'ImageMagick {LOCK["source"]["version"]}', 'Zero-configuration', 'jpeg', 'png', 'webp', 'lcms', 'tiff', 'xml', 'heic']):
+                raise SystemExit(f'Required image capabilities missing:\n{version}')
+        manifest = {'system': system, 'architecture': arch, 'recipeFingerprint': fingerprint, 'source': LOCK['source'], 'dependencies': LOCK['dependencies'], 'version': version, 'binarySha256': sha(worker), 'profileSha256': sha(profile), **audited}
+        (output / 'build-manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
+        # Preserve the last working backend until its replacement is complete.
+        backup = OUT.with_name('.image-backend-previous')
+        if backup.exists():
+            raise SystemExit(f'A previous backend backup needs review before replacing it: {backup}')
+        if OUT.exists():
+            OUT.rename(backup)
+        try:
+            output.rename(OUT)
+        except BaseException:
+            if backup.exists():
+                backup.rename(OUT)
+            raise
+        if backup.exists():
+            shutil.rmtree(backup)
+    print(version or f'Cross-built {system}/{arch}; runtime verification needs that architecture.', flush=True)
+    print(f'Bundled worker: {OUT}', flush=True)
+
+
+if __name__ == '__main__':
+    main()

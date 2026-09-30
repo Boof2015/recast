@@ -1,0 +1,471 @@
+use crate::{image_format::ImageFormat, inputs};
+use serde::{Deserialize, Serialize};
+use std::{
+    fs::File,
+    io::{Read, Write},
+    path::{Path, PathBuf},
+    process::{Command, Stdio},
+    sync::atomic::{AtomicBool, Ordering},
+    thread,
+    time::{Duration, Instant},
+};
+use tempfile::NamedTempFile;
+
+#[derive(Debug, Clone)]
+pub struct ImageBackend {
+    pub root: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageOptions {
+    pub target: String,
+    pub quality: u8,
+    pub lossless: bool,
+    pub resize: u8,
+    pub metadata: bool,
+    #[serde(default = "default_background")]
+    pub background: String,
+    #[serde(default = "default_colors")]
+    pub colors: u16,
+    #[serde(default = "default_dither")]
+    pub dither: bool,
+}
+
+fn default_colors() -> u16 {
+    256
+}
+fn default_dither() -> bool {
+    true
+}
+
+fn default_background() -> String {
+    "#ffffff".into()
+}
+
+impl ImageOptions {
+    pub fn validate(&self) -> Result<(), String> {
+        ImageFormat::from_id(&self.target)?;
+        if ![32, 64, 128, 256].contains(&self.colors) {
+            return Err("Choose 32, 64, 128, or 256 colors for GIF.".into());
+        }
+        if !(1..=100).contains(&self.quality) {
+            return Err("Quality must be between 1 and 100.".into());
+        }
+        if ![100, 75, 50, 25].contains(&self.resize) {
+            return Err("Choose Original, 75%, 50%, or 25% for resize.".into());
+        }
+        if self.background.len() != 7
+            || !self.background.starts_with('#')
+            || !self.background.as_bytes()[1..]
+                .iter()
+                .all(u8::is_ascii_hexdigit)
+        {
+            return Err(
+                "Choose a background color using six hexadecimal digits, such as #ffffff.".into(),
+            );
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutputFile {
+    pub path: String,
+    pub bytes: u64,
+}
+
+#[derive(Debug)]
+pub enum ConversionError {
+    Cancelled,
+    Failed(String),
+}
+impl From<String> for ConversionError {
+    fn from(value: String) -> Self {
+        Self::Failed(value)
+    }
+}
+
+impl ImageBackend {
+    pub fn command(&self) -> Command {
+        let mut command = Command::new(self.root.join(if cfg!(windows) {
+            "magick.exe"
+        } else {
+            "magick"
+        }));
+        // Absolute bundled executable; no external delegates or configuration.
+        command
+            .env("MAGICK_CONFIGURE_PATH", &self.root)
+            .env("LC_ALL", "C");
+        command.stdin(Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x08000000);
+        }
+        command
+    }
+
+    pub fn verify(&self) -> Result<(), String> {
+        if std::fs::read_to_string(self.root.join("policy.xml"))
+            .ok()
+            .as_deref()
+            != Some(include_str!("../../scripts/image-policy.xml"))
+        {
+            return Err("The bundled image converter is out of date. Rebuild Recast with its current image backend.".into());
+        }
+        let result = self.command().arg("-version").output().map_err(|_| {
+            "The bundled image converter is missing. Rebuild Recast with its image backend."
+                .to_string()
+        })?;
+        let text = String::from_utf8_lossy(&result.stdout);
+        if !result.status.success()
+            || ![
+                "ImageMagick 7.1.2-32",
+                "jpeg",
+                "png",
+                "webp",
+                "lcms",
+                "tiff",
+                "xml",
+                "heic",
+            ]
+            .iter()
+            .all(|value| text.contains(value))
+        {
+            return Err("The bundled image converter does not have the expected PNG, JPEG, WebP, TIFF, AVIF, and color support.".into());
+        }
+        if !self.root.join("sRGB.icc").is_file() {
+            return Err("The bundled color profile is missing.".into());
+        }
+        Ok(())
+    }
+
+    pub fn convert(
+        &self,
+        source: &Path,
+        folder: Option<&Path>,
+        options: &ImageOptions,
+        cancel: &AtomicBool,
+    ) -> Result<OutputFile, ConversionError> {
+        options.validate()?;
+        let format = ImageFormat::from_id(&options.target)?;
+        check_cancel(cancel)?;
+        let input = inputs::require_target(source, &options.target)?;
+        let source = Path::new(&input.path);
+        let parent = folder.unwrap_or_else(|| source.parent().unwrap());
+        if !parent.is_dir() {
+            return Err(
+                "The output folder is no longer available. Choose another folder."
+                    .to_string()
+                    .into(),
+            );
+        }
+        let work = tempfile::Builder::new()
+            .prefix("recast-image-")
+            .tempdir()
+            .map_err(|_| "A temporary work folder could not be created.".to_string())?;
+        // Controlled input names avoid ImageMagick's filename expansion syntax
+        // (brackets, percent signs, prefixes) for arbitrary user filenames.
+        let staged = work.path().join("input");
+        let mut source_file =
+            File::open(source).map_err(|_| "The source file could not be opened.".to_string())?;
+        let mut staged_file =
+            File::create(&staged).map_err(|_| "The image could not be prepared.".to_string())?;
+        let mut buffer = [0u8; 64 * 1024];
+        loop {
+            check_cancel(cancel)?;
+            let read = source_file
+                .read(&mut buffer)
+                .map_err(|_| "The source file could not be read.".to_string())?;
+            if read == 0 {
+                break;
+            }
+            staged_file.write_all(&buffer[..read]).map_err(|_| {
+                "The image could not be prepared. Check available disk space.".to_string()
+            })?;
+        }
+        drop(staged_file);
+        // Recheck staged bytes in case the source changed while it was copied.
+        let inspected = inputs::require_target(&staged, &options.target)?;
+        let animated = inspected.sequence.as_ref().is_some_and(|s| s.animated());
+        let output = tempfile::Builder::new()
+            .prefix(".recast-")
+            .suffix(&format!(".{}", format.extension()))
+            .tempfile_in(parent)
+            .map_err(|_| {
+                "Cannot write to this output folder. Choose another folder and try again."
+                    .to_string()
+            })?;
+        let diagnostics_path = work.path().join("diagnostics.txt");
+        let diagnostics = File::create(&diagnostics_path)
+            .map_err(|_| "The image converter could not start.".to_string())?;
+        let mut command = self.command();
+        command
+            .current_dir(work.path())
+            .env("MAGICK_TEMPORARY_PATH", work.path());
+        // Keep the single-image guard for still inputs. Explicitly inspected
+        // sequences receive a bounded frame budget and are composed before resize.
+        command
+            .args(["-limit", "list-length", if animated { "1001" } else { "2" }])
+            .arg(&staged);
+        if inspected.sequence.is_some() {
+            command.args(["-alpha", "set", "-coalesce"]);
+        }
+        command.arg("-auto-orient");
+        if options.resize != 100 {
+            command.args(["-resize", &format!("{}%", options.resize)]);
+        }
+        // Normalize color for all destinations. Convert profiles (including CMYK)
+        // before encoding so retained ICC data describes the resulting pixels.
+        // The colorspace fallback also handles unprofiled CMYK/gray inputs.
+        command
+            .arg("-profile")
+            .arg(self.root.join("sRGB.icc"))
+            .args(["-colorspace", "sRGB"]);
+        if matches!(format, ImageFormat::Jpeg | ImageFormat::Bmp) {
+            // Composite in the output colorspace; removing alpha alone would
+            // expose the invisible RGB values instead of the chosen background.
+            command.args([
+                "-background",
+                &options.background,
+                "-alpha",
+                "remove",
+                "-alpha",
+                "off",
+            ]);
+        }
+        if !options.metadata || matches!(format, ImageFormat::Bmp | ImageFormat::Gif) {
+            command.arg("-strip");
+        }
+        match format {
+            ImageFormat::Gif => {
+                command.args([
+                    "-channel",
+                    "A",
+                    "-threshold",
+                    "50%",
+                    "+channel",
+                    "-dither",
+                    if options.dither {
+                        "FloydSteinberg"
+                    } else {
+                        "None"
+                    },
+                    "-colors",
+                    &options.colors.to_string(),
+                    "-background",
+                    "none",
+                    "-dispose",
+                    "Background",
+                    "+repage",
+                ]);
+            }
+            ImageFormat::Avif => {
+                // The writer selects 8/10/12-bit storage directly. A separate
+                // -depth operation would quantize the pixels before encoding.
+                command.args([
+                    "-quality",
+                    &options.quality.to_string(),
+                    "-define",
+                    if options.lossless {
+                        "heic:lossless=true"
+                    } else {
+                        "heic:lossless=false"
+                    },
+                    "-define",
+                    "heic:speed=6",
+                    "-define",
+                    "heic:chroma=444",
+                    "-define",
+                    "heic:preserve-cicp=false",
+                    "-define",
+                    "heic:preserve-clli=false",
+                    "-define",
+                    if options.lossless {
+                        "heic:cicp=1/13/0/1"
+                    } else {
+                        "heic:cicp=1/13/6/1"
+                    },
+                ]);
+            }
+            ImageFormat::WebP => {
+                command.args([
+                    "-quality",
+                    &if options.lossless {
+                        "100".into()
+                    } else {
+                        options.quality.to_string()
+                    },
+                ]);
+                command.args([
+                    "-define",
+                    if options.lossless {
+                        "webp:lossless=true"
+                    } else {
+                        "webp:lossless=false"
+                    },
+                    "-define",
+                    "webp:exact=true",
+                ]);
+            }
+            ImageFormat::Jpeg => {
+                command.args(["-quality", &options.quality.to_string()]);
+            }
+            ImageFormat::Png => {
+                // PNG is always lossless. Do not inherit a JPEG/WebP quality
+                // value or an input's compression settings as PNG encoder knobs.
+                command.args(["-define", "png:compression-level=6"]);
+            }
+            ImageFormat::Tiff => {
+                // AVIF can supply 10/12-bit pixels. Store them in a standard
+                // 16-bit TIFF channel instead of emitting unusual packed depths.
+                command.args(["-depth", "%[fx:depth<=8?8:16]"]);
+                if options.metadata {
+                    // The TIFF reader exposes these as properties, while its
+                    // writer accepts artifacts. Explicitly bridge the two.
+                    for tag in [
+                        "document",
+                        "hostcomputer",
+                        "artist",
+                        "timestamp",
+                        "make",
+                        "model",
+                        "software",
+                        "copyright",
+                    ] {
+                        command.args([
+                            "-set",
+                            &format!("artifact:tiff:{tag}"),
+                            &format!("%[tiff:{tag}]"),
+                        ]);
+                    }
+                }
+                // Lossless Deflate, straight alpha (including invisible RGB),
+                // and ordinary single-page TIFF. Keep the source's 8/16-bit
+                // precision; do not inherit lossy quality/compression choices.
+                command.args([
+                    "-compress",
+                    "Zip",
+                    "-quality",
+                    "60",
+                    "-define",
+                    "tiff:alpha=unassociated",
+                    "-define",
+                    "tiff:rows-per-strip=64",
+                ]);
+            }
+            ImageFormat::Bmp => {
+                // Predictable, widely readable V3 output: opaque 24-bit RGB,
+                // without palettes, RLE compression, alpha, or metadata profiles.
+                command.args([
+                    "-type",
+                    "TrueColor",
+                    "-depth",
+                    "8",
+                    "-compress",
+                    "None",
+                    "-define",
+                    "bmp:format=bmp3",
+                ]);
+            }
+        }
+        command.arg(format!("{}:-", format.id()));
+        command.stdout(Stdio::from(
+            output
+                .reopen()
+                .map_err(|_| "The output file could not be opened.".to_string())?,
+        ));
+        command.stderr(Stdio::from(diagnostics));
+        let mut child = command
+            .spawn()
+            .map_err(|_| "The bundled image converter could not start.".to_string())?;
+        let started = Instant::now();
+        let status = loop {
+            if cancel.load(Ordering::Relaxed) || started.elapsed() > Duration::from_secs(300) {
+                let _ = child.kill();
+                let _ = child.wait();
+                check_cancel(cancel)?;
+                return Err("This image took too long to convert. Try a smaller image."
+                    .to_string()
+                    .into());
+            }
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) => thread::sleep(Duration::from_millis(35)),
+                Err(_) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err("The image converter stopped unexpectedly."
+                        .to_string()
+                        .into());
+                }
+            }
+        };
+        check_cancel(cancel)?;
+        if !status.success() {
+            let mut detail = String::new();
+            if let Ok(file) = File::open(diagnostics_path) {
+                let _ = file.take(4096).read_to_string(&mut detail);
+            }
+            let detail = detail.replace(staged.to_string_lossy().as_ref(), &input.name);
+            let detail = detail
+                .lines()
+                .next()
+                .unwrap_or("The image data could not be converted.")
+                .trim_start_matches("magick: ");
+            return Err(format!("Conversion failed: {detail}").into());
+        }
+        if let Some(sequence) = &inspected.sequence {
+            sequence.finish_output(output.path(), &options.target, options.resize)?;
+        }
+        let bytes = format.validate_output(output.path())?;
+        output.as_file().sync_all().map_err(|_| {
+            "The output could not be saved. Check available disk space.".to_string()
+        })?;
+        check_cancel(cancel)?;
+        let path = publish(
+            output,
+            source.file_stem().unwrap_or_default(),
+            parent,
+            format,
+        )?;
+        Ok(OutputFile {
+            path: path.to_string_lossy().into_owned(),
+            bytes,
+        })
+    }
+}
+
+fn check_cancel(cancel: &AtomicBool) -> Result<(), ConversionError> {
+    if cancel.load(Ordering::Relaxed) {
+        Err(ConversionError::Cancelled)
+    } else {
+        Ok(())
+    }
+}
+
+fn publish(
+    mut temporary: NamedTempFile,
+    stem: &std::ffi::OsStr,
+    folder: &Path,
+    format: ImageFormat,
+) -> Result<PathBuf, String> {
+    for index in 0..10_000 {
+        let mut name = stem.to_os_string();
+        if index > 0 {
+            name.push(format!(" ({index})"));
+        }
+        name.push(format!(".{}", format.extension()));
+        let destination = folder.join(name);
+        // Atomic no-clobber publication also protects concurrent windows and
+        // unrelated processes creating the same destination during conversion.
+        match temporary.persist_noclobber(&destination) {
+            Ok(file) => { drop(file); return Ok(destination); }
+            Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => temporary = error.file,
+            Err(_) => return Err("The output could not be saved in this folder. Choose another folder and try again.".into()),
+        }
+    }
+    Err("Too many files already use this output name. Choose another folder.".into())
+}

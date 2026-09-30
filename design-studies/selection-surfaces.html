@@ -1,0 +1,221 @@
+<div id="recast-selection-study" aria-label="Recast selection surface study">
+  <style>
+    #recast-selection-study {
+      --rc-window: light-dark(#f5f5f5, #1b1b1b);
+      --rc-surface: light-dark(#e7e7e7, #292929);
+      --rc-selection: light-dark(#cecece, #464646);
+      --rc-inactive: light-dark(#dddddd, #333333);
+      --rc-control: light-dark(#ffffff, #363636);
+      --rc-ink: light-dark(#222222, #f0f0f0);
+      --rc-secondary: light-dark(#555555, #b9b9b9);
+      --rc-muted: light-dark(#626262, #aaaaaa);
+      --rc-duration: 240ms;
+      width: 100%;
+      background: var(--rc-window);
+      color: var(--rc-ink);
+      border-radius: 15px;
+      overflow: hidden;
+      font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+    #recast-selection-study * { box-sizing: border-box; }
+    #recast-selection-study button,
+    #recast-selection-study select,
+    #recast-selection-study input { font: inherit; }
+    #recast-selection-study button { cursor: pointer; }
+    #recast-selection-study .rc-chrome { height: 44px; display: flex; align-items: center; padding: 0 20px; gap: 18px; }
+    #recast-selection-study .rc-window-controls { display: flex; gap: 7px; }
+    #recast-selection-study .rc-window-controls span { width: 10px; height: 10px; border-radius: 50%; background: var(--rc-inactive); }
+    #recast-selection-study .rc-title { font-size: 12px; font-weight: 500; color: var(--rc-secondary); }
+    #recast-selection-study .rc-workspace { display: grid; grid-template-columns: 1fr 1.02fr 1fr; gap: 22px; padding: 0 16px; }
+    #recast-selection-study .rc-surface { min-width: 0; min-height: 365px; padding: 16px 10px 10px; border-radius: 16px; background: var(--rc-surface); }
+    #recast-selection-study .rc-region-label { margin: 0 10px 15px; font-size: 12px; font-weight: 500; color: var(--rc-secondary); }
+    #recast-selection-study .rc-stack { position: relative; display: grid; gap: 8px; }
+    #recast-selection-study .rc-selection { position: absolute; inset: 0 0 auto; height: 87px; background: var(--rc-selection); border-radius: 11px; pointer-events: none; }
+    #recast-selection-study[data-ready="true"] .rc-selection { transition: transform var(--rc-duration) cubic-bezier(.22,.7,.2,1), height var(--rc-duration) cubic-bezier(.22,.7,.2,1); }
+    #recast-selection-study .rc-group { position: relative; z-index: 1; display: flex; flex-direction: column; justify-content: center; gap: 7px; width: 100%; min-height: 87px; padding: 14px 15px; border: 0; border-radius: 11px; background: transparent; color: var(--rc-secondary); text-align: left; }
+    #recast-selection-study .rc-group[aria-pressed="true"] { color: var(--rc-ink); background: transparent; }
+    #recast-selection-study[data-filled="true"] .rc-group[aria-pressed="false"] { background: var(--rc-inactive); }
+    #recast-selection-study .rc-group:hover { color: var(--rc-ink); }
+    #recast-selection-study .rc-group-top { display: flex; align-items: center; gap: 9px; width: 100%; }
+    #recast-selection-study .rc-group-top strong { font-size: 14px; font-weight: 500; }
+    #recast-selection-study .rc-group-top > svg { width: 17px; height: 17px; flex-shrink: 0; }
+    #recast-selection-study .rc-count { margin-left: auto; color: var(--rc-secondary); font-size: 12px; white-space: nowrap; }
+    #recast-selection-study .rc-composition { display: flex; align-items: center; flex-wrap: wrap; gap: 5px 10px; margin-left: 26px; font-size: 11px; color: var(--rc-secondary); }
+    #recast-selection-study .rc-output-detail { margin-left: 0; }
+    #recast-selection-study .rc-conversion { min-width: 0; padding: 18px 2px; }
+    #recast-selection-study .rc-context { margin: 0 0 18px; color: var(--rc-secondary); font-size: 12px; }
+    #recast-selection-study .rc-format-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 26px; }
+    #recast-selection-study .rc-format-heading > span { font-size: 15px; font-weight: 500; }
+    #recast-selection-study select { min-width: 0; max-width: 125px; padding: 5px 7px; border: 0; border-radius: 6px; color: var(--rc-ink); background: var(--rc-control); }
+    #recast-selection-study option { color: var(--rc-ink); background: var(--rc-control); }
+    #recast-selection-study .rc-settings { display: flex; flex-direction: column; gap: 21px; }
+    #recast-selection-study .rc-setting { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    #recast-selection-study .rc-quality { display: flex; flex-direction: column; gap: 10px; }
+    #recast-selection-study .rc-quality input { width: 100%; margin: 0; accent-color: var(--rc-ink); }
+    #recast-selection-study .rc-check { display: flex; align-items: center; gap: 8px; }
+    #recast-selection-study .rc-check input { margin: 0; accent-color: var(--rc-ink); }
+    #recast-selection-study .rc-check label { cursor: pointer; }
+    #recast-selection-study .rc-native-value { color: var(--rc-secondary); }
+    #recast-selection-study .rc-footer { display: flex; align-items: center; gap: 18px; padding: 16px 22px; color: var(--rc-secondary); font-size: 11px; }
+    #recast-selection-study .rc-save { margin-left: auto; display: flex; align-items: center; gap: 6px; }
+    #recast-selection-study .rc-save svg { width: 14px; height: 14px; }
+    #recast-selection-study .rc-convert { border: 0; border-radius: 7px; padding: 7px 15px; color: var(--rc-window); background: var(--rc-ink); font-size: 12px; opacity: .55; cursor: default; }
+    #recast-selection-study .rc-sr { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+    #recast-selection-study[data-motion="false"] .rc-selection { transition: none; }
+    @media (max-width: 700px) {
+      #recast-selection-study .rc-workspace { grid-template-columns: 1fr 1fr; gap: 16px; padding: 0 12px; }
+      #recast-selection-study .rc-surface { min-height: 242px; }
+      #recast-selection-study .rc-conversion { grid-column: 1 / -1; grid-row: 2; padding: 5px 12px 8px; }
+      #recast-selection-study .rc-settings { display: grid; grid-template-columns: 1fr 1fr; gap: 18px 28px; }
+      #recast-selection-study .rc-format-heading { justify-content: flex-start; gap: 20px; margin-bottom: 20px; }
+      #recast-selection-study .rc-context { margin-bottom: 10px; }
+      #recast-selection-study .rc-group { padding: 12px 10px; }
+      #recast-selection-study .rc-count { font-size: 11px; }
+      #recast-selection-study .rc-footer { padding: 15px 20px; flex-wrap: wrap; gap: 12px; }
+    }
+    @media (max-width: 440px) {
+      #recast-selection-study .rc-workspace { gap: 10px; padding: 0 8px; }
+      #recast-selection-study .rc-surface { padding: 13px 6px 7px; }
+      #recast-selection-study .rc-region-label { margin-left: 7px; }
+      #recast-selection-study .rc-group-top { flex-wrap: wrap; gap: 5px; }
+      #recast-selection-study .rc-group-top strong { font-size: 13px; }
+      #recast-selection-study .rc-count { margin-left: 0; }
+      #recast-selection-study .rc-composition { margin-left: 0; gap: 3px 7px; }
+      #recast-selection-study .rc-group { min-height: 100px; padding: 10px 8px; }
+      #recast-selection-study .rc-group-top > svg { display: none; }
+      #recast-selection-study .rc-settings { grid-template-columns: 1fr; }
+      #recast-selection-study .rc-save { margin-left: 0; }
+      #recast-selection-study .rc-convert { margin-left: auto; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      #recast-selection-study .rc-selection { transition: none !important; }
+    }
+  </style>
+
+  <div class="rc-chrome">
+    <div class="rc-window-controls" aria-hidden="true"><span></span><span></span><span></span></div>
+    <span class="rc-title">Recast</span>
+  </div>
+  <div class="rc-workspace">
+    <section class="rc-surface" aria-label="Input groups">
+      <h2 class="rc-region-label">Input</h2>
+      <div class="rc-stack">
+        <div class="rc-selection" aria-hidden="true"></div>
+        <button type="button" class="rc-group" data-group="images" aria-pressed="true" aria-label="Select Images, 23 files">
+          <span class="rc-group-top"><i data-lucide="image" aria-hidden="true"></i><strong>Images</strong><span class="rc-count">23 files</span></span>
+          <span class="rc-composition"><span>10 PNG</span><span>13 JPEG</span></span>
+        </button>
+        <button type="button" class="rc-group" data-group="audio" aria-pressed="false" aria-label="Select Audio, 12 files">
+          <span class="rc-group-top"><i data-lucide="music-2" aria-hidden="true"></i><strong>Audio</strong><span class="rc-count">12 files</span></span>
+          <span class="rc-composition"><span>8 FLAC</span><span>4 MP3</span></span>
+        </button>
+      </div>
+    </section>
+
+    <section class="rc-conversion" aria-label="Selected conversion">
+      <p class="rc-context">23 images</p>
+      <div class="rc-format-heading"><span data-current-format>WebP</span></div>
+      <div class="rc-settings"></div>
+    </section>
+
+    <section class="rc-surface" aria-label="Output groups">
+      <h2 class="rc-region-label">Output</h2>
+      <div class="rc-stack">
+        <div class="rc-selection" aria-hidden="true"></div>
+        <button type="button" class="rc-group" data-group="images" aria-pressed="true" aria-label="Select Images output, 23 WebP files">
+          <span class="rc-group-top"><strong data-output="images">23 WebP</strong></span>
+          <span class="rc-composition rc-output-detail">Same folder as source</span>
+        </button>
+        <button type="button" class="rc-group" data-group="audio" aria-pressed="false" aria-label="Select Audio output, 12 WAV files">
+          <span class="rc-group-top"><strong data-output="audio">12 WAV</strong></span>
+          <span class="rc-composition rc-output-detail">Same folder as source</span>
+        </button>
+      </div>
+    </section>
+  </div>
+  <div class="rc-footer"><span>35 files</span><span class="rc-save"><i data-lucide="folder" aria-hidden="true"></i>Same as source</span><button class="rc-convert" type="button" disabled aria-label="Convert 35 files, unavailable in this design study">Convert 35 files</button></div>
+  <span class="rc-sr" role="status" aria-live="polite"></span>
+</div>
+<script>
+  (() => {
+    const root = document.getElementById('recast-selection-study');
+    const state = { selected: 'images', inactiveSurfaces: false, motion: true, duration: 240 };
+    const values = { images: { target: 'WebP', quality: 85, lossless: false, resize: 'Original' }, audio: { target: 'WAV', rate: 'Original', metadata: true } };
+    const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)');
+    let previous = '';
+    let centerAnimation;
+    const center = root.querySelector('.rc-conversion');
+    const settings = root.querySelector('.rc-settings');
+    const format = root.querySelector('[data-current-format]');
+
+    function positionSelections() {
+      root.querySelectorAll('.rc-stack').forEach((stack) => {
+        const selected = stack.querySelector('[data-group="' + state.selected + '"]');
+        const highlight = stack.querySelector('.rc-selection');
+        highlight.style.transform = 'translateY(' + selected.offsetTop + 'px)';
+        highlight.style.height = selected.offsetHeight + 'px';
+      });
+    }
+
+    function updateSettings() {
+      const value = values[state.selected];
+      if (state.selected === 'images') {
+        settings.innerHTML = (value.target !== 'PNG' ? '<div class="rc-quality"><div class="rc-setting"><label for="rc-study-quality">Quality</label><output for="rc-study-quality">' + value.quality + '</output></div><input id="rc-study-quality" type="range" min="1" max="100" value="' + value.quality + '"' + (value.lossless && value.target === 'WebP' ? ' disabled' : '') + '></div>' : '') +
+          (value.target === 'WebP' ? '<div class="rc-check"><input type="checkbox" id="rc-study-lossless"' + (value.lossless ? ' checked' : '') + '><label for="rc-study-lossless">Lossless</label></div>' : '') +
+          '<label class="rc-setting"><span>Resize</span><select id="rc-study-resize">' + ['Original', '75%', '50%', '25%'].map((item) => '<option' + (value.resize === item ? ' selected' : '') + '>' + item + '</option>').join('') + '</select></label>';
+      } else {
+        settings.innerHTML = '<label class="rc-setting"><span>Sample rate</span><select id="rc-study-rate">' + ['Original', '44.1 kHz', '48 kHz'].map((item) => '<option' + (value.rate === item ? ' selected' : '') + '>' + item + '</option>').join('') + '</select></label><div class="rc-setting"><span>Channels</span><span class="rc-native-value">Original</span></div><div class="rc-check"><input type="checkbox" id="rc-study-metadata"' + (value.metadata ? ' checked' : '') + '><label for="rc-study-metadata">Keep metadata</label></div>';
+      }
+    }
+
+    function render() {
+      root.dataset.filled = String(state.inactiveSurfaces);
+      root.dataset.motion = String(state.motion);
+      root.style.setProperty('--rc-duration', state.duration + 'ms');
+      root.querySelectorAll('[data-group]').forEach((button) => button.setAttribute('aria-pressed', String(button.dataset.group === state.selected)));
+      positionSelections();
+      if (previous !== state.selected) {
+        const wasVisible = previous !== '';
+        const isImage = state.selected === 'images';
+        root.querySelector('.rc-context').textContent = isImage ? '23 images' : '12 audio files';
+        format.textContent = values[state.selected].target;
+        updateSettings();
+        if (wasVisible && state.motion && !reduceMotion.matches) {
+          centerAnimation?.cancel();
+          centerAnimation = center.animate([{ opacity: .35 }, { opacity: 1 }], { duration: Math.min(180, state.duration), easing: 'ease-out' });
+        }
+        root.querySelector('[role="status"]').textContent = isImage ? 'Images selected. 23 files to ' + values.images.target + '.' : 'Audio selected. 12 files to ' + values.audio.target + '.';
+        previous = state.selected;
+      }
+    }
+
+    root.addEventListener('click', (event) => {
+      const group = event.target.closest('[data-group]');
+      if (group) { state.selected = group.dataset.group; render(); }
+    });
+    settings.addEventListener('input', (event) => {
+      if (event.target.id === 'rc-study-quality') {
+        values.images.quality = Number(event.target.value);
+        settings.querySelector('output').textContent = event.target.value;
+      }
+    });
+    settings.addEventListener('change', (event) => {
+      const field = event.target;
+      if (field.id === 'rc-study-lossless') { values.images.lossless = field.checked; settings.querySelector('#rc-study-quality').disabled = field.checked; }
+      if (field.id === 'rc-study-resize') values.images.resize = field.value;
+      if (field.id === 'rc-study-rate') values.audio.rate = field.value;
+      if (field.id === 'rc-study-metadata') values.audio.metadata = field.checked;
+    });
+
+    render();
+    requestAnimationFrame(() => { positionSelections(); requestAnimationFrame(() => { root.dataset.ready = 'true'; }); });
+    new ResizeObserver(positionSelections).observe(root);
+    if (globalThis.Tweak) {
+      const tweak = new Tweak({ container: root, onChange: render });
+      tweak.addToggle(state, 'inactiveSurfaces', { label: 'Fill unselected rows' });
+      tweak.addToggle(state, 'motion', { label: 'Move selection highlights' });
+      tweak.addSlider(state, 'duration', { label: 'Selection motion', min: 140, max: 360, step: 20, unit: 'ms' });
+    }
+  })();
+</script>
