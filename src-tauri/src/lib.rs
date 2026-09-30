@@ -1,5 +1,6 @@
 mod animation;
 mod avif;
+mod desktop;
 mod image_backend;
 mod image_format;
 mod inputs;
@@ -19,6 +20,7 @@ pub fn run() {
                 app.path().resource_dir()?.join("image-backend")
             };
             app.manage(image_backend::ImageBackend { root });
+            desktop::install_menu(app.handle())?;
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -51,6 +53,21 @@ pub fn run() {
             jobs::backend_status,
             jobs::reveal_output
         ])
-        .run(tauri::generate_context!())
-        .expect("Recast could not start");
+        .build(tauri::generate_context!())
+        .expect("Recast could not start")
+        .run(|app, event| {
+            if let tauri::RunEvent::ExitRequested { api, code, .. } = event {
+                let jobs = app.state::<jobs::JobManager>().cancel_before_exit();
+                if !jobs.is_empty() {
+                    api.prevent_exit();
+                    let app = app.clone();
+                    tauri::async_runtime::spawn_blocking(move || {
+                        while jobs.iter().any(|job| job.active()) {
+                            std::thread::sleep(std::time::Duration::from_millis(35));
+                        }
+                        app.exit(code.unwrap_or(0));
+                    });
+                }
+            }
+        });
 }

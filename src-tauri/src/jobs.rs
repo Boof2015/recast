@@ -96,9 +96,26 @@ impl Job {
 }
 
 #[derive(Default)]
-pub struct JobManager(Mutex<HashMap<String, Arc<Job>>>);
+pub struct JobManager(Mutex<HashMap<String, Arc<Job>>>, AtomicBool);
 
 impl JobManager {
+    pub fn cancel_before_exit(&self) -> Vec<Arc<Job>> {
+        let jobs = self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        // Holding the same lock as prepare prevents a new run from starting
+        // between collecting active jobs and beginning shutdown.
+        self.1.store(true, Ordering::Relaxed);
+        jobs.values()
+            .filter(|job| job.active())
+            .map(|job| {
+                job.request_cancel();
+                job.clone()
+            })
+            .collect()
+    }
+
     pub fn cancel_before_close(&self, label: &str) -> Option<Arc<Job>> {
         let job = self.0.lock().ok()?.get(label)?.clone();
         if !job.active() {
@@ -123,6 +140,9 @@ impl JobManager {
             .0
             .lock()
             .map_err(|_| "The batch state is unavailable.".to_string())?;
+        if self.1.load(Ordering::Relaxed) {
+            return Err("Recast is closing. Wait for the current conversions to stop.".into());
+        }
         if jobs.get(label).is_some_and(|job| job.active()) {
             return Err("Wait for this conversion to finish or cancel it first.".into());
         }

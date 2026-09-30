@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode, type UIEventH
 import { ArrowDownToLine, ArrowLeft, ArrowRight, Check, ChevronDown, ChevronRight, File, Film, Folder, Monitor, Moon, Plus, Sun, X } from 'lucide-react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import { open } from '@tauri-apps/plugin-dialog';
 import { defaultSettings, destinationsFor, formatCounts, kindLabels, kinds, unitLabels, type Appearance, type Destination, type GroupSettings, type InputFile, type MediaKind } from './model';
 import { sampleFiles, type Scenario } from './fixtures';
@@ -97,6 +98,9 @@ export default function App() {
   const [dragging, setDragging] = useState(false);
   const [inspecting, setInspecting] = useState(false);
   const inspectionCount = useRef(0);
+  const filesRef = useRef(files);
+  filesRef.current = files;
+  const pickerOpen = useRef(false);
   const [outputFolder, setOutputFolder] = useState<string | null>(null);
   const conversion = useConversion();
   const { job, busy } = conversion;
@@ -164,12 +168,14 @@ export default function App() {
     setInspecting(true);
     try {
       const result = await invoke<{ files: InputFile[]; errors: { name: string; message: string }[] }>('inspect_inputs', { paths });
-      conversion.clear();
-      setFiles((current) => {
-        const realFiles = current.filter(file => file.path);
-        const seen = new Set(realFiles.map((file) => file.id));
-        return [...realFiles, ...result.files.filter((file) => !seen.has(file.id) && seen.add(file.id))];
-      });
+      const realFiles = filesRef.current.filter(file => file.path);
+      const seen = new Set(realFiles.map(file => file.id));
+      const additions = result.files.filter(file => !seen.has(file.id) && seen.add(file.id));
+      if (additions.length) {
+        conversion.clear();
+        filesRef.current = [...realFiles, ...additions];
+        setFiles(filesRef.current);
+      }
       if (result.errors.length) setNotice(result.errors.map((error) => `${error.name}: ${error.message}`).join(' '));
       else setNotice('');
     } catch (error) { setNotice(`Files could not be added. ${String(error)}`); }
@@ -190,19 +196,33 @@ export default function App() {
   }, [addPaths]);
 
   async function chooseFiles() {
-    if (conversion.busyRef.current) return;
+    if (conversion.busyRef.current || pickerOpen.current || inspectionCount.current > 0) return;
     if (!isTauri()) { setNotice('File selection is available in the desktop app. Use the sample batches below to explore this browser preview.'); return; }
+    pickerOpen.current = true;
     try {
       const paths = await open({ multiple: true, directory: false, title: 'Choose files to convert' });
       if (paths) await addPaths(Array.isArray(paths) ? paths : [paths]);
     } catch { setNotice('The file picker could not open. Try dropping files into the window.'); }
+    finally { pickerOpen.current = false; }
   }
 
+  useEffect(() => {
+    if (!isTauri()) return;
+    let disposed = false;
+    let stop: (() => void) | undefined;
+    void getCurrentWindow().listen('recast:add-files', () => void chooseFiles())
+      .then(unlisten => { if (disposed) unlisten(); else stop = unlisten; })
+      .catch(() => setNotice('The Add Files menu is unavailable. Use the button or drop files here.'));
+    return () => { disposed = true; stop?.(); };
+  }, []);
+
   async function chooseFolder() {
-    if (conversion.busyRef.current) return;
+    if (conversion.busyRef.current || pickerOpen.current) return;
     if (!isTauri()) { setNotice('Destination folder selection is available in the desktop app.'); return; }
-    try { const folder = await open({ directory: true, multiple: false, title: 'Choose an output folder', defaultPath: outputFolder ?? undefined }); if (typeof folder === 'string') { conversion.clear(); setOutputFolder(folder); } }
+    pickerOpen.current = true;
+    try { const folder = await open({ directory: true, multiple: false, title: 'Choose an output folder', defaultPath: outputFolder ?? undefined }); if (typeof folder === 'string' && folder !== outputFolder) { conversion.clear(); setOutputFolder(folder); } }
     catch { setNotice('The folder picker could not open.'); }
+    finally { pickerOpen.current = false; }
   }
 
   function changeScenario(next: Scenario) {
@@ -216,6 +236,7 @@ export default function App() {
 
   function updateSettings(change: Partial<GroupSettings>) {
     if (conversion.busyRef.current) return;
+    if (Object.entries(change).every(([key, value]) => activeSettings[key as keyof GroupSettings] === value)) return;
     conversion.clear();
     setSettings((current) => ({ ...current, [activeKind]: { ...current[activeKind], ...change } }));
   }

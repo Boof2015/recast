@@ -18,7 +18,11 @@ npm run backend:prepare
 npm run desktop
 ```
 
-Choose or drop PNG/JPEG/WebP/BMP/TIFF files, select an output, adjust the group settings, and convert. Outputs go beside their sources by default; a different folder can be selected. Existing names, including the original during same-format conversion, get a numbered alternative. JPEG outputs use `.jpg`; TIFF outputs use `.tiff` (both `.tif` and `.tiff` inputs are recognized by content). Click a completed output to reveal it in its folder.
+Choose or drop PNG/JPEG/WebP/BMP/TIFF/AVIF/GIF files, select an output, adjust the group settings, and convert. Animated GIF/WebP inputs offer animation-preserving GIF/WebP destinations; TIFF inputs must have one page. Outputs go beside their sources by default; a different folder can be selected. Existing names, including the original during same-format conversion, get a numbered alternative. JPEG outputs use `.jpg`; TIFF outputs use `.tiff` (both `.tif` and `.tiff` inputs are recognized by content). Click a completed output to reveal it in its folder.
+
+Use **File → New Window** (⌘N on macOS, Ctrl+N elsewhere) for an independent batch. **File → Add Files…** (⌘O / Ctrl+O) adds to the focused window. Closing a running window cancels that batch and waits for cleanup; quitting Recast cancels all active batches and waits for cleanup. Completed outputs stay on disk. Adding an existing input again, cancelling a picker, or selecting the same setting or output folder leaves completed results available.
+
+New windows open slightly down and right from the current window, wrapping into view at screen edges.
 
 For the development-only sample UI:
 

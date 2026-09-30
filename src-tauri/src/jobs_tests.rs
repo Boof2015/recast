@@ -785,5 +785,40 @@ fn active_window_rejects_another_run_but_other_windows_are_independent() {
 #[path = "avif_tests.rs"]
 mod avif;
 
+#[test]
+fn quitting_cancels_all_windows_preserves_outputs_and_blocks_new_jobs() {
+    let dir = tempfile::tempdir().unwrap();
+    let first = copy("rgb.png", &dir.path().join("first.png"));
+    let second = copy("rgba.png", &dir.path().join("second.png"));
+    let manager = JobManager::default();
+    let request = request(&[first, second], dir.path());
+    let one = manager.prepare("one", request.clone(), false).unwrap();
+    let two = manager.prepare("two", request.clone(), false).unwrap();
+    run_job(&one, &backend(), |snapshot| {
+        if snapshot.status == BatchStatus::Running
+            && snapshot.files[0].status == FileStatus::Succeeded
+        {
+            assert_eq!(manager.cancel_before_exit().len(), 2);
+        }
+    });
+    assert!(manager.prepare("three", request.clone(), false).is_err());
+    assert!(manager.prepare("one", request, true).is_err());
+    run_job(&two, &backend(), |_| {});
+    assert_eq!(one.snapshot().status, BatchStatus::Cancelled);
+    assert_eq!(one.snapshot().files[0].status, FileStatus::Succeeded);
+    assert_eq!(one.snapshot().files[1].status, FileStatus::Cancelled);
+    assert_eq!(two.snapshot().status, BatchStatus::Cancelled);
+    assert!(two
+        .snapshot()
+        .files
+        .iter()
+        .all(|file| file.status == FileStatus::Cancelled));
+    assert!(dir.path().join("first.webp").is_file());
+    assert!(!dir.path().join("first (1).webp").exists());
+    assert!(!dir.path().join("second.webp").exists());
+    assert!(manager.cancel_before_exit().is_empty());
+    no_partials(dir.path());
+}
+
 #[path = "animation_tests.rs"]
 mod animation;
