@@ -11,6 +11,8 @@ export interface InputFile {
   hasAudio: boolean | null;
   targets?: string[];
   conversionIssue?: string | null;
+  animated?: boolean;
+  targetIssues?: Record<string, string>;
 }
 
 export interface GroupSettings {
@@ -19,6 +21,8 @@ export interface GroupSettings {
   lossless: boolean;
   metadata: boolean;
   background: string;
+  colors: number;
+  dither: boolean;
   resize: string;
   bitrate: string;
   resolution: string;
@@ -42,7 +46,7 @@ const imageDestinations: Destination[] = [
   { id: 'png', label: 'PNG', description: 'Lossless & transparent', category: 'Image' },
   { id: 'avif', label: 'AVIF', description: 'Smaller photo files', category: 'Image' },
   { id: 'tiff', label: 'TIFF', description: 'Lossless, single-page images', category: 'Image' },
-  { id: 'gif', label: 'GIF', description: 'Limited-color images', category: 'Image' },
+  { id: 'gif', label: 'GIF', description: 'Images & animations', category: 'Image' },
   { id: 'bmp', label: 'BMP', description: 'Uncompressed images', category: 'Image' },
 ];
 const audioDestinations: Destination[] = [
@@ -83,7 +87,7 @@ export function destinationsFor(kind: MediaKind, files: InputFile[], preview = f
 export function defaultSettings(): Record<MediaKind, GroupSettings> {
   const settings: GroupSettings = {
     target: null, quality: 85, lossless: false, metadata: true, background: '#ffffff',
-    resize: 'Original', bitrate: '192 kbps', resolution: 'Original', frameRate: 'Original',
+    colors: 256, dither: true, resize: 'Original', bitrate: '192 kbps', resolution: 'Original', frameRate: 'Original',
   };
   return { images: { ...settings }, audio: { ...settings }, video: { ...settings } };
 }

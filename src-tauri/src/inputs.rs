@@ -19,6 +19,10 @@ pub struct InputFile {
     has_audio: Option<bool>,
     targets: Vec<String>,
     conversion_issue: Option<String>,
+    animated: bool,
+    target_issues: std::collections::HashMap<String, String>,
+    #[serde(skip)]
+    pub sequence: Option<crate::animation::Sequence>,
 }
 
 #[derive(Debug, Serialize)]
@@ -69,21 +73,37 @@ pub fn inspect(path: &Path) -> Result<InputFile, String> {
         .canonicalize()
         .map_err(|_| "This file is no longer available.")?;
     let path_string = canonical.to_string_lossy().into_owned();
+    let sequence_result = match extension {
+        "gif" => crate::animation::inspect_gif(&mut file).map(Some),
+        "webp" => crate::animation::inspect_webp(&mut file),
+        _ => Ok(None),
+    };
+    let sequence = sequence_result.as_ref().ok().cloned().flatten();
     let conversion_issue = match extension {
         "jpg" => None,
         "png" => png_conversion_issue(&mut file),
-        "webp" => webp_conversion_issue(&mut file),
+        "gif" | "webp" => sequence_result.err(),
         "bmp" => bmp_conversion_issue(&mut file),
         "tiff" => crate::tiff::inspect(&mut file).err(),
         "avif" => crate::avif::inspect(&mut file).err(),
         _ => Some(
-            "This build converts still PNG, JPEG, WebP, BMP, TIFF, and AVIF images. This file is not supported yet."
+            "This build converts PNG, JPEG, WebP, BMP, TIFF, AVIF, and GIF images, including GIF/WebP animations. This file is not supported yet."
                 .into(),
         ),
     };
+    let target_issues: std::collections::HashMap<String, String> = ImageFormat::ALL
+        .into_iter()
+        .filter_map(|format| {
+            sequence
+                .as_ref()?
+                .target_issue(format.id())
+                .map(|issue| (format.id().into(), issue))
+        })
+        .collect();
     let targets = if conversion_issue.is_none() {
         ImageFormat::ALL
             .into_iter()
+            .filter(|format| !target_issues.contains_key(format.id()))
             .map(|format| format.id().into())
             .collect()
     } else {
@@ -107,6 +127,9 @@ pub fn inspect(path: &Path) -> Result<InputFile, String> {
         has_audio: None,
         targets,
         conversion_issue,
+        animated: sequence.as_ref().is_some_and(|s| s.animated()),
+        target_issues,
+        sequence,
     })
 }
 
@@ -212,65 +235,17 @@ fn png_conversion_issue(file: &mut File) -> Option<String> {
     }
 }
 
-// Check both the feature flag and frame chunks: never flatten an animation,
-// even when its VP8X animation flag is missing or inconsistent.
-fn webp_conversion_issue(file: &mut File) -> Option<String> {
-    let mut check = || -> std::io::Result<bool> {
-        let invalid = || std::io::Error::new(std::io::ErrorKind::InvalidData, "Incomplete WebP");
-        file.seek(SeekFrom::Start(0))?;
-        let length = file.metadata()?.len();
-        let mut header = [0; 12];
-        file.read_exact(&mut header)?;
-        if &header[..4] != b"RIFF"
-            || &header[8..] != b"WEBP"
-            || u64::from(u32::from_le_bytes(header[4..8].try_into().unwrap())) + 8 != length
-        {
-            return Err(invalid());
-        }
-        let mut images = 0;
-        while file.stream_position()? < length {
-            let mut chunk = [0; 8];
-            file.read_exact(&mut chunk)?;
-            let count = u64::from(u32::from_le_bytes(chunk[4..].try_into().unwrap()));
-            let end = file.stream_position()? + count + (count % 2);
-            if end > length {
-                return Err(invalid());
-            }
-            match &chunk[..4] {
-                b"ANIM" | b"ANMF" => return Ok(true),
-                b"VP8X" => {
-                    if count != 10 {
-                        return Err(invalid());
-                    }
-                    let mut flags = [0];
-                    file.read_exact(&mut flags)?;
-                    if flags[0] & 0x02 != 0 {
-                        return Ok(true);
-                    }
-                }
-                b"VP8 " | b"VP8L" => images += 1,
-                _ => {}
-            }
-            file.seek(SeekFrom::Start(end))?;
-        }
-        if images != 1 {
-            return Err(invalid());
-        }
-        Ok(false)
-    };
-    match check() {
-        Ok(false) => None,
-        Ok(true) => Some(
-            "Animated WebP conversion is not supported yet. Remove this file to convert the rest."
-                .into(),
-        ),
-        Err(_) => Some("This WebP is incomplete or unreadable.".into()),
-    }
-}
-
 pub fn require_supported(path: &Path) -> Result<InputFile, String> {
     let input = inspect(path)?;
     if let Some(issue) = &input.conversion_issue {
+        return Err(issue.clone());
+    }
+    Ok(input)
+}
+
+pub fn require_target(path: &Path, target: &str) -> Result<InputFile, String> {
+    let input = require_supported(path)?;
+    if let Some(issue) = input.target_issues.get(target) {
         return Err(issue.clone());
     }
     Ok(input)

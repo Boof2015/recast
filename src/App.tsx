@@ -42,7 +42,7 @@ function ScrollArea({ children, className = '', onScroll }: { children: ReactNod
   return <div className={`scroll-area ${className}`} data-top={edges.top} data-bottom={edges.bottom} ref={ref} onScroll={onScroll}>{children}</div>;
 }
 
-function FormatSettings({ kind, destination, value, onChange, disabled }: { kind: MediaKind; destination: Destination; value: GroupSettings; onChange: (change: Partial<GroupSettings>) => void; disabled: boolean }) {
+function FormatSettings({ kind, destination, value, onChange, disabled, animated }: { kind: MediaKind; destination: Destination; value: GroupSettings; onChange: (change: Partial<GroupSettings>) => void; disabled: boolean; animated: boolean }) {
   const isImage = kind === 'images';
   const isAudio = kind === 'audio' || destination.category === 'Audio only';
   const isVideo = kind === 'video' && !isAudio;
@@ -51,6 +51,10 @@ function FormatSettings({ kind, destination, value, onChange, disabled }: { kind
   return <div className="settings-stack">
     {hasQuality && <QualitySetting value={value.quality} disabled={hasLossless && value.lossless} onChange={(quality) => onChange({ quality })} />}
     {hasLossless && <CheckboxSetting label="Lossless" checked={value.lossless} onChange={(lossless) => onChange({ lossless })} />}
+    {isImage && destination.id === 'gif' && <>
+      <SelectSetting label="Colors" value={String(value.colors)} options={['256', '128', '64', '32']} onChange={(colors) => onChange({ colors: Number(colors) })} />
+      <CheckboxSetting label="Dithering" checked={value.dither} onChange={(dither) => onChange({ dither })} />
+    </>}
     {isImage && <SelectSetting label="Resize" value={value.resize} options={['Original', '75%', '50%', '25%']} onChange={(resize) => onChange({ resize })} />}
     {isImage && ['jpeg', 'bmp'].includes(destination.id) && <ColorSetting label="Background" value={value.background} disabled={disabled} onChange={(background) => onChange({ background })} />}
     {isAudio && ['mp3', 'm4a', 'opus', 'ogg'].includes(destination.id) && <SelectSetting label="Bitrate" value={value.bitrate} options={['128 kbps', '192 kbps', '256 kbps', '320 kbps']} onChange={(bitrate) => onChange({ bitrate })} />}
@@ -64,6 +68,7 @@ function FormatSettings({ kind, destination, value, onChange, disabled }: { kind
     {isVideo && destination.id === 'gif' && <div className="range-placeholder"><Film size={24} strokeWidth={1.4} /><p>Preview & source range</p><span>To be explored in the next design pass</span></div>}
     {destination.id !== 'gif' && destination.id !== 'bmp' && <CheckboxSetting label="Keep metadata" checked={value.metadata} onChange={(metadata) => onChange({ metadata })} />}
     {isImage && destination.id === 'tiff' && value.metadata && <p className="settings-note">Keeps color profiles and supported tags. Camera EXIF may not carry over.</p>}
+    {isImage && destination.id === 'gif' && <p className="settings-note">Partial transparency becomes clear or opaque.{animated && <> Timing rounds to 10&nbsp;ms.</>}</p>}
     {isImage && destination.id === 'avif' && <p className="settings-note">AVIF supports up to 12-bit color.</p>}
   </div>;
 }
@@ -72,7 +77,7 @@ function DestinationBrowser({ formats, onChoose }: { formats: Destination[]; onC
   const categories = [...new Set(formats.map((format) => format.category))];
   return <div className="destination-browser">
     <h2>Convert to</h2>
-    {formats.length === 0 && <p className="settings-note">These files don’t share an available output yet. This build converts still PNG, JPEG, WebP, BMP, TIFF, and AVIF images.</p>}
+    {formats.length === 0 && <p className="settings-note">These files don’t share an available output yet. This build converts PNG, JPEG, WebP, BMP, TIFF, AVIF, and GIF images, including GIF/WebP animations.</p>}
     {categories.map((category) => <section className="destination-category" key={category}>
       <h3>{category}</h3>
       <div className="destination-list">{formats.filter((format) => format.category === category).map((format) => <button key={format.id} className="destination-option" onClick={() => onChoose(format.id)}>
@@ -253,7 +258,7 @@ export default function App() {
     {files.length === 0 ? <main className="empty-state">
       <div className="empty-symbol" aria-hidden="true"><File className="file-back" size={49} strokeWidth={1.15} /><File className="file-front" size={49} strokeWidth={1.15} /><ArrowDownToLine className="file-arrow" size={18} strokeWidth={1.6} /></div>
       <h1>Drop files here</h1>
-      <p>{previewCatalog ? 'Images, audio, or video. All on your device.' : 'PNG and JPEG to WebP. All on your device.'}</p>
+      <p>{previewCatalog ? 'Images, audio, or video. All on your device.' : 'Images and GIFs. All on your device.'}</p>
       <button className="primary-button choose-files" onClick={() => void chooseFiles()} disabled={inspecting}>{inspecting ? 'Reading files…' : 'Choose files'}<Plus size={16} /></button>
     </main> : <>
       <main className="workspace" ref={workspaceRef}>
@@ -274,7 +279,7 @@ export default function App() {
                 </div>
                 {isExpanded && <ScrollArea className="file-list-scroll"><div className="file-list" id={`files-${kind}`}>{groupFiles.map((file) => {
                   const result = job?.files.find(result => result.id === file.id);
-                  const detail = result?.error ?? file.conversionIssue ?? (result ? ({ pending: 'Waiting', running: 'Converting…', succeeded: 'Converted', failed: 'Failed', cancelled: 'Cancelled' }[result.status]) : '');
+                  const detail = result?.error ?? file.conversionIssue ?? (settings[kind].target ? file.targetIssues?.[settings[kind].target!] : undefined) ?? (result ? ({ pending: 'Waiting', running: 'Converting…', succeeded: 'Converted', failed: 'Failed', cancelled: 'Cancelled' }[result.status]) : file.animated ? 'Animated' : '');
                   return <div className="file-row" key={file.id}><div className="file-detail"><span title={file.path || file.name}>{file.name}</span>{detail && <span className="file-status">{detail}</span>}</div><button className="remove-file" disabled={busy} aria-label={`Remove ${file.name}`} onClick={() => { conversion.clear(); setFiles((current) => current.filter((item) => item.id !== file.id)); }}><X size={13} /></button></div>;
                 })}</div></ScrollArea>}
               </section>;
@@ -285,11 +290,11 @@ export default function App() {
         <section className="conversion-region" aria-label="Conversion settings">
           <div className="conversion-heading">{activeFiles.length} {unitLabels[activeKind]}</div>
           <ScrollArea className="conversion-scroll"><div className="conversion-content" key={activeKind}>
-            {unresolvedTarget && <div className="compatibility-message" role="status"><p>{affectedFiles.length === 1 ? affectedFiles[0].name : `${affectedFiles.length} files`} cannot be converted to {activeSettings.target?.toUpperCase()}.</p><p className="compatibility-reason">{previewCatalog ? affectedFiles.every((file) => file.hasAudio === false) ? 'No audio track was found.' : 'An audio track has not been confirmed for every file.' : affectedFiles.length === 1 ? affectedFiles[0].conversionIssue : 'Not every file supports this output.'}</p><span>Remove {affectedFiles.length === 1 ? 'it' : 'them'} to keep this format{formats.length ? ', or choose another for the whole group.' : '.'}</span><button className="text-button" onClick={() => { setSelected(activeKind); setExpanded((current) => current.includes(activeKind) ? current : [...current, activeKind]); }}>Show files<ChevronRight size={13} /></button></div>}
+            {unresolvedTarget && <div className="compatibility-message" role="status"><p>{affectedFiles.length === 1 ? affectedFiles[0].name : `${affectedFiles.length} files`} cannot be converted to {activeSettings.target?.toUpperCase()}.</p><p className="compatibility-reason">{previewCatalog ? affectedFiles.every((file) => file.hasAudio === false) ? 'No audio track was found.' : 'An audio track has not been confirmed for every file.' : affectedFiles.length === 1 ? (affectedFiles[0].targetIssues?.[activeSettings.target ?? ''] ?? affectedFiles[0].conversionIssue) : 'Not every file supports this output.'}</p><span>Remove {affectedFiles.length === 1 ? 'it' : 'them'} to keep this format{formats.length ? ', or choose another for the whole group.' : '.'}</span><button className="text-button" onClick={() => { setSelected(activeKind); setExpanded((current) => current.includes(activeKind) ? current : [...current, activeKind]); }}>Show files<ChevronRight size={13} /></button></div>}
             <fieldset className="conversion-fields" disabled={busy}>
             {selectedFormat ? <>
               <button className="format-back" onClick={() => updateSettings({ target: null })} aria-label="Change output format"><ArrowLeft size={18} strokeWidth={1.7} /><h2>{selectedFormat.label}</h2></button>
-              <FormatSettings kind={activeKind} destination={selectedFormat} value={activeSettings} onChange={updateSettings} disabled={busy} />
+              <FormatSettings kind={activeKind} destination={selectedFormat} value={activeSettings} onChange={updateSettings} disabled={busy} animated={activeFiles.some(file => file.animated)} />
             </> : <DestinationBrowser formats={formats} onChoose={(target) => updateSettings({ target })} />}
             </fieldset>
             {!unresolvedTarget && !formats.length && !previewCatalog && <button className="text-button" onClick={() => setExpanded(current => current.includes(activeKind) ? current : [...current, activeKind])}>Show files<ChevronRight size={13} /></button>}

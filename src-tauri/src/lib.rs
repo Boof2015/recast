@@ -1,3 +1,4 @@
+mod animation;
 mod avif;
 mod image_backend;
 mod image_format;

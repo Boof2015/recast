@@ -12,23 +12,25 @@ pub enum ImageFormat {
     Bmp,
     Tiff,
     Avif,
+    Gif,
 }
 
 impl ImageFormat {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::WebP,
         Self::Jpeg,
         Self::Png,
         Self::Bmp,
         Self::Tiff,
         Self::Avif,
+        Self::Gif,
     ];
 
     pub fn from_id(id: &str) -> Result<Self, String> {
         Self::ALL
             .into_iter()
             .find(|format| format.id() == id)
-            .ok_or_else(|| "Choose PNG, JPEG, WebP, BMP, TIFF, or AVIF for the output.".into())
+            .ok_or_else(|| "Choose PNG, JPEG, WebP, BMP, TIFF, AVIF, or GIF for the output.".into())
     }
 
     pub fn id(self) -> &'static str {
@@ -39,6 +41,7 @@ impl ImageFormat {
             Self::Bmp => "bmp",
             Self::Tiff => "tiff",
             Self::Avif => "avif",
+            Self::Gif => "gif",
         }
     }
 
@@ -57,6 +60,7 @@ impl ImageFormat {
             Self::Bmp => "BMP",
             Self::Tiff => "TIFF",
             Self::Avif => "AVIF",
+            Self::Gif => "GIF",
         }
     }
 
@@ -69,15 +73,10 @@ impl ImageFormat {
             let mut header = [0u8; 12];
             file.read_exact(&mut header)?;
             let valid = match self {
+                Self::Gif => crate::animation::inspect_gif(&mut file).is_ok(),
                 Self::Tiff => crate::tiff::inspect(&mut file).is_ok(),
                 Self::Avif => crate::avif::inspect(&mut file).is_ok(),
-                Self::WebP => {
-                    bytes > 20
-                        && &header[..4] == b"RIFF"
-                        && &header[8..] == b"WEBP"
-                        && u64::from(u32::from_le_bytes(header[4..8].try_into().unwrap())) + 8
-                            == bytes
-                }
+                Self::WebP => crate::animation::inspect_webp(&mut file).is_ok(),
                 Self::Jpeg => {
                     let mut end = [0; 2];
                     file.seek(SeekFrom::End(-2))?;

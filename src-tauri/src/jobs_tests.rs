@@ -31,6 +31,8 @@ fn options() -> ImageOptions {
         resize: 100,
         metadata: true,
         background: "#ffffff".into(),
+        colors: 256,
+        dither: true,
     }
 }
 fn copy(name: &str, destination: &Path) -> PathBuf {
@@ -100,6 +102,7 @@ fn converts_every_still_image_pair_and_same_format_without_overwriting() {
         ("rgba.avif", "avif"),
         ("rgba12.avif", "avif"),
         ("gray10.avif", "avif"),
+        ("still.gif", "gif"),
     ] {
         for target in crate::image_format::ImageFormat::ALL {
             let dir = tempfile::tempdir().unwrap();
@@ -111,7 +114,7 @@ fn converts_every_still_image_pair_and_same_format_without_overwriting() {
             let json = serde_json::to_value(input).unwrap();
             assert_eq!(
                 json["targets"],
-                serde_json::json!(["webp", "jpeg", "png", "bmp", "tiff", "avif"])
+                serde_json::json!(["webp", "jpeg", "png", "bmp", "tiff", "avif", "gif"])
             );
             let output = backend()
                 .convert(&source, None, &settings, &AtomicBool::new(false))
@@ -359,7 +362,10 @@ fn all_formats_resize_after_orientation_and_handle_metadata() {
             );
             assert_eq!(identify(Path::new(&stripped.path), "%w %h"), "10 16");
             let profiles = identify(Path::new(&retained.path), "%[profiles]");
-            if target == crate::image_format::ImageFormat::Bmp {
+            if matches!(
+                target,
+                crate::image_format::ImageFormat::Bmp | crate::image_format::ImageFormat::Gif
+            ) {
                 assert!(profiles.is_empty());
             } else {
                 assert!(
@@ -376,15 +382,18 @@ fn all_formats_resize_after_orientation_and_handle_metadata() {
 }
 
 #[test]
-fn rejects_animated_webp_for_every_target_without_publishing() {
-    for target in crate::image_format::ImageFormat::ALL {
+fn rejects_animated_webp_for_still_targets_without_publishing() {
+    for target in crate::image_format::ImageFormat::ALL
+        .into_iter()
+        .filter(|format| !["webp", "gif"].contains(&format.id()))
+    {
         let dir = tempfile::tempdir().unwrap();
         let source = copy("animated.webp", &dir.path().join("animated.webp"));
         let mut settings = options();
         settings.target = target.id().into();
         let result = backend().convert(&source, None, &settings, &AtomicBool::new(false));
         assert!(
-            matches!(result, Err(ConversionError::Failed(reason)) if reason.contains("Animated WebP"))
+            matches!(result, Err(ConversionError::Failed(reason)) if reason.contains("animated"))
         );
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
     }
@@ -406,7 +415,7 @@ fn rejects_truncated_webp_and_inconsistent_animation_flags() {
     fs::write(&source, animation).unwrap();
     assert!(crate::inputs::require_supported(&source)
         .unwrap_err()
-        .contains("Animated WebP"));
+        .contains("inconsistent"));
 }
 
 #[test]
@@ -414,7 +423,7 @@ fn invalid_target_and_background_fail_before_writing() {
     let dir = tempfile::tempdir().unwrap();
     let source = copy("rgba.png", &dir.path().join("source.png"));
     let mut settings = options();
-    settings.target = "gif".into();
+    settings.target = "invalid-format".into();
     assert!(backend()
         .convert(&source, None, &settings, &AtomicBool::new(false))
         .is_err());
@@ -438,6 +447,7 @@ fn verifies_output_container_and_terminator_before_publication() {
         (crate::image_format::ImageFormat::Bmp, "rgb.bmp"),
         (crate::image_format::ImageFormat::Tiff, "rgb-le.tiff"),
         (crate::image_format::ImageFormat::Avif, "rgb.avif"),
+        (crate::image_format::ImageFormat::Gif, "still.gif"),
     ] {
         assert!(format.validate_output(&fixture(name)).is_ok());
         let path = dir.path().join(name);
@@ -774,3 +784,6 @@ fn active_window_rejects_another_run_but_other_windows_are_independent() {
 
 #[path = "avif_tests.rs"]
 mod avif;
+
+#[path = "animation_tests.rs"]
+mod animation;

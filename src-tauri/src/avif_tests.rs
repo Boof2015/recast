@@ -24,7 +24,7 @@ fn avif_still_alpha_and_high_depth_inputs_are_recognized_by_content() {
         let input = serde_json::to_value(crate::inputs::inspect(&source).unwrap()).unwrap();
         assert_eq!(input["format"], "AVIF", "{name}");
         assert!(input["conversionIssue"].is_null(), "{name}: {input}");
-        assert_eq!(input["targets"].as_array().unwrap().len(), 6);
+        assert_eq!(input["targets"].as_array().unwrap().len(), 7);
         assert!(crate::image_format::ImageFormat::Avif
             .validate_output(&source)
             .is_ok());

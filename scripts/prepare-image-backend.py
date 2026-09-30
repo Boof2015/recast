@@ -176,6 +176,95 @@ def configure_avif_encoder(source):
     path.write_text(text[:start] + writer + text[end:])
 
 
+
+def configure_webp_animation(source):
+    # Preserve millisecond timing and every composed frame, including identical
+    # and zero-delay frames. The stock animation optimizer rounds delays and
+    # substitutes 100 ms for short frames. Full-canvas frames avoid that change.
+    path = source / 'coders/webp.c'
+    text = path.read_text()
+    marker = '/* Recast full-frame animation writer. */'
+    if marker in text:
+        return
+    old = '    image->ticks_per_second=100;\n    image->delay=(size_t) round(iter.duration/10.0);'
+    if text.count(old) != 1:
+        raise SystemExit('Pinned WebP animation reader no longer matches its source.')
+    text = text.replace(old, '    image->ticks_per_second=1000;\n    image->delay=(size_t) iter.duration;')
+    # Decode the first frame as its real rectangle. The stock reader expands
+    # it to the canvas before coalescing and loses transparent padding when
+    # that frame's payload is opaque; it also changes its disposal bounds.
+    first = 'iter.fragment.bytes,iter.fragment.size,configure,exception,\n          MagickTrue);'
+    if text.count(first) != 1:
+        raise SystemExit('Pinned WebP first-frame reader no longer matches its source.')
+    text = text.replace(first, first.replace('MagickTrue', 'MagickFalse'))
+    # The stock animated reader decodes frame fragments, so its single-frame
+    # profile extraction never sees the container's ICC/EXIF/XMP chunks.
+    # Reuse the existing extractor for both still data and animated containers.
+    profile_start = text.index('#if defined(MAGICKCORE_WEBPMUX_DELEGATE)\n  {\n    StringInfo', text.index('static int ReadSingleWEBPImage('))
+    profile_end = text.index('#endif\n  return(webp_status);', profile_start) + len('#endif')
+    profile_block = text[profile_start:profile_end]
+    helper = ('#if defined(MAGICKCORE_WEBPMUX_DELEGATE)\n'
+              'static void ReadWEBPProfiles(Image *image,const uint8_t *stream,\n'
+              '  size_t length,ExceptionInfo *exception)\n{\n' +
+              profile_block.split('\n', 1)[1].rsplit('#endif', 1)[0] + '}\n#endif\n\n')
+    text = text[:profile_start] + '#if defined(MAGICKCORE_WEBPMUX_DELEGATE)\n  ReadWEBPProfiles(image,stream,length,exception);\n#endif' + text[profile_end:]
+    text = text.replace('static int ReadSingleWEBPImage(', helper + 'static int ReadSingleWEBPImage(', 1)
+    frame_end = '    image_count++;\n  } while (WebPDemuxNextFrame(&iter));'
+    if text.count(frame_end) != 1:
+        raise SystemExit('Pinned WebP animation profile reader no longer matches its source.')
+    text = text.replace(frame_end, '    ReadWEBPProfiles(image,stream,length,exception);\n' + frame_end)
+    start = text.index('static void *WebPDestroyMemoryInfo(')
+    end = text.index('static MagickBooleanType WriteWEBPImageProfile(', start)
+    text = text[:start] + r'''/* Recast full-frame animation writer. */
+static MagickBooleanType WriteAnimatedWEBPImage(const ImageInfo *image_info,
+  Image *image,const WebPConfig *configure,WebPData *webp_data,
+  ExceptionInfo *exception)
+{
+  Image *frame;
+  MagickBooleanType status=MagickTrue;
+  WebPMux *mux=WebPMuxNew();
+  WebPMuxAnimParams params;
+  if (mux == (WebPMux *) NULL)
+    return(MagickFalse);
+  params.bgcolor=0;
+  params.loop_count=(int) image->iterations;
+  if ((WebPMuxSetCanvasSize(mux,(int) image->columns,(int) image->rows) !=
+      WEBP_MUX_OK) || (WebPMuxSetAnimationParams(mux,&params) != WEBP_MUX_OK))
+    status=MagickFalse;
+  for (frame=image; (frame != (Image *) NULL) && (status != MagickFalse);
+       frame=GetNextImageInList(frame))
+    {
+      WebPMemoryWriter writer;
+      WebPMuxFrameInfo info;
+      WebPMemoryWriterInit(&writer);
+      status=WriteSingleWEBPImage(image_info,frame,configure,&writer,exception);
+      memset(&info,0,sizeof(info));
+      info.bitstream.bytes=writer.mem;
+      info.bitstream.size=writer.size;
+      info.id=WEBP_CHUNK_ANMF;
+      info.duration=(int) (((uint64_t) frame->delay*1000)/
+        MagickMax((size_t) frame->ticks_per_second,1));
+      info.dispose_method=WEBP_MUX_DISPOSE_NONE;
+      info.blend_method=WEBP_MUX_NO_BLEND;
+      if ((status != MagickFalse) &&
+          (WebPMuxPushFrame(mux,&info,1) != WEBP_MUX_OK))
+        status=MagickFalse;
+      WebPMemoryWriterClear(&writer);
+    }
+  if ((status != MagickFalse) &&
+      (WebPMuxAssemble(mux,webp_data) != WEBP_MUX_OK))
+    status=MagickFalse;
+  WebPMuxDelete(mux);
+  if (status == MagickFalse)
+    (void) ThrowMagickException(exception,GetMagickModule(),CoderError,
+      "UnableToEncodeImageFile","`%s'",image->filename);
+  return(status);
+}
+
+''' + text[end:]
+    path.write_text(text)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--arch', choices=['arm64', 'x86_64'], help='macOS target architecture; other systems build natively')
@@ -267,6 +356,7 @@ def main():
         raise SystemExit(f'Delegates must be static: {unexpected}')
     source = extract(LOCK['source'], work / 'sources/ImageMagick')
     configure_avif_encoder(source)
+    configure_webp_animation(source)
     policy = (ROOT / 'scripts/image-policy.xml').read_text()
     private = source / 'MagickCore/policy-private.h'
     private.write_text(re.sub(r'\*ZeroConfigurationPolicy\s*=.*?;', lambda _: '*ZeroConfigurationPolicy = ' + json.dumps(policy) + ';', private.read_text(), flags=re.S))

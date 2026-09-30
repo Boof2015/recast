@@ -26,6 +26,17 @@ pub struct ImageOptions {
     pub metadata: bool,
     #[serde(default = "default_background")]
     pub background: String,
+    #[serde(default = "default_colors")]
+    pub colors: u16,
+    #[serde(default = "default_dither")]
+    pub dither: bool,
+}
+
+fn default_colors() -> u16 {
+    256
+}
+fn default_dither() -> bool {
+    true
 }
 
 fn default_background() -> String {
@@ -35,6 +46,9 @@ fn default_background() -> String {
 impl ImageOptions {
     pub fn validate(&self) -> Result<(), String> {
         ImageFormat::from_id(&self.target)?;
+        if ![32, 64, 128, 256].contains(&self.colors) {
+            return Err("Choose 32, 64, 128, or 256 colors for GIF.".into());
+        }
         if !(1..=100).contains(&self.quality) {
             return Err("Quality must be between 1 and 100.".into());
         }
@@ -138,7 +152,7 @@ impl ImageBackend {
         options.validate()?;
         let format = ImageFormat::from_id(&options.target)?;
         check_cancel(cancel)?;
-        let input = inputs::require_supported(source)?;
+        let input = inputs::require_target(source, &options.target)?;
         let source = Path::new(&input.path);
         let parent = folder.unwrap_or_else(|| source.parent().unwrap());
         if !parent.is_dir() {
@@ -174,7 +188,8 @@ impl ImageBackend {
         }
         drop(staged_file);
         // Recheck staged bytes in case the source changed while it was copied.
-        inputs::require_supported(&staged)?;
+        let inspected = inputs::require_target(&staged, &options.target)?;
+        let animated = inspected.sequence.as_ref().is_some_and(|s| s.animated());
         let output = tempfile::Builder::new()
             .prefix(".recast-")
             .suffix(&format!(".{}", format.extension()))
@@ -190,13 +205,15 @@ impl ImageBackend {
         command
             .current_dir(work.path())
             .env("MAGICK_TEMPORARY_PATH", work.path());
-        // ImageMagick's list-length limit is exclusive: 2 allows one image.
-        // This rejects image sequences even if a misleading header passed the
-        // lightweight inspection. Never encode or silently flatten a sequence.
+        // Keep the single-image guard for still inputs. Explicitly inspected
+        // sequences receive a bounded frame budget and are composed before resize.
         command
-            .args(["-limit", "list-length", "2"])
-            .arg(&staged)
-            .arg("-auto-orient");
+            .args(["-limit", "list-length", if animated { "1001" } else { "2" }])
+            .arg(&staged);
+        if inspected.sequence.is_some() {
+            command.args(["-alpha", "set", "-coalesce"]);
+        }
+        command.arg("-auto-orient");
         if options.resize != 100 {
             command.args(["-resize", &format!("{}%", options.resize)]);
         }
@@ -219,10 +236,32 @@ impl ImageBackend {
                 "off",
             ]);
         }
-        if !options.metadata || format == ImageFormat::Bmp {
+        if !options.metadata || matches!(format, ImageFormat::Bmp | ImageFormat::Gif) {
             command.arg("-strip");
         }
         match format {
+            ImageFormat::Gif => {
+                command.args([
+                    "-channel",
+                    "A",
+                    "-threshold",
+                    "50%",
+                    "+channel",
+                    "-dither",
+                    if options.dither {
+                        "FloydSteinberg"
+                    } else {
+                        "None"
+                    },
+                    "-colors",
+                    &options.colors.to_string(),
+                    "-background",
+                    "none",
+                    "-dispose",
+                    "Background",
+                    "+repage",
+                ]);
+            }
             ImageFormat::Avif => {
                 // The writer selects 8/10/12-bit storage directly. A separate
                 // -depth operation would quantize the pixels before encoding.
@@ -377,6 +416,9 @@ impl ImageBackend {
                 .unwrap_or("The image data could not be converted.")
                 .trim_start_matches("magick: ");
             return Err(format!("Conversion failed: {detail}").into());
+        }
+        if let Some(sequence) = &inspected.sequence {
+            sequence.finish_output(output.path(), &options.target, options.resize)?;
         }
         let bytes = format.validate_output(output.path())?;
         output.as_file().sync_all().map_err(|_| {
