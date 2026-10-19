@@ -1,5 +1,6 @@
 """Exercise source integrity, compiler isolation and platform dependency audits."""
 import hashlib
+import http.client
 import importlib.util
 import os
 from pathlib import Path
@@ -71,13 +72,16 @@ class SourceDownloadTests(unittest.TestCase):
         cache = patch.object(builder, 'CACHE', self.root / 'cache')
         cache.start()
         self.addCleanup(cache.stop)
+        sleep = patch.object(builder.time, 'sleep')
+        sleep.start()
+        self.addCleanup(sleep.stop)
         self.downloads = builder.CACHE / 'downloads'
 
     def test_empty_cache_downloads_verifies_and_publishes_source(self):
         result = builder.download(self.source)
         self.assertEqual(result.read_bytes(), self.payload)
         self.assertEqual(list(self.downloads.iterdir()), [result])
-        with patch.object(builder.urllib.request, 'urlretrieve', side_effect=AssertionError('cache should avoid download')):
+        with patch.object(builder, 'retrieve_source', side_effect=AssertionError('cache should avoid download')):
             self.assertEqual(builder.download(self.source), result)
 
     def test_checksum_mismatch_never_publishes_source_or_leaves_partial(self):
@@ -91,17 +95,75 @@ class SourceDownloadTests(unittest.TestCase):
             Path(destination).write_bytes(b'incomplete download')
             raise URLError('connection interrupted')
 
-        with patch.object(builder.urllib.request, 'urlretrieve', side_effect=interrupt):
-            with self.assertRaises(URLError):
+        with patch.object(builder, 'retrieve_source', side_effect=interrupt) as retrieve:
+            with self.assertRaisesRegex(SystemExit, 'after 3 attempts.*connection interrupted'):
                 builder.download(self.source)
+            self.assertEqual(retrieve.call_count, 3)
         self.assertEqual(list(self.downloads.iterdir()), [])
 
     def test_corrupt_cached_source_is_rejected_before_build(self):
         self.downloads.mkdir(parents=True)
         cached = self.downloads / self.source['archive']
         cached.write_bytes(b'corrupt cache')
-        with self.assertRaisesRegex(SystemExit, 'checksum mismatch'):
-            builder.download(self.source)
+        with patch.object(builder, 'retrieve_source', side_effect=AssertionError('do not replace corrupt cache')):
+            with self.assertRaisesRegex(SystemExit, 'checksum mismatch'):
+                builder.download(self.source)
+
+    def test_bad_response_is_retried_without_accepting_or_retaining_it(self):
+        attempts = []
+
+        def retrieve(_url, destination):
+            self.assertEqual(list(self.downloads.iterdir()), [destination])
+            attempts.append(destination)
+            destination.write_bytes(b'<html>temporary error</html>' if len(attempts) == 1 else self.payload)
+
+        with patch.object(builder, 'retrieve_source', side_effect=retrieve):
+            result = builder.download(self.source)
+        self.assertEqual(len(attempts), 2)
+        self.assertEqual(result.read_bytes(), self.payload)
+        self.assertEqual(list(self.downloads.iterdir()), [result])
+
+    def test_mirror_requires_the_same_pinned_hash(self):
+        self.source['mirrors'] = ['https://mirror.invalid/source.tar.gz']
+
+        def retrieve(url, destination):
+            destination.write_bytes(self.payload if url in self.source['mirrors'] else b'wrong response')
+
+        with patch.object(builder, 'retrieve_source', side_effect=retrieve) as download:
+            result = builder.download(self.source)
+        self.assertEqual([call.args[0] for call in download.call_args_list],
+                         [self.source['url'], *self.source['mirrors']])
+        self.assertEqual(result.read_bytes(), self.payload)
+        self.assertEqual(list(self.downloads.iterdir()), [result])
+
+    def test_bad_mirror_is_rejected_with_diagnostic_and_bounded_attempts(self):
+        self.source['mirrors'] = ['https://mirror.invalid/source.tar.gz']
+
+        def retrieve(_url, destination):
+            destination.write_bytes(b'wrong')
+
+        with patch.object(builder, 'retrieve_source', side_effect=retrieve) as download:
+            with self.assertRaisesRegex(SystemExit, r'checksum mismatch: https://mirror.invalid/.*got .*\(5 bytes\)'):
+                builder.download(self.source)
+        self.assertEqual(download.call_count, 6)
+        self.assertEqual(list(self.downloads.iterdir()), [])
+
+    def test_transport_errors_can_fall_back_to_verified_mirror(self):
+        self.source['mirrors'] = ['https://mirror.invalid/source.tar.gz']
+        for error in [URLError('unavailable'), TimeoutError('timed out'),
+                      ConnectionResetError('reset'), http.client.IncompleteRead(b'partial', 20)]:
+            with self.subTest(error=error):
+                def retrieve(url, destination):
+                    if url == self.source['url']:
+                        destination.write_bytes(b'partial')
+                        raise error
+                    destination.write_bytes(self.payload)
+
+                with patch.object(builder, 'retrieve_source', side_effect=retrieve):
+                    result = builder.download(self.source)
+                self.assertEqual(result.read_bytes(), self.payload)
+                self.assertEqual(list(self.downloads.iterdir()), [result])
+                result.unlink()
 
 
 class WindowsAuditTests(unittest.TestCase):

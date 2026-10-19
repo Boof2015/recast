@@ -2,6 +2,7 @@
 """Build Recast's isolated image worker from pinned sources (macOS/Linux/MSYS2)."""
 import argparse
 import hashlib
+import http.client
 import json
 import os
 from pathlib import Path
@@ -12,6 +13,8 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
+import time
+import urllib.error
 import urllib.request
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -39,24 +42,43 @@ def run(args, *, log=None, **kwargs):
     return subprocess.run(args, check=True, **kwargs)
 
 
+def retrieve_source(url, destination):
+    with urllib.request.urlopen(url, timeout=30) as response, destination.open('wb') as output:
+        shutil.copyfileobj(response, output)
+
+
 def download(source):
     downloads = CACHE / 'downloads'
     downloads.mkdir(parents=True, exist_ok=True)
     archive = downloads / source['archive']
-    if not archive.exists():
-        print(f'Downloading {source["archive"]}…', flush=True)
-        with tempfile.NamedTemporaryFile(dir=downloads, delete=False) as partial:
-            partial_path = Path(partial.name)
-        try:
-            urllib.request.urlretrieve(source['url'], partial_path)
-            if sha(partial_path) != source['sha256']:
-                raise SystemExit(f'Source checksum mismatch: {source["archive"]}')
-            partial_path.replace(archive)
-        finally:
-            partial_path.unlink(missing_ok=True)
-    if sha(archive) != source['sha256']:
-        raise SystemExit(f'Source checksum mismatch: {archive}')
-    return archive
+    if archive.exists():
+        if sha(archive) != source['sha256']:
+            raise SystemExit(f'Source checksum mismatch: {archive}')
+        return archive
+    urls = [source['url'], *source.get('mirrors', [])]
+    for attempt in range(3):
+        if attempt:
+            time.sleep(attempt)
+        for url in urls:
+            print(f'Downloading {source["archive"]} (attempt {attempt + 1}/3): {url}', flush=True)
+            with tempfile.NamedTemporaryFile(dir=downloads, delete=False) as partial:
+                partial_path = Path(partial.name)
+            try:
+                try:
+                    retrieve_source(url, partial_path)
+                except (urllib.error.URLError, TimeoutError, ConnectionError, http.client.IncompleteRead) as error:
+                    failure = f'Download failed: {url}: {error}'
+                else:
+                    actual = sha(partial_path)
+                    if actual == source['sha256']:
+                        partial_path.replace(archive)
+                        return archive
+                    failure = (f'Source checksum mismatch: {url}: expected {source["sha256"]}, '
+                               f'got {actual} ({partial_path.stat().st_size} bytes)')
+                print(failure, flush=True)
+            finally:
+                partial_path.unlink(missing_ok=True)
+    raise SystemExit(f'Could not download verified source {source["archive"]} after 3 attempts. {failure}')
 
 
 def extract(source, destination):
