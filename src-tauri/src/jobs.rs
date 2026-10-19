@@ -265,7 +265,7 @@ pub fn run_job(
         let source = snapshot.files[index].id.clone();
         report(snapshot);
         let folder = job.request.output_folder.as_deref().map(Path::new);
-        let result = crate::inputs::inspect(Path::new(&source))
+        let result = crate::inputs::inspect_with_audio(Path::new(&source), audio, &job.cancel)
             .map_err(ConversionError::from)
             .and_then(|input| match input.kind.as_str() {
                 "images" => backend.convert(

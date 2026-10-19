@@ -267,12 +267,30 @@ pub fn inspect_with_audio(
     cancel: &std::sync::atomic::AtomicBool,
 ) -> Result<InputFile, String> {
     let mut input = inspect(path)?;
-    if input.kind == "audio" {
+    // M4A and MP4 share a container. Probe the actual streams so an ALAC-only
+    // MP4 joins Audio, while a movie is never silently treated as audio-only.
+    if input.kind == "audio" || matches!(input.format.as_str(), "MP4" | "MOV" | "M4V" | "3GP") {
         match backend.inspect(path, cancel) {
             Ok(audio) => {
-                input.format = audio.container.to_uppercase();
+                input.kind = "audio".into();
+                input.format = if audio.codec == "alac" {
+                    "ALAC".into()
+                } else {
+                    audio.container.to_uppercase()
+                };
                 input.has_audio = Some(true);
-                input.targets = vec!["wav".into(), "flac".into()];
+                input.target_issues.clear();
+                input.targets = ["wav", "flac", "alac"]
+                    .into_iter()
+                    .filter_map(|target| {
+                        if let Some(issue) = audio.target_issue(target) {
+                            input.target_issues.insert(target.into(), issue);
+                            None
+                        } else {
+                            Some(target.into())
+                        }
+                    })
+                    .collect();
                 input.conversion_issue = None;
                 input.audio = Some(audio);
             }

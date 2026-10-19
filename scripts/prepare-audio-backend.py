@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the isolated WAV/FLAC worker and inspector from pinned FFmpeg sources."""
+"""Build the isolated lossless-audio worker and inspector from pinned FFmpeg sources."""
 import argparse
 import hashlib
 import importlib.util
@@ -26,9 +26,9 @@ def configuration(system, arch):
         '--disable-doc', '--disable-debug', '--disable-shared', '--enable-static',
         '--disable-avdevice', '--disable-swscale', '--disable-ffplay', '--disable-x86asm',
         '--enable-ffmpeg', '--enable-ffprobe', '--enable-protocol=file,pipe',
-        '--enable-demuxer=wav,flac,pcm_f64le',
-        '--enable-muxer=wav,flac,pcm_f64le,pcm_s32le,null',
-        f'--enable-decoder={pcm},flac', f'--enable-encoder={pcm},flac',
+        '--enable-demuxer=wav,flac,mov,pcm_f64le',
+        '--enable-muxer=wav,flac,ipod,pcm_f64le,pcm_s32le,null',
+        f'--enable-decoder={pcm},flac,alac', f'--enable-encoder={pcm},flac,alac',
         '--enable-parser=flac', '--enable-filter=aresample,aformat,anull',
     ]
     if system == 'darwin':

@@ -428,3 +428,375 @@ fn audio_cancellation_stops_the_worker_and_cleans_its_temporary_output() {
     assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
     no_partials(dir.path());
 }
+
+#[test]
+fn alac_apple_encoded_fixtures_decode_to_exact_independent_samples() {
+    for bits in [16, 24] {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("apple.m4a");
+        fs::copy(fixture(&format!("apple-{bits}.m4a")), &source).unwrap();
+        let info = audio_backend()
+            .inspect(&source, &AtomicBool::new(false))
+            .unwrap();
+        assert_eq!(info.codec, "alac");
+        assert_eq!(info.sample_rate, 48000);
+        assert_eq!(info.channels, 2);
+        assert_eq!(info.sample_format, format!("s{bits}"));
+        let expected: Vec<u8> = (0..5003 * 2i32)
+            .flat_map(|i| {
+                i.wrapping_mul(104729).wrapping_mul(7919).to_le_bytes()[..bits / 8].to_vec()
+            })
+            .collect();
+        let output = convert(&source, &audio_options("wav"));
+        assert_eq!(pcm(Path::new(&output.path)), expected);
+        no_partials(dir.path());
+    }
+}
+
+#[test]
+fn alac_unsupported_depth_and_aac_are_explained_before_conversion() {
+    for (name, message) in [
+        ("apple-32.m4a", "16-bit and 24-bit ALAC"),
+        ("unsupported-aac.m4a", "AAC and other codecs"),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join(name);
+        fs::copy(fixture(name), &source).unwrap();
+        let inspected =
+            crate::inputs::inspect_with_audio(&source, &audio_backend(), &AtomicBool::new(false))
+                .unwrap();
+        let inspected = serde_json::to_value(inspected).unwrap();
+        assert!(inspected["targets"].as_array().unwrap().is_empty());
+        assert!(inspected["conversionIssue"]
+            .as_str()
+            .unwrap()
+            .contains(message));
+        let error = audio_backend()
+            .convert(
+                &source,
+                None,
+                &audio_options("wav"),
+                &AtomicBool::new(false),
+            )
+            .unwrap_err();
+        assert!(matches!(error, ConversionError::Failed(ref text) if text.contains(message)));
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+        no_partials(dir.path());
+    }
+}
+
+#[test]
+fn alac_roundtrips_preserve_pcm_samples_rates_and_m4a_names() {
+    audio_backend().verify().unwrap();
+    for (bits, rate, channels) in [(16, 44100, 1), (24, 96000, 2), (24, 192000, 2)] {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.wav");
+        let data: Vec<u8> = (0..5003i32 * channels as i32)
+            .flat_map(|i| {
+                i.wrapping_mul(104729).wrapping_mul(7919).to_le_bytes()[..bits as usize / 8]
+                    .to_vec()
+            })
+            .collect();
+        wav(&source, bits, false, rate, channels, &data, None);
+        let original = fs::read(&source).unwrap();
+        let alac = convert(&source, &audio_options("alac"));
+        assert!(alac.path.ends_with("source.m4a"));
+        let info = crate::inputs::inspect_with_audio(
+            Path::new(&alac.path),
+            &audio_backend(),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(info.kind, "audio");
+        assert_eq!(info.audio.as_ref().unwrap().codec, "alac");
+        assert_eq!(info.audio.as_ref().unwrap().sample_rate, rate);
+        assert_eq!(
+            info.audio.as_ref().unwrap().sample_format,
+            format!("s{bits}")
+        );
+        let same = convert(Path::new(&alac.path), &audio_options("alac"));
+        assert!(same.path.ends_with("source (1).m4a"));
+        let flac = convert(Path::new(&same.path), &audio_options("flac"));
+        let alac_again = convert(Path::new(&flac.path), &audio_options("alac"));
+        let back = convert(Path::new(&alac_again.path), &audio_options("wav"));
+        assert_eq!(pcm(Path::new(&back.path)), data);
+        assert_eq!(fs::read(&source).unwrap(), original);
+        no_partials(dir.path());
+    }
+}
+
+#[test]
+fn alac_supported_surround_layouts_preserve_every_channel() {
+    for (channels, mask) in [
+        (3, 0x7),
+        (4, 0x107),
+        (5, 0x37),
+        (6, 0x3f),
+        (7, 0x13f),
+        (8, 0xff),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("surround.wav");
+        let data: Vec<u8> = (0..5003)
+            .flat_map(|i| (0..channels).flat_map(move |c| ((i * (c + 1)) as i16).to_le_bytes()))
+            .collect();
+        wav(&source, 16, false, 48000, channels, &data, Some(mask));
+        let before = audio_backend()
+            .inspect(&source, &AtomicBool::new(false))
+            .unwrap();
+        let alac = convert(&source, &audio_options("alac"));
+        let after = audio_backend()
+            .inspect(Path::new(&alac.path), &AtomicBool::new(false))
+            .unwrap();
+        assert_eq!(after.channel_layout, before.channel_layout);
+        let back = convert(Path::new(&alac.path), &audio_options("wav"));
+        assert_eq!(pcm(Path::new(&back.path)), data, "{channels} channels");
+    }
+}
+
+#[test]
+fn alac_incompatible_depth_rate_and_layout_require_deliberate_choices() {
+    let dir = tempfile::tempdir().unwrap();
+    for (bits, float) in [(8, false), (32, false), (32, true), (64, true)] {
+        let path = dir.path().join(format!("source-{bits}-{float}.wav"));
+        wav(
+            &path,
+            bits,
+            float,
+            48000,
+            1,
+            &vec![0; 4800 * bits as usize / 8],
+            None,
+        );
+        let error = audio_backend()
+            .convert(&path, None, &audio_options("alac"), &AtomicBool::new(false))
+            .unwrap_err();
+        assert!(
+            matches!(error, ConversionError::Failed(message) if message.contains("Choose one explicitly"))
+        );
+    }
+    let path = dir.path().join("high-rate.wav");
+    wav(&path, 16, false, 768000, 1, &vec![0; 9600], None);
+    let info = audio_backend()
+        .inspect(&path, &AtomicBool::new(false))
+        .unwrap();
+    assert!(audio_options("alac")
+        .resolve(&info)
+        .unwrap_err()
+        .contains("384000"));
+    let mut settings = audio_options("alac");
+    settings.sample_rate = Some(192000);
+    assert!(settings.resolve(&info).is_ok());
+    let side = dir.path().join("side-surround.wav");
+    wav(
+        &side,
+        16,
+        false,
+        48000,
+        6,
+        &vec![0; 4800 * 6 * 2],
+        Some(0x60f),
+    );
+    let inspected =
+        crate::inputs::inspect_with_audio(&side, &audio_backend(), &AtomicBool::new(false))
+            .unwrap();
+    let json = serde_json::to_value(&inspected).unwrap();
+    assert!(!json["targets"]
+        .as_array()
+        .unwrap()
+        .contains(&serde_json::json!("alac")));
+    assert!(json["targetIssues"]["alac"]
+        .as_str()
+        .unwrap()
+        .contains("channel layout"));
+    assert!(inspected
+        .require_audio_target(&audio_options("alac"))
+        .is_err());
+    assert!(audio_backend()
+        .convert(&side, None, &audio_options("alac"), &AtomicBool::new(false))
+        .is_err());
+    assert!(!dir.path().join("side-surround.m4a").exists());
+    no_partials(dir.path());
+}
+
+#[test]
+fn alac_generic_mp4_content_is_audio_even_with_an_unrelated_extension() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source.wav");
+    let data: Vec<u8> = (0..4800i16).flat_map(i16::to_le_bytes).collect();
+    wav(&source, 16, false, 48000, 1, &data, None);
+    let output = convert(&source, &audio_options("alac"));
+    let mut bytes = fs::read(&output.path).unwrap();
+    assert_eq!(&bytes[4..8], b"ftyp");
+    bytes[8..12].copy_from_slice(b"isom");
+    let disguised = dir.path().join("actually audio.png");
+    fs::write(&disguised, bytes).unwrap();
+    let info =
+        crate::inputs::inspect_with_audio(&disguised, &audio_backend(), &AtomicBool::new(false))
+            .unwrap();
+    assert_eq!(info.kind, "audio");
+    assert_eq!(serde_json::to_value(&info).unwrap()["format"], "ALAC");
+    let mut request = request(&[disguised], dir.path());
+    request.image_options = None;
+    request.audio_options = Some(audio_options("wav"));
+    let job = JobManager::default()
+        .prepare("alac", request, false)
+        .unwrap();
+    run_job(&job, &backend(), &audio_backend(), |_| {});
+    let snapshot = job.snapshot();
+    assert_eq!(
+        snapshot.files[0].status,
+        FileStatus::Succeeded,
+        "{:?}",
+        snapshot
+    );
+    assert_eq!(
+        pcm(Path::new(snapshot.files[0].output_path.as_ref().unwrap())),
+        data
+    );
+}
+
+#[test]
+fn alac_metadata_is_retained_or_stripped_through_m4a() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source.wav");
+    wav(&source, 16, false, 48000, 1, &vec![0; 9600], None);
+    let tagged = dir.path().join("tagged.m4a");
+    let result = audio_backend()
+        .command("ffmpeg")
+        .args(["-v", "error", "-i"])
+        .arg(&source)
+        .args([
+            "-c:a",
+            "alac",
+            "-metadata",
+            "title=ALAC title",
+            "-metadata",
+            "artist=Recast fixture",
+            "-metadata",
+            "album=Album",
+            "-metadata",
+            "track=3/10",
+            "-metadata",
+            "disc=1/2",
+            "-f",
+            "ipod",
+        ])
+        .arg(&tagged)
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    for keep in [true, false] {
+        let mut options = audio_options("alac");
+        options.metadata = keep;
+        let out = convert(&tagged, &options);
+        let probe = audio_backend()
+            .command("ffprobe")
+            .args(["-v", "error", "-show_entries", "format_tags", "-of", "json"])
+            .arg(&out.path)
+            .output()
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&probe.stdout).unwrap();
+        for (tag, value) in [
+            ("title", "ALAC title"),
+            ("artist", "Recast fixture"),
+            ("album", "Album"),
+            ("track", "3/10"),
+            ("disc", "1/2"),
+        ] {
+            if keep {
+                assert_eq!(json["format"]["tags"][tag], value);
+            } else {
+                assert!(json["format"]["tags"][tag].is_null());
+            }
+        }
+    }
+}
+
+#[test]
+fn alac_multiple_tracks_and_truncated_payloads_never_publish() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source.wav");
+    let data: Vec<_> = (0..10000i32)
+        .flat_map(|n| (n.wrapping_mul(104729) as i16).to_le_bytes())
+        .collect();
+    wav(&source, 16, false, 48000, 1, &data, None);
+    let two = dir.path().join("two.m4a");
+    let result = audio_backend()
+        .command("ffmpeg")
+        .args(["-v", "error", "-i"])
+        .arg(&source)
+        .args(["-map", "0:a", "-map", "0:a", "-c:a", "alac", "-f", "ipod"])
+        .arg(&two)
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let issue = audio_backend()
+        .inspect(&two, &AtomicBool::new(false))
+        .unwrap_err();
+    assert!(
+        matches!(issue, ConversionError::Failed(message) if message.contains("one audio stream"))
+    );
+    assert!(audio_backend()
+        .convert(&two, None, &audio_options("wav"), &AtomicBool::new(false))
+        .is_err());
+    let good = convert(&source, &audio_options("alac"));
+    let mut bytes = fs::read(&good.path).unwrap();
+    let mdat = bytes.windows(4).position(|b| b == b"mdat").unwrap();
+    bytes.truncate(mdat + (bytes.len() - mdat) / 2);
+    let corrupt = dir.path().join("truncated.m4a");
+    fs::write(&corrupt, bytes).unwrap();
+    assert!(audio_backend()
+        .convert(
+            &corrupt,
+            None,
+            &audio_options("wav"),
+            &AtomicBool::new(false)
+        )
+        .is_err());
+    assert!(!dir.path().join("two.wav").exists());
+    assert!(!dir.path().join("truncated.wav").exists());
+    no_partials(dir.path());
+}
+
+#[test]
+fn alac_float_conversion_obeys_clipping_and_resampling_choices() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("float.wav");
+    let data: Vec<_> = [-1.5f32, -0.25, 0.0, 0.25, 1.5]
+        .into_iter()
+        .flat_map(f32::to_le_bytes)
+        .collect();
+    wav(&source, 32, true, 48000, 1, &data.repeat(960), None);
+    let mut options = audio_options("alac");
+    options.sample_format = "s16".into();
+    options.dither = false;
+    assert!(matches!(
+        audio_backend().convert(&source, None, &options, &AtomicBool::new(false)),
+        Err(ConversionError::Clipping)
+    ));
+    options.allow_clipping = true;
+    let output = convert(&source, &options);
+    assert_eq!(output.warnings.len(), 1);
+    let back = convert(Path::new(&output.path), &audio_options("wav"));
+    let expected: Vec<_> = [i16::MIN, -8192, 0, 8192, i16::MAX]
+        .into_iter()
+        .flat_map(i16::to_le_bytes)
+        .collect();
+    assert_eq!(pcm(Path::new(&back.path)), expected.repeat(960));
+    options.sample_rate = Some(44100);
+    options.dither = true;
+    let resampled = convert(&source, &options);
+    let back = convert(Path::new(&resampled.path), &audio_options("wav"));
+    assert_eq!(pcm(Path::new(&back.path)).len(), 4410 * 2);
+    assert!(resampled.details.unwrap().ends_with("Dither applied"));
+    no_partials(dir.path());
+}

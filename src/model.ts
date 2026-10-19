@@ -13,7 +13,7 @@ export interface InputFile {
   conversionIssue?: string | null;
   animated?: boolean;
   targetIssues?: Record<string, string>;
-  audio?: { container: string; sampleRate: number; sampleFormat: string; channels: number; channelLayout: string | null; duration: number | null } | null;
+  audio?: { container: string; codec: string; sampleRate: number; sampleFormat: string; channels: number; channelLayout: string | null; duration: number | null } | null;
 }
 
 export interface GroupSettings {
@@ -58,7 +58,7 @@ const audioDestinations: Destination[] = [
   { id: 'mp3', label: 'MP3', description: 'Plays almost anywhere', category: 'Audio' },
   { id: 'wav', label: 'WAV', description: 'Uncompressed audio', category: 'Audio' },
   { id: 'flac', label: 'FLAC', description: 'Lossless & compact', category: 'Audio' },
-  { id: 'alac', label: 'ALAC', description: 'Apple lossless audio', category: 'Audio' },
+  { id: 'alac', label: 'ALAC', description: 'Apple lossless · .m4a', category: 'Audio' },
   { id: 'm4a', label: 'AAC / M4A', description: 'Compact, clear audio', category: 'Audio' },
   { id: 'opus', label: 'Opus', description: 'Efficient audio', category: 'Audio' },
   { id: 'ogg', label: 'Ogg Vorbis', description: 'Open audio format', category: 'Audio' },
@@ -106,11 +106,14 @@ export const audioSampleFormats: Record<string, string> = {
 export function audioSettingIssue(file: InputFile, settings: GroupSettings): string | null {
   if (!file.audio || !settings.target) return null;
   const format = settings.sampleFormat === 'Keep source' ? file.audio.sampleFormat : audioSampleFormats[settings.sampleFormat];
-  if (settings.target === 'flac' && !['s16', 's24'].includes(format)) {
-    return `${file.name}: choose 16-bit or 24-bit PCM for FLAC, or use WAV to keep the source format.`;
+  if (['flac', 'alac'].includes(settings.target) && !['s16', 's24'].includes(format)) {
+    return `${file.name}: choose 16-bit or 24-bit PCM for ${settings.target.toUpperCase()}, or use WAV to keep the source format.`;
   }
   if (settings.target === 'flac' && settings.sampleRate === 'Keep source' && file.audio.sampleRate > 655350) {
     return `${file.name}: choose a compatible sample rate for FLAC, or use WAV to keep the source rate.`;
+  }
+  if (settings.target === 'alac' && settings.sampleRate === 'Keep source' && file.audio.sampleRate > 384000) {
+    return `${file.name}: ALAC output is limited to 384000 Hz. Choose a compatible rate or use WAV.`;
   }
   return null;
 }

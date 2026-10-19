@@ -29,6 +29,7 @@ pub struct AudioOptions {
 #[serde(rename_all = "camelCase")]
 pub struct AudioInfo {
     pub container: String,
+    pub codec: String,
     pub sample_rate: u32,
     pub sample_format: String,
     pub channels: u16,
@@ -38,10 +39,38 @@ pub struct AudioInfo {
     tags: std::collections::BTreeMap<String, String>,
 }
 
+impl AudioInfo {
+    pub fn target_issue(&self, target: &str) -> Option<String> {
+        // These are the native ALAC layouts supported by the bundled encoder.
+        // Reject others before FFmpeg can insert an automatic channel remap.
+        if target == "alac"
+            && self.channel_layout.as_deref().is_some_and(|layout| {
+                ![
+                    "mono",
+                    "stereo",
+                    "3.0",
+                    "4.0",
+                    "5.0",
+                    "5.1",
+                    "6.1(back)",
+                    "7.1(wide)",
+                ]
+                .contains(&layout)
+            })
+        {
+            return Some(format!(
+                "ALAC cannot retain this file’s {} channel layout. Use WAV or FLAC, or remove this file to convert the rest.",
+                self.channel_layout.as_deref().unwrap()
+            ));
+        }
+        None
+    }
+}
+
 impl AudioOptions {
     pub fn validate(&self) -> Result<(), String> {
-        if !["wav", "flac"].contains(&self.target.as_str()) {
-            return Err("Choose WAV or FLAC for this audio conversion.".into());
+        if !["wav", "flac", "alac"].contains(&self.target.as_str()) {
+            return Err("Choose WAV, FLAC, or ALAC for this audio conversion.".into());
         }
         if self.sample_rate.is_some_and(|rate| {
             ![
@@ -59,17 +88,25 @@ impl AudioOptions {
 
     pub fn resolve(&self, input: &AudioInfo) -> Result<(u32, String), String> {
         self.validate()?;
+        if let Some(issue) = input.target_issue(&self.target) {
+            return Err(issue);
+        }
         let rate = self.sample_rate.unwrap_or(input.sample_rate);
         let format = if self.sample_format == "source" {
             &input.sample_format
         } else {
             &self.sample_format
         };
-        if self.target == "flac" && !["s16", "s24"].contains(&format.as_str()) {
-            return Err("This FLAC encoder supports 16-bit or 24-bit PCM. Choose one explicitly, or use WAV to keep the source sample format.".into());
+        if ["flac", "alac"].contains(&self.target.as_str())
+            && !["s16", "s24"].contains(&format.as_str())
+        {
+            return Err(format!("This {} encoder supports 16-bit or 24-bit PCM. Choose one explicitly, or use WAV to keep the source sample format.", self.target.to_uppercase()));
         }
         if self.target == "flac" && rate > 655_350 {
             return Err("FLAC cannot preserve this sample rate. Choose an explicit compatible rate or use WAV.".into());
+        }
+        if self.target == "alac" && rate > 384_000 {
+            return Err("ALAC output is limited to 384000 Hz. Choose an explicit compatible rate or use WAV.".into());
         }
         Ok((rate, format.clone()))
     }
@@ -130,6 +167,19 @@ impl AudioBackend {
             {
                 return Err("The bundled audio converter is out of date.".into());
             }
+        }
+        let codecs = self
+            .command("ffmpeg")
+            .args(["-hide_banner", "-codecs"])
+            .output()
+            .map_err(|_| "The bundled audio codecs could not be checked.".to_string())?;
+        let supported = String::from_utf8_lossy(&codecs.stdout).lines().any(|line| {
+            let mut parts = line.split_whitespace();
+            parts.next().is_some_and(|flags| flags.starts_with("DE"))
+                && parts.next() == Some("alac")
+        });
+        if !codecs.status.success() || !supported {
+            return Err("The bundled audio converter needs rebuilding for ALAC support.".into());
         }
         Ok(())
     }
@@ -257,9 +307,14 @@ impl AudioBackend {
                 );
             }
         }
+        let extension = if options.target == "alac" {
+            "m4a"
+        } else {
+            &options.target
+        };
         let output = tempfile::Builder::new()
             .prefix(".recast-")
-            .suffix(&format!(".{}", options.target))
+            .suffix(&format!(".{extension}"))
             .tempfile_in(parent)
             .map_err(|_| {
                 "Cannot write to this output folder. Choose another folder.".to_string()
@@ -323,10 +378,32 @@ impl AudioBackend {
                 "-bits_per_raw_sample",
                 &bits.to_string(),
             ]);
+        } else if options.target == "alac" {
+            command.args([
+                "-c:a",
+                "alac",
+                "-compression_level",
+                "2",
+                "-sample_fmt",
+                if bits == 16 { "s16p" } else { "s32p" },
+                "-bits_per_raw_sample",
+                &bits.to_string(),
+                "-movflags",
+                "+faststart",
+            ]);
         } else {
             command.args(["-c:a", codec(&sample_format), "-rf64", "auto"]);
         }
-        command.args(["-f", &options.target]).arg(output.path());
+        command
+            .args([
+                "-f",
+                if options.target == "alac" {
+                    "ipod"
+                } else {
+                    &options.target
+                },
+            ])
+            .arg(output.path());
         run(
             &mut command,
             &work.path().join("encode.log"),
@@ -334,7 +411,8 @@ impl AudioBackend {
             Duration::from_secs(21600),
         )?;
         let actual = self.inspect(output.path(), cancel)?;
-        if actual.sample_rate != rate
+        if (options.target == "alac" && actual.codec != "alac")
+            || actual.sample_rate != rate
             || actual.sample_format != sample_format
             || actual.channels != info.channels
             || (info.channel_layout.is_some() && actual.channel_layout != info.channel_layout)
@@ -355,7 +433,7 @@ impl AudioBackend {
             output,
             source.file_stem().unwrap_or_default(),
             parent,
-            &options.target,
+            extension,
         )?;
         Ok(OutputFile {
             path: path.to_string_lossy().into_owned(),
@@ -395,9 +473,16 @@ impl AudioBackend {
 
 fn parse_probe(probe: &serde_json::Value) -> Result<AudioInfo, String> {
     let container = probe["format"]["format_name"].as_str().unwrap_or("");
-    if !["wav", "flac"].contains(&container) {
-        return Err("This audio build currently accepts PCM WAV and FLAC files.".into());
-    }
+    let container = match container {
+        "wav" | "flac" => container,
+        "mov,mp4,m4a,3gp,3g2,mj2" => "mov",
+        _ => {
+            return Err(
+                "This audio build currently accepts PCM WAV, FLAC, and ALAC in M4A/MP4 files."
+                    .into(),
+            )
+        }
+    };
     let streams = probe["streams"]
         .as_array()
         .ok_or("No audio stream was found.")?;
@@ -413,6 +498,10 @@ fn parse_probe(probe: &serde_json::Value) -> Result<AudioInfo, String> {
         return Err("Choose a file containing one audio stream. Combining or selecting streams is not supported yet.".into());
     }
     let stream = audio[0];
+    let codec = stream["codec_name"].as_str().unwrap_or("");
+    if container == "mov" && codec != "alac" {
+        return Err("This M4A/MP4 file does not contain supported ALAC audio. AAC and other codecs are not supported yet.".into());
+    }
     let number = |key: &str| {
         stream[key]
             .as_u64()
@@ -425,21 +514,32 @@ fn parse_probe(probe: &serde_json::Value) -> Result<AudioInfo, String> {
         .filter(|n| *n > 0 && *n <= 8)
         .ok_or("This build accepts audio with one to eight channels.")? as u16;
     let sample_format =
-        match stream["codec_name"].as_str().unwrap_or("") {
+        match codec {
             "pcm_u8" => "u8",
             "pcm_s16le" => "s16",
             "pcm_s24le" => "s24",
             "pcm_s32le" => "s32",
             "pcm_f32le" => "f32",
             "pcm_f64le" => "f64",
+            "alac" => match number("bits_per_raw_sample") {
+                Some(16) => "s16",
+                Some(24) => "s24",
+                _ => {
+                    return Err(
+                        "This build accepts 16-bit and 24-bit ALAC. Other ALAC sample depths are not supported yet."
+                            .into(),
+                    )
+                }
+            },
             "flac" => match number("bits_per_raw_sample") {
                 Some(16) => "s16",
                 Some(24) => "s24",
                 Some(32) => "s32",
                 _ => {
-                    return Err(
-                        "This build accepts FLAC with 16-bit, 24-bit, or 32-bit samples.".into(),
-                    )
+                    return Err(format!(
+                        "This build accepts {} with 16-bit, 24-bit, or 32-bit samples.",
+                        codec.to_uppercase()
+                    ))
                 }
             },
             _ => return Err(
@@ -451,7 +551,15 @@ fn parse_probe(probe: &serde_json::Value) -> Result<AudioInfo, String> {
     let channel_layout = stream["channel_layout"]
         .as_str()
         .filter(|s| !s.is_empty() && *s != "unknown")
-        .map(str::to_string);
+        .map(str::to_string)
+        // Ordinary mono/stereo WAV has no channel mask, unlike ALAC. These
+        // standard layouts are equivalent; do not treat a WAV round trip as a
+        // lost mapping merely because ffprobe omits the redundant label.
+        .or_else(|| match channels {
+            1 => Some("mono".into()),
+            2 => Some("stereo".into()),
+            _ => None,
+        });
     if channels > 2 && channel_layout.is_none() {
         return Err("This multichannel file has no recognized channel layout. Recast cannot safely preserve its channel mapping yet.".into());
     }
@@ -492,6 +600,7 @@ fn parse_probe(probe: &serde_json::Value) -> Result<AudioInfo, String> {
     Ok(AudioInfo {
         tags,
         container: container.into(),
+        codec: codec.into(),
         sample_rate,
         sample_format,
         channels,
