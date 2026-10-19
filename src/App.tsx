@@ -4,7 +4,7 @@ import { invoke, isTauri } from '@tauri-apps/api/core';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { open } from '@tauri-apps/plugin-dialog';
-import { audioDescription, audioSampleFormats, audioSettingIssue, audioWillDither, defaultSettings, destinationsFor, formatCounts, kindLabels, kinds, unitLabels, mp3BitrateChoices, mp3Qualities, mp3Rates, type Appearance, type Destination, type GroupSettings, type InputFile, type MediaKind } from './model';
+import { aacBitrateChoices, aacRates, isLossyAudio, audioDescription, audioSampleFormats, audioSettingIssue, audioWillDither, defaultSettings, destinationsFor, formatCounts, kindLabels, kinds, unitLabels, mp3BitrateChoices, mp3Qualities, mp3Rates, type Appearance, type Destination, type GroupSettings, type InputFile, type MediaKind } from './model';
 import { sampleFiles, type Scenario } from './fixtures';
 import { CheckboxSetting, QualitySetting, SelectSetting } from './controls';
 import { ColorSetting } from './ColorSetting';
@@ -49,8 +49,8 @@ function FormatSettings({ kind, destination, value, onChange, disabled, animated
   const isVideo = kind === 'video' && !isAudio;
   const hasQuality = isImage && ['webp', 'jpeg', 'avif'].includes(destination.id);
   const hasLossless = isImage && ['webp', 'avif'].includes(destination.id);
-  const mp3Input = files.some(file => file.audio?.codec === 'mp3');
-  const sampleFormatLabel = (label: string) => mp3Input && label === 'Keep source' ? 'Auto' : label;
+  const lossyInput = files.some(isLossyAudio);
+  const sampleFormatLabel = (label: string) => lossyInput && label === 'Keep source' ? 'Auto' : label;
   return <div className="settings-stack">
     {hasQuality && <QualitySetting value={value.quality} disabled={hasLossless && value.lossless} onChange={(quality) => onChange({ quality })} />}
     {hasLossless && <CheckboxSetting label="Lossless" checked={value.lossless} onChange={(lossless) => onChange({ lossless })} />}
@@ -64,12 +64,13 @@ function FormatSettings({ kind, destination, value, onChange, disabled, animated
       <SelectSetting label="Encoding" value={value.mp3Mode === 'vbr' ? 'Variable bitrate' : 'Constant bitrate'} options={['Variable bitrate', 'Constant bitrate']} onChange={(mode) => onChange({ mp3Mode: mode === 'Variable bitrate' ? 'vbr' : 'cbr' })} />
       {value.mp3Mode === 'vbr' ? <SelectSetting label="Quality" value={value.mp3Quality} options={mp3Qualities} onChange={(mp3Quality) => onChange({ mp3Quality })} /> : <SelectSetting label="Bitrate" value={value.bitrate} options={mp3BitrateChoices(files, value)} onChange={(bitrate) => onChange({ bitrate })} />}
     </>}
-    {isAudio && ['m4a', 'opus', 'ogg'].includes(destination.id) && <SelectSetting label="Bitrate" value={value.bitrate} options={['128 kbps', '192 kbps', '256 kbps', '320 kbps']} onChange={(bitrate) => onChange({ bitrate })} />}
+    {isAudio && destination.id === 'm4a' && <SelectSetting label="Bitrate" value={value.aacBitrate} options={aacBitrateChoices(files, value)} onChange={(aacBitrate) => onChange({ aacBitrate })} />}
+    {isAudio && ['opus', 'ogg'].includes(destination.id) && <SelectSetting label="Bitrate" value={value.bitrate} options={['128 kbps', '192 kbps', '256 kbps', '320 kbps']} onChange={(bitrate) => onChange({ bitrate })} />}
     {isAudio && <>
-      <SelectSetting label="Sample rate" value={value.sampleRate} options={['Keep source', ...(destination.id === 'mp3' ? mp3Rates : [...mp3Rates, '88200', '96000', '176400', '192000'])]} onChange={(sampleRate) => onChange({ sampleRate })} />
+      <SelectSetting label="Sample rate" value={value.sampleRate} options={['Keep source', ...(destination.id === 'mp3' ? mp3Rates : destination.id === 'm4a' ? aacRates : ['7350', ...mp3Rates, '64000', '88200', '96000', '176400', '192000'])]} onChange={(sampleRate) => onChange({ sampleRate })} />
       {['wav', 'flac', 'alac'].includes(destination.id) && <>
         <SelectSetting label="Sample format" value={sampleFormatLabel(value.sampleFormat)} options={Object.keys(audioSampleFormats).filter(label => destination.id === 'wav' || ['Keep source', '16-bit PCM', '24-bit PCM'].includes(label)).map(sampleFormatLabel)} onChange={(sampleFormat) => onChange({ sampleFormat: sampleFormat === 'Auto' ? 'Keep source' : sampleFormat })} />
-        {mp3Input && value.sampleFormat === 'Keep source' && <p className="settings-note">Auto uses {destination.id === 'wav' ? '32-bit float' : '24-bit PCM'} for MP3 inputs and keeps other files’ source formats.</p>}
+        {lossyInput && value.sampleFormat === 'Keep source' && <p className="settings-note">Auto uses {destination.id === 'wav' ? '32-bit float' : '24-bit PCM'} for lossy inputs and keeps other files’ source formats.</p>}
         <SelectSetting label="Dithering" value={value.audioDither ? 'Auto' : 'Off'} options={['Auto', 'Off']} onChange={(dither) => onChange({ audioDither: dither === 'Auto' })} />
         <CheckboxSetting label="Allow clipping" checked={value.allowClipping} onChange={(allowClipping) => onChange({ allowClipping })} />
         {value.allowClipping && <p className="settings-note">Peaks outside the integer output range may be clipped.</p>}
@@ -87,8 +88,9 @@ function FormatSettings({ kind, destination, value, onChange, disabled, animated
     {destination.id !== 'gif' && destination.id !== 'bmp' && <CheckboxSetting label="Keep metadata" checked={value.metadata} onChange={(metadata) => onChange({ metadata })} />}
     {isAudio && value.metadata && <p className="settings-note">Keeps supported text tags. Artwork, loudness tags, and production metadata are omitted.</p>}
     {isAudio && destination.id === 'alac' && <p className="settings-note">Apple Lossless audio in an .m4a file.</p>}
-    {isAudio && destination.id === 'mp3' && <p className="settings-note">{value.mp3Mode === 'vbr' ? 'Bitrate varies with the audio to meet the selected quality.' : 'Bitrate stays fixed; available rates depend on sample rate.'} MP3 encoding is lossy.{mp3Input && ' Re-encoding MP3 adds another lossy generation.'}</p>}
-    {isAudio && mp3Input && destination.id !== 'mp3' && <p className="settings-note">Converting MP3 to PCM or a lossless format does not restore lost detail.</p>}
+    {isAudio && destination.id === 'mp3' && <p className="settings-note">{value.mp3Mode === 'vbr' ? 'Bitrate varies with the audio to meet the selected quality.' : 'Bitrate stays fixed; available rates depend on sample rate.'} MP3 encoding is lossy.</p>}
+    {isAudio && destination.id === 'm4a' && <p className="settings-note">AAC-LC audio in an .m4a file. Bitrate is a target for the whole stream; actual bitrate varies with the audio.</p>}
+    {isAudio && lossyInput && <p className="settings-note">{['mp3', 'm4a'].includes(destination.id) ? 'Re-encoding lossy audio adds another lossy generation.' : 'Converting lossy audio to PCM or a lossless format does not restore lost detail.'}</p>}
     {isImage && destination.id === 'tiff' && value.metadata && <p className="settings-note">Keeps color profiles and supported tags. Camera EXIF may not carry over.</p>}
     {isImage && destination.id === 'gif' && <p className="settings-note">Partial transparency becomes clear or opaque.{animated && <> Timing rounds to 10&nbsp;ms.</>}</p>}
     {isImage && destination.id === 'avif' && <p className="settings-note">AVIF supports up to 12-bit color.</p>}
@@ -150,6 +152,7 @@ export default function App() {
   const formats = destinationsFor(activeKind, activeFiles, previewCatalog);
   const activeSettings = settings[activeKind];
   const selectedFormat = formats.find((format) => format.id === activeSettings.target);
+  const activeFormatLabel = destinationsFor(activeKind, activeFiles, true).find(format => format.id === activeSettings.target)?.label ?? activeSettings.target?.toUpperCase();
   const unresolvedTarget = activeSettings.target && !selectedFormat;
   const affectedFiles = unresolvedTarget ? activeFiles.filter(file => previewCatalog ? activeKind === 'video' && file.hasAudio !== true : !file.targets?.includes(activeSettings.target!)) : [];
   const activeAudioIssue = activeKind === 'audio' ? activeFiles.map(file => audioSettingIssue(file, activeSettings)).find(Boolean) : null;
@@ -302,7 +305,7 @@ export default function App() {
     {files.length === 0 ? <main className="empty-state">
       <div className="empty-symbol" aria-hidden="true"><File className="file-back" size={49} strokeWidth={1.15} /><File className="file-front" size={49} strokeWidth={1.15} /><ArrowDownToLine className="file-arrow" size={18} strokeWidth={1.6} /></div>
       <h1>Drop files here</h1>
-      <p>{previewCatalog ? 'Images, audio, or video. All on your device.' : 'Images, WAV, FLAC, ALAC, and MP3. All on your device.'}</p>
+      <p>{previewCatalog ? 'Images, audio, or video. All on your device.' : 'Images, WAV, FLAC, ALAC, MP3, and AAC. All on your device.'}</p>
       <button className="primary-button choose-files" onClick={() => void chooseFiles()} disabled={inspecting}>{inspecting ? 'Reading files…' : 'Choose files'}<Plus size={16} /></button>
     </main> : <>
       <main className="workspace" ref={workspaceRef}>
@@ -334,7 +337,7 @@ export default function App() {
         <section className="conversion-region" aria-label="Conversion settings">
           <div className="conversion-heading">{activeFiles.length} {unitLabels[activeKind]}</div>
           <ScrollArea className="conversion-scroll"><div className="conversion-content" key={activeKind}>
-            {unresolvedTarget && <div className="compatibility-message" role="status"><p>{affectedFiles.length === 1 ? affectedFiles[0].name : `${affectedFiles.length} files`} cannot be converted to {activeSettings.target?.toUpperCase()}.</p><p className="compatibility-reason">{previewCatalog ? affectedFiles.every((file) => file.hasAudio === false) ? 'No audio track was found.' : 'An audio track has not been confirmed for every file.' : affectedFiles.length === 1 ? (affectedFiles[0].targetIssues?.[activeSettings.target ?? ''] ?? affectedFiles[0].conversionIssue) : 'Not every file supports this output.'}</p><span>Remove {affectedFiles.length === 1 ? 'it' : 'them'} to keep this format{formats.length ? ', or choose another for the whole group.' : '.'}</span><button className="text-button" onClick={() => { setSelected(activeKind); setExpanded((current) => current.includes(activeKind) ? current : [...current, activeKind]); }}>Show files<ChevronRight size={13} /></button></div>}
+            {unresolvedTarget && <div className="compatibility-message" role="status"><p>{affectedFiles.length === 1 ? affectedFiles[0].name : `${affectedFiles.length} files`} cannot be converted to {activeFormatLabel}.</p><p className="compatibility-reason">{previewCatalog ? affectedFiles.every((file) => file.hasAudio === false) ? 'No audio track was found.' : 'An audio track has not been confirmed for every file.' : affectedFiles.length === 1 ? (affectedFiles[0].targetIssues?.[activeSettings.target ?? ''] ?? affectedFiles[0].conversionIssue) : 'Not every file supports this output.'}</p><span>Remove {affectedFiles.length === 1 ? 'it' : 'them'} to keep this format{formats.length ? ', or choose another for the whole group.' : '.'}</span><button className="text-button" onClick={() => { setSelected(activeKind); setExpanded((current) => current.includes(activeKind) ? current : [...current, activeKind]); }}>Show files<ChevronRight size={13} /></button></div>}
             <fieldset className="conversion-fields" disabled={busy}>
             {selectedFormat ? <>
               <button className="format-back" onClick={() => updateSettings({ target: null })} aria-label="Change output format"><ArrowLeft size={18} strokeWidth={1.7} /><h2>{selectedFormat.label}</h2></button>
@@ -373,7 +376,7 @@ export default function App() {
         {!busy && failed.some(file => file.canAllowClipping) && <button className="quiet-button" onClick={() => { setSettings(current => ({ ...current, audio: { ...current.audio, allowClipping: true } })); void runConversion(true, true); }}>Allow clipping & retry</button>}
         {!busy && job && retryCount > 0 && <button className="quiet-button" onClick={newBatch}>New batch</button>}
         <div className="folder-choice"><button className="folder-button" disabled={busy} onClick={() => void chooseFolder()} title={outputFolder ?? 'Choose an output folder'}><Folder size={16} strokeWidth={1.6} /><span>{folderName}</span><ChevronDown size={12} /></button>{outputFolder && <button className="icon-button" disabled={busy} aria-label="Use source folders" title="Use source folders" onClick={() => { conversion.clear(); setOutputFolder(null); }}><X size={12} /></button>}</div>
-        {busy ? <button className="primary-button" disabled={conversion.starting || job?.status === 'cancelling'} onClick={() => void conversion.cancel().catch(error => setNotice(String(error)))}>{job?.status === 'cancelling' ? 'Cancelling…' : 'Cancel'}</button> : job ? retryCount > 0 ? <button className="primary-button" onClick={() => void runConversion(true)}>Retry {retryCount} {retryCount === 1 ? 'file' : 'files'}</button> : <button className="primary-button" onClick={newBatch}>New batch</button> : <button className={`primary-button convert-button ${allConfigured ? 'configured' : ''}`} disabled={!canConvert} onClick={() => void runConversion()} title={previewCatalog ? 'Sample files are for design review. Add real images, WAV, FLAC, ALAC, or MP3 files to convert.' : !allConfigured ? 'Choose a supported output for every group.' : !audioSettingsValid ? 'Choose compatible audio settings.' : undefined}>Convert {files.length} {files.length === 1 ? 'file' : 'files'}</button>}
+        {busy ? <button className="primary-button" disabled={conversion.starting || job?.status === 'cancelling'} onClick={() => void conversion.cancel().catch(error => setNotice(String(error)))}>{job?.status === 'cancelling' ? 'Cancelling…' : 'Cancel'}</button> : job ? retryCount > 0 ? <button className="primary-button" onClick={() => void runConversion(true)}>Retry {retryCount} {retryCount === 1 ? 'file' : 'files'}</button> : <button className="primary-button" onClick={newBatch}>New batch</button> : <button className={`primary-button convert-button ${allConfigured ? 'configured' : ''}`} disabled={!canConvert} onClick={() => void runConversion()} title={previewCatalog ? 'Sample files are for design review. Add real images, WAV, FLAC, ALAC, MP3, or AAC files to convert.' : !allConfigured ? 'Choose a supported output for every group.' : !audioSettingsValid ? 'Choose compatible audio settings.' : undefined}>Convert {files.length} {files.length === 1 ? 'file' : 'files'}</button>}
       </footer>
     </>}
 

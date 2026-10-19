@@ -10,6 +10,7 @@ fn audio_options(target: &str) -> AudioOptions {
         metadata: true,
         allow_clipping: false,
         mp3: Default::default(),
+        aac: Default::default(),
     }
 }
 
@@ -455,35 +456,31 @@ fn alac_apple_encoded_fixtures_decode_to_exact_independent_samples() {
 }
 
 #[test]
-fn alac_unsupported_depth_and_aac_are_explained_before_conversion() {
-    for (name, message) in [
-        ("apple-32.m4a", "16-bit and 24-bit ALAC"),
-        ("unsupported-aac.m4a", "AAC and other codecs"),
-    ] {
-        let dir = tempfile::tempdir().unwrap();
-        let source = dir.path().join(name);
-        fs::copy(fixture(name), &source).unwrap();
-        let inspected =
-            crate::inputs::inspect_with_audio(&source, &audio_backend(), &AtomicBool::new(false))
-                .unwrap();
-        let inspected = serde_json::to_value(inspected).unwrap();
-        assert!(inspected["targets"].as_array().unwrap().is_empty());
-        assert!(inspected["conversionIssue"]
-            .as_str()
-            .unwrap()
-            .contains(message));
-        let error = audio_backend()
-            .convert(
-                &source,
-                None,
-                &audio_options("wav"),
-                &AtomicBool::new(false),
-            )
-            .unwrap_err();
-        assert!(matches!(error, ConversionError::Failed(ref text) if text.contains(message)));
-        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
-        no_partials(dir.path());
-    }
+fn alac_unsupported_depth_is_explained_before_conversion() {
+    let (name, message) = ("apple-32.m4a", "16-bit and 24-bit ALAC");
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join(name);
+    fs::copy(fixture(name), &source).unwrap();
+    let inspected =
+        crate::inputs::inspect_with_audio(&source, &audio_backend(), &AtomicBool::new(false))
+            .unwrap();
+    let inspected = serde_json::to_value(inspected).unwrap();
+    assert!(inspected["targets"].as_array().unwrap().is_empty());
+    assert!(inspected["conversionIssue"]
+        .as_str()
+        .unwrap()
+        .contains(message));
+    let error = audio_backend()
+        .convert(
+            &source,
+            None,
+            &audio_options("wav"),
+            &AtomicBool::new(false),
+        )
+        .unwrap_err();
+    assert!(matches!(error, ConversionError::Failed(ref text) if text.contains(message)));
+    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+    no_partials(dir.path());
 }
 
 #[test]
@@ -804,3 +801,6 @@ fn alac_float_conversion_obeys_clipping_and_resampling_choices() {
 
 #[path = "mp3_tests.rs"]
 mod mp3;
+
+#[path = "aac_tests.rs"]
+mod aac;

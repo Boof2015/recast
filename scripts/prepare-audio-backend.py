@@ -27,10 +27,10 @@ def configuration(system, arch):
         '--disable-doc', '--disable-debug', '--disable-shared', '--enable-static',
         '--disable-avdevice', '--disable-swscale', '--disable-ffplay', '--disable-x86asm',
         '--enable-ffmpeg', '--enable-ffprobe', '--enable-protocol=file,pipe',
-        '--enable-demuxer=wav,flac,mov,mp3,pcm_f64le',
+        '--enable-demuxer=wav,flac,mov,mp3,aac,pcm_f64le',
         '--enable-muxer=wav,flac,ipod,mp3,pcm_f64le,pcm_s32le,null',
-        f'--enable-decoder={pcm},flac,alac,mp3float', f'--enable-encoder={pcm},flac,alac,libmp3lame',
-        '--enable-libmp3lame', '--enable-parser=flac,mpegaudio',
+        f'--enable-decoder={pcm},flac,alac,mp3float,aac', f'--enable-encoder={pcm},flac,alac,libmp3lame,aac',
+        '--enable-libmp3lame', '--enable-parser=flac,mpegaudio,aac',
         '--enable-filter=aresample,aformat,anull',
     ]
     if system == 'darwin':

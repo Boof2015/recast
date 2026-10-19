@@ -1,3 +1,4 @@
+mod aac;
 mod animation;
 mod audio_backend;
 mod avif;

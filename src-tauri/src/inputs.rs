@@ -65,6 +65,8 @@ pub fn inspect(path: &Path) -> Result<InputFile, String> {
         ("image/tiff", "tiff")
     } else if crate::avif::has_signature(&header[..read]) {
         ("image/avif", "avif")
+    } else if crate::aac::has_adts_signature(&header[..read]) {
+        ("audio/aac", "aac")
     } else if crate::mp3::has_signature(&header[..read]) {
         ("audio/mpeg", "mp3")
     } else {
@@ -275,14 +277,14 @@ pub fn inspect_with_audio(
         match backend.inspect(path, cancel) {
             Ok(audio) => {
                 input.kind = "audio".into();
-                input.format = if audio.codec == "alac" {
-                    "ALAC".into()
+                input.format = if ["alac", "aac"].contains(&audio.codec.as_str()) {
+                    audio.codec.to_uppercase()
                 } else {
                     audio.container.to_uppercase()
                 };
                 input.has_audio = Some(true);
                 input.target_issues.clear();
-                input.targets = ["wav", "flac", "alac", "mp3"]
+                input.targets = ["wav", "flac", "alac", "mp3", "m4a"]
                     .into_iter()
                     .filter_map(|target| {
                         if let Some(issue) = audio.target_issue(target) {

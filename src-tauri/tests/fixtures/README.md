@@ -64,7 +64,7 @@ Audio fixtures are generated independently with macOS CoreAudio by `python3 src-
 
 - `apple-16.m4a`, `apple-24.m4a`: 16/24-bit Apple Lossless, accepted and decoded exactly.
 - `apple-32.m4a`: valid 32-bit Apple Lossless, rejected clearly at inspection. The bundled FFmpeg decoder cannot handle all 32-bit ALAC frames; Recast currently accepts only 16/24-bit ALAC.
-- `unsupported-aac.m4a`: AAC at 128 kb/s, verifying that an M4A container is not mistaken for ALAC. AAC support is a later increment.
+- `unsupported-aac.m4a`: AAC at 128 kb/s, verifying that an M4A container is not mistaken for ALAC. Its historical filename is retained; it is now accepted as AAC-LC with 5,003 decoded frames.
 
 The initial files were generated on macOS 26.5.1. Container metadata may differ when regenerated; the PCM pattern is deterministic. Separate local checks also used CoreAudio to decode Recast's 16/24-bit ALAC output and compare every sample against the same independent pattern.
 
@@ -75,3 +75,11 @@ MP3 input fixtures use the standalone LAME 4.0 executable, independently of Reca
 - `lame-no-xing.mp3`: 128 kb/s without a Xing/LAME header; tests retain its full decoded frames because exact encoder delay/padding is unavailable.
 
 MP3 tests independently reconstruct the original tones and check channel integrity and decoded sample count, rather than requiring lossy samples to equal the source. Tests also encode every supported rate, verify CBR bitrates, short/partial-frame lengths, retained tags, explicit compatibility choices, PCM defaults, clipping/retry, malformed/truncated/concatenated input, and active cancellation. The 12 kHz / 12,117-frame case reproduces FFmpeg 9.0.2's trailing-padding overwrite and verifies the checked muxer correction. Local mpg123 1.33.7 independently decodes VBR/CBR outputs at 12/44.1/48 kHz and verifies exact gapless lengths and the synthetic tone content.
+
+AAC fixtures are generated independently with macOS CoreAudio using `python3 src-tauri/tests/fixtures/generate_aac.py`. Synthetic 16-bit stereo at 48 kHz contains 48,117 frames; left/right tones are 431/997 Hz with integer-truncated amplitudes 9000/7000. CI consumes these checked-in files without Apple codecs.
+
+- `apple-aac-lc.m4a`: 192 kb/s AAC-LC, gapless metadata, exactly 48,117 decoded frames. Tests compare decoded tone content and channel order against independent reference math.
+- `apple-aac-adts.aac`: 128 kb/s raw ADTS AAC-LC. Without trim metadata it retains all 51,200 decoded frames. Damaged lengths and changing ADTS parameters are rejected.
+- `apple-aac-he.m4a`, `apple-aac-hev2.m4a`: 64/48 kb/s HE-AAC/HE-AACv2, retained as unsupported-profile regression fixtures. CoreAudio rounds this odd-length input to 48,118 output samples. The bundled FFmpeg decoder returns that count but shifts content by approximately 962 samples at 48 kHz; the profiles remain blocked until reliable timing is implemented. These are deliberate rejection tests, not claims of successful HE decoding.
+
+AAC export regressions cover all thirteen supported rates, mono/stereo and standard 3.0 through 7.1 channel mappings, one-sample/partial-frame clips, exact lengths, bitrate/settings compatibility, metadata and safe names, mixed batches, damaged input and multiple tracks, floating overload/clipping retry, and active cancellation cleanup. Independent local CoreAudio decoding verifies AAC-LC exports at 44.1/48 kHz, including 117-frame and one-frame clips. No external music or recordings are included.

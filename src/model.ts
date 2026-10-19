@@ -28,6 +28,7 @@ export interface GroupSettings {
   bitrate: string;
   mp3Mode: 'vbr' | 'cbr';
   mp3Quality: string;
+  aacBitrate: string;
   resolution: string;
   frameRate: string;
   sampleRate: string;
@@ -96,7 +97,7 @@ export function defaultSettings(): Record<MediaKind, GroupSettings> {
     target: null, quality: 85, lossless: false, metadata: true, background: '#ffffff',
     colors: 256, dither: true, resize: 'Original', bitrate: '192 kbps', resolution: 'Original', frameRate: 'Original',
     sampleRate: 'Keep source', sampleFormat: 'Keep source', audioDither: true, allowClipping: false,
-    mp3Mode: 'vbr', mp3Quality: 'V2 · High',
+    mp3Mode: 'vbr', mp3Quality: 'V2 · High', aacBitrate: '192 kbps',
   };
   return { images: { ...settings }, audio: { ...settings }, video: { ...settings } };
 }
@@ -107,6 +108,18 @@ export const audioSampleFormats: Record<string, string> = {
 };
 
 export const mp3Rates = ['8000', '11025', '12000', '16000', '22050', '24000', '32000', '44100', '48000'];
+export const aacRates = ['7350', ...mp3Rates, '64000', '88200', '96000'];
+export const aacBitrates = [16, 24, 32, 48, 64, 80, 96, 128, 160, 192, 224, 256, 320, 384, 448, 512, 640, 768];
+
+export function aacBitrateChoices(files: InputFile[], settings: GroupSettings): string[] {
+  return aacBitrates.filter(bitrate => files.every(file => !file.audio || bitrate * 1000 <= 6 * file.audio.channels * (settings.sampleRate === 'Keep source' ? file.audio.sampleRate : Number(settings.sampleRate))))
+    .map(bitrate => `${bitrate} kbps`);
+}
+
+export function isLossyAudio(file: InputFile): boolean {
+  return ['mp3', 'aac'].includes(file.audio?.codec ?? '');
+}
+
 export const mp3Qualities = ['V0 · Highest', 'V2 · High', 'V4 · Standard', 'V6 · Smaller', 'V8 · Smallest'];
 
 function mp3BitratesForRate(rate: number): number[] {
@@ -123,9 +136,9 @@ export function mp3BitrateChoices(files: InputFile[], settings: GroupSettings): 
 }
 
 function resolvedAudioFormat(file: InputFile, settings: GroupSettings): string {
-  if (settings.target === 'mp3') return 'f32';
+  if (['mp3', 'm4a'].includes(settings.target ?? '')) return 'f32';
   if (settings.sampleFormat !== 'Keep source') return audioSampleFormats[settings.sampleFormat];
-  return file.audio?.codec === 'mp3' ? settings.target === 'wav' ? 'f32' : 's24' : file.audio!.sampleFormat;
+  return isLossyAudio(file) ? settings.target === 'wav' ? 'f32' : 's24' : file.audio!.sampleFormat;
 }
 
 export function audioSettingIssue(file: InputFile, settings: GroupSettings): string | null {
@@ -134,6 +147,13 @@ export function audioSettingIssue(file: InputFile, settings: GroupSettings): str
     const rate = settings.sampleRate === 'Keep source' ? file.audio.sampleRate : Number(settings.sampleRate);
     if (!mp3Rates.includes(String(rate))) return `${file.name}: MP3 cannot preserve ${rate} Hz. Choose a supported sample rate.`;
     if (settings.mp3Mode === 'cbr' && !mp3BitratesForRate(rate).includes(Number.parseInt(settings.bitrate))) return `${file.name}: ${settings.bitrate} is unavailable at ${rate} Hz. Choose a compatible bitrate or use variable bitrate.`;
+    return null;
+  }
+  if (settings.target === 'm4a') {
+    const rate = settings.sampleRate === 'Keep source' ? file.audio.sampleRate : Number(settings.sampleRate);
+    if (!aacRates.includes(String(rate))) return `${file.name}: AAC cannot preserve ${rate} Hz. Choose a supported sample rate.`;
+    const bitrate = Number.parseInt(settings.aacBitrate);
+    if (!aacBitrates.includes(bitrate) || bitrate * 1000 > 6 * rate * file.audio.channels) return `${file.name}: ${settings.aacBitrate} is unavailable at ${rate} Hz with ${file.audio.channels} channels. Choose a compatible bitrate.`;
     return null;
   }
   const format = resolvedAudioFormat(file, settings);
@@ -150,16 +170,16 @@ export function audioSettingIssue(file: InputFile, settings: GroupSettings): str
 }
 
 export function audioWillDither(file: InputFile, settings: GroupSettings): boolean {
-  if (!file.audio || !settings.audioDither || settings.target === 'mp3') return false;
+  if (!file.audio || !settings.audioDither || ['mp3', 'm4a'].includes(settings.target ?? '')) return false;
   const format = resolvedAudioFormat(file, settings);
-  return !format.startsWith('f') && (file.audio.codec === 'mp3' || file.audio.sampleFormat.startsWith('f')
+  return !format.startsWith('f') && (isLossyAudio(file) || file.audio.sampleFormat.startsWith('f')
     || (settings.sampleRate !== 'Keep source' && Number(settings.sampleRate) !== file.audio.sampleRate)
     || Number(format.slice(1)) < Number(file.audio.sampleFormat.slice(1)));
 }
 
 export function audioDescription(file: InputFile): string {
   if (!file.audio) return '';
-  const label = file.audio.codec === 'mp3' ? 'MP3' : Object.entries(audioSampleFormats).find(([, code]) => code === file.audio!.sampleFormat)?.[0] ?? file.audio.sampleFormat;
+  const label = isLossyAudio(file) ? file.audio.codec.toUpperCase() : Object.entries(audioSampleFormats).find(([, code]) => code === file.audio!.sampleFormat)?.[0] ?? file.audio.sampleFormat;
   return `${file.audio.sampleRate} Hz · ${label} · ${file.audio.channelLayout ?? `${file.audio.channels} channels`}`;
 }
 
