@@ -13,6 +13,7 @@ export interface InputFile {
   conversionIssue?: string | null;
   animated?: boolean;
   targetIssues?: Record<string, string>;
+  audio?: { container: string; sampleRate: number; sampleFormat: string; channels: number; channelLayout: string | null; duration: number | null } | null;
 }
 
 export interface GroupSettings {
@@ -27,6 +28,10 @@ export interface GroupSettings {
   bitrate: string;
   resolution: string;
   frameRate: string;
+  sampleRate: string;
+  sampleFormat: string;
+  audioDither: boolean;
+  allowClipping: boolean;
 }
 
 export interface Destination {
@@ -88,8 +93,40 @@ export function defaultSettings(): Record<MediaKind, GroupSettings> {
   const settings: GroupSettings = {
     target: null, quality: 85, lossless: false, metadata: true, background: '#ffffff',
     colors: 256, dither: true, resize: 'Original', bitrate: '192 kbps', resolution: 'Original', frameRate: 'Original',
+    sampleRate: 'Keep source', sampleFormat: 'Keep source', audioDither: true, allowClipping: false,
   };
   return { images: { ...settings }, audio: { ...settings }, video: { ...settings } };
+}
+
+export const audioSampleFormats: Record<string, string> = {
+  'Keep source': 'source', '8-bit PCM': 'u8', '16-bit PCM': 's16', '24-bit PCM': 's24',
+  '32-bit PCM': 's32', '32-bit float': 'f32', '64-bit float': 'f64',
+};
+
+export function audioSettingIssue(file: InputFile, settings: GroupSettings): string | null {
+  if (!file.audio || !settings.target) return null;
+  const format = settings.sampleFormat === 'Keep source' ? file.audio.sampleFormat : audioSampleFormats[settings.sampleFormat];
+  if (settings.target === 'flac' && !['s16', 's24'].includes(format)) {
+    return `${file.name}: choose 16-bit or 24-bit PCM for FLAC, or use WAV to keep the source format.`;
+  }
+  if (settings.target === 'flac' && settings.sampleRate === 'Keep source' && file.audio.sampleRate > 655350) {
+    return `${file.name}: choose a compatible sample rate for FLAC, or use WAV to keep the source rate.`;
+  }
+  return null;
+}
+
+export function audioWillDither(file: InputFile, settings: GroupSettings): boolean {
+  if (!file.audio || !settings.audioDither) return false;
+  const format = settings.sampleFormat === 'Keep source' ? file.audio.sampleFormat : audioSampleFormats[settings.sampleFormat];
+  return !format.startsWith('f') && (file.audio.sampleFormat.startsWith('f')
+    || (settings.sampleRate !== 'Keep source' && Number(settings.sampleRate) !== file.audio.sampleRate)
+    || Number(format.slice(1)) < Number(file.audio.sampleFormat.slice(1)));
+}
+
+export function audioDescription(file: InputFile): string {
+  if (!file.audio) return '';
+  const label = Object.entries(audioSampleFormats).find(([, code]) => code === file.audio!.sampleFormat)?.[0] ?? file.audio.sampleFormat;
+  return `${file.audio.sampleRate} Hz · ${label} · ${file.audio.channelLayout ?? `${file.audio.channels} channels`}`;
 }
 
 export function formatCounts(files: InputFile[]): [string, number][] {

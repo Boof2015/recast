@@ -4,7 +4,7 @@ import { invoke, isTauri } from '@tauri-apps/api/core';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { open } from '@tauri-apps/plugin-dialog';
-import { defaultSettings, destinationsFor, formatCounts, kindLabels, kinds, unitLabels, type Appearance, type Destination, type GroupSettings, type InputFile, type MediaKind } from './model';
+import { audioDescription, audioSampleFormats, audioSettingIssue, audioWillDither, defaultSettings, destinationsFor, formatCounts, kindLabels, kinds, unitLabels, type Appearance, type Destination, type GroupSettings, type InputFile, type MediaKind } from './model';
 import { sampleFiles, type Scenario } from './fixtures';
 import { CheckboxSetting, QualitySetting, SelectSetting } from './controls';
 import { ColorSetting } from './ColorSetting';
@@ -43,7 +43,7 @@ function ScrollArea({ children, className = '', onScroll }: { children: ReactNod
   return <div className={`scroll-area ${className}`} data-top={edges.top} data-bottom={edges.bottom} ref={ref} onScroll={onScroll}>{children}</div>;
 }
 
-function FormatSettings({ kind, destination, value, onChange, disabled, animated }: { kind: MediaKind; destination: Destination; value: GroupSettings; onChange: (change: Partial<GroupSettings>) => void; disabled: boolean; animated: boolean }) {
+function FormatSettings({ kind, destination, value, onChange, disabled, animated, files }: { kind: MediaKind; destination: Destination; value: GroupSettings; onChange: (change: Partial<GroupSettings>) => void; disabled: boolean; animated: boolean; files: InputFile[] }) {
   const isImage = kind === 'images';
   const isAudio = kind === 'audio' || destination.category === 'Audio only';
   const isVideo = kind === 'video' && !isAudio;
@@ -59,7 +59,17 @@ function FormatSettings({ kind, destination, value, onChange, disabled, animated
     {isImage && <SelectSetting label="Resize" value={value.resize} options={['Original', '75%', '50%', '25%']} onChange={(resize) => onChange({ resize })} />}
     {isImage && ['jpeg', 'bmp'].includes(destination.id) && <ColorSetting label="Background" value={value.background} disabled={disabled} onChange={(background) => onChange({ background })} />}
     {isAudio && ['mp3', 'm4a', 'opus', 'ogg'].includes(destination.id) && <SelectSetting label="Bitrate" value={value.bitrate} options={['128 kbps', '192 kbps', '256 kbps', '320 kbps']} onChange={(bitrate) => onChange({ bitrate })} />}
-    {isAudio && <p className="settings-note">Keep the original sample rate and channels.</p>}
+    {isAudio && <>
+      <SelectSetting label="Sample rate" value={value.sampleRate} options={['Keep source', '8000', '11025', '16000', '22050', '24000', '32000', '44100', '48000', '88200', '96000', '176400', '192000']} onChange={(sampleRate) => onChange({ sampleRate })} />
+      {['wav', 'flac'].includes(destination.id) && <>
+        <SelectSetting label="Sample format" value={value.sampleFormat} options={Object.keys(audioSampleFormats).filter(label => destination.id === 'wav' || ['Keep source', '16-bit PCM', '24-bit PCM'].includes(label))} onChange={(sampleFormat) => onChange({ sampleFormat })} />
+        <SelectSetting label="Dithering" value={value.audioDither ? 'Auto' : 'Off'} options={['Auto', 'Off']} onChange={(dither) => onChange({ audioDither: dither === 'Auto' })} />
+        <CheckboxSetting label="Allow clipping" checked={value.allowClipping} onChange={(allowClipping) => onChange({ allowClipping })} />
+        {value.allowClipping && <p className="settings-note">Peaks outside the integer output range may be clipped.</p>}
+        {files.some(file => file.audio) && <p className="settings-note">{value.audioDither ? `Dither applies to ${files.filter(file => audioWillDither(file, value)).length} of ${files.length} files when quantizing to integer samples.` : 'Dithering is off.'}</p>}
+      </>}
+      <p className="settings-note">Keeps each file’s original channels. Sample rate is in Hz.</p>
+    </>}
     {isVideo && destination.id !== 'gif' && <>
       <div className="setting-row"><span>Video codec</span><span className="setting-value">{destination.id === 'webm' ? 'VP9' : 'H.264'}</span></div>
       <SelectSetting label="Resolution" value={value.resolution} options={['Original', '1080p', '720p', '480p']} onChange={(resolution) => onChange({ resolution })} />
@@ -68,6 +78,7 @@ function FormatSettings({ kind, destination, value, onChange, disabled, animated
     </>}
     {isVideo && destination.id === 'gif' && <div className="range-placeholder"><Film size={24} strokeWidth={1.4} /><p>Preview & source range</p><span>To be explored in the next design pass</span></div>}
     {destination.id !== 'gif' && destination.id !== 'bmp' && <CheckboxSetting label="Keep metadata" checked={value.metadata} onChange={(metadata) => onChange({ metadata })} />}
+    {isAudio && value.metadata && <p className="settings-note">Keeps supported text tags. Artwork, loudness tags, and production metadata are omitted.</p>}
     {isImage && destination.id === 'tiff' && value.metadata && <p className="settings-note">Keeps color profiles and supported tags. Camera EXIF may not carry over.</p>}
     {isImage && destination.id === 'gif' && <p className="settings-note">Partial transparency becomes clear or opaque.{animated && <> Timing rounds to 10&nbsp;ms.</>}</p>}
     {isImage && destination.id === 'avif' && <p className="settings-note">AVIF supports up to 12-bit color.</p>}
@@ -78,7 +89,7 @@ function DestinationBrowser({ formats, onChoose }: { formats: Destination[]; onC
   const categories = [...new Set(formats.map((format) => format.category))];
   return <div className="destination-browser">
     <h2>Convert to</h2>
-    {formats.length === 0 && <p className="settings-note">These files don’t share an available output yet. This build converts PNG, JPEG, WebP, BMP, TIFF, AVIF, and GIF images, including GIF/WebP animations.</p>}
+    {formats.length === 0 && <p className="settings-note">These files don’t share an available output yet. Expand the input group for details about unsupported files.</p>}
     {categories.map((category) => <section className="destination-category" key={category}>
       <h3>{category}</h3>
       <div className="destination-list">{formats.filter((format) => format.category === category).map((format) => <button key={format.id} className="destination-option" onClick={() => onChoose(format.id)}>
@@ -131,17 +142,19 @@ export default function App() {
   const selectedFormat = formats.find((format) => format.id === activeSettings.target);
   const unresolvedTarget = activeSettings.target && !selectedFormat;
   const affectedFiles = unresolvedTarget ? activeFiles.filter(file => previewCatalog ? activeKind === 'video' && file.hasAudio !== true : !file.targets?.includes(activeSettings.target!)) : [];
+  const activeAudioIssue = activeKind === 'audio' ? activeFiles.map(file => audioSettingIssue(file, activeSettings)).find(Boolean) : null;
+  const audioSettingsValid = files.filter(file => file.kind === 'audio').every(file => !audioSettingIssue(file, settings.audio));
   const allConfigured = presentKinds.length > 0 && presentKinds.every((kind) => destinationsFor(kind, files.filter((file) => file.kind === kind), previewCatalog).some((format) => format.id === settings[kind].target));
   const folderName = outputFolder?.split(/[\\/]/).filter(Boolean).at(-1) ?? 'Same as source';
   const succeeded = job?.files.filter(file => file.status === 'succeeded') ?? [];
   const failed = job?.files.filter(file => file.status === 'failed') ?? [];
   const retryCount = job ? job.files.length - succeeded.length : 0;
   const currentFile = job?.files.find(file => file.status === 'running');
-  const canConvert = conversion.backendReady && !previewCatalog && allConfigured && !inspecting && !busy && files.every(file => file.kind === 'images' && file.path);
+  const canConvert = audioSettingsValid && conversion.backendReady && !previewCatalog && allConfigured && !inspecting && !busy && files.every(file => ['images', 'audio'].includes(file.kind) && file.path);
   const jobText = conversion.starting ? 'Preparing conversion…' : job?.status === 'cancelling' ? 'Cancelling…' : busy && job ? `Converting ${Math.min(succeeded.length + failed.length + 1, job.files.length)} of ${job.files.length}` : job ? `${succeeded.length} converted${failed.length ? ` · ${failed.length} failed` : ''}${job.status === 'cancelled' ? ' · Cancelled' : ''}` : '';
 
   useEffect(() => {
-    if (job && !busy && job.files.some(file => file.status === 'failed')) setExpanded(current => current.includes('images') ? current : [...current, 'images']);
+    if (job && !busy) setExpanded(current => [...new Set([...current, ...filesRef.current.filter(file => job.files.some(result => result.id === file.id && (result.status === 'failed' || result.warnings?.length))).map(file => file.kind)])]);
   }, [job, busy]);
 
   useEffect(() => {
@@ -246,10 +259,10 @@ export default function App() {
     conversion.clear(); setFiles([]); setSettings(defaultSettings()); setExpanded([]); setOutputFolder(null); setNotice('');
   }
 
-  async function runConversion(retry = false) {
+  async function runConversion(retry = false, allowClipping = false) {
     if ((!canConvert && !retry) || conversion.busyRef.current || inspectionCount.current > 0) return;
     setNotice('');
-    try { await conversion.start(files, settings.images, outputFolder, retry); }
+    try { await conversion.start(files, settings, outputFolder, retry, allowClipping); }
     catch (error) { setNotice(String(error)); }
   }
 
@@ -279,7 +292,7 @@ export default function App() {
     {files.length === 0 ? <main className="empty-state">
       <div className="empty-symbol" aria-hidden="true"><File className="file-back" size={49} strokeWidth={1.15} /><File className="file-front" size={49} strokeWidth={1.15} /><ArrowDownToLine className="file-arrow" size={18} strokeWidth={1.6} /></div>
       <h1>Drop files here</h1>
-      <p>{previewCatalog ? 'Images, audio, or video. All on your device.' : 'Images and GIFs. All on your device.'}</p>
+      <p>{previewCatalog ? 'Images, audio, or video. All on your device.' : 'Images, WAV, and FLAC. All on your device.'}</p>
       <button className="primary-button choose-files" onClick={() => void chooseFiles()} disabled={inspecting}>{inspecting ? 'Reading files…' : 'Choose files'}<Plus size={16} /></button>
     </main> : <>
       <main className="workspace" ref={workspaceRef}>
@@ -300,7 +313,7 @@ export default function App() {
                 </div>
                 {isExpanded && <ScrollArea className="file-list-scroll"><div className="file-list" id={`files-${kind}`}>{groupFiles.map((file) => {
                   const result = job?.files.find(result => result.id === file.id);
-                  const detail = result?.error ?? file.conversionIssue ?? (settings[kind].target ? file.targetIssues?.[settings[kind].target!] : undefined) ?? (result ? ({ pending: 'Waiting', running: 'Converting…', succeeded: 'Converted', failed: 'Failed', cancelled: 'Cancelled' }[result.status]) : file.animated ? 'Animated' : '');
+                  const detail = result?.error ?? (result?.warnings?.length ? result.warnings.join(' ') : undefined) ?? file.conversionIssue ?? (settings[kind].target ? file.targetIssues?.[settings[kind].target!] : undefined) ?? (result?.details ?? (result ? ({ pending: 'Waiting', running: 'Converting…', succeeded: 'Converted', failed: 'Failed', cancelled: 'Cancelled' }[result.status]) : file.animated ? 'Animated' : audioDescription(file)));
                   return <div className="file-row" key={file.id}><div className="file-detail"><span title={file.path || file.name}>{file.name}</span>{detail && <span className="file-status">{detail}</span>}</div><button className="remove-file" disabled={busy} aria-label={`Remove ${file.name}`} onClick={() => { conversion.clear(); setFiles((current) => current.filter((item) => item.id !== file.id)); }}><X size={13} /></button></div>;
                 })}</div></ScrollArea>}
               </section>;
@@ -315,7 +328,8 @@ export default function App() {
             <fieldset className="conversion-fields" disabled={busy}>
             {selectedFormat ? <>
               <button className="format-back" onClick={() => updateSettings({ target: null })} aria-label="Change output format"><ArrowLeft size={18} strokeWidth={1.7} /><h2>{selectedFormat.label}</h2></button>
-              <FormatSettings kind={activeKind} destination={selectedFormat} value={activeSettings} onChange={updateSettings} disabled={busy} animated={activeFiles.some(file => file.animated)} />
+              {activeAudioIssue && <p className="compatibility-message" role="status">{activeAudioIssue}</p>}
+              <FormatSettings kind={activeKind} destination={selectedFormat} value={activeSettings} onChange={updateSettings} disabled={busy} animated={activeFiles.some(file => file.animated)} files={activeFiles} />
             </> : <DestinationBrowser formats={formats} onChoose={(target) => updateSettings({ target })} />}
             </fieldset>
             {!unresolvedTarget && !formats.length && !previewCatalog && <button className="text-button" onClick={() => setExpanded(current => current.includes(activeKind) ? current : [...current, activeKind])}>Show files<ChevronRight size={13} /></button>}
@@ -328,12 +342,16 @@ export default function App() {
             <ScrollArea className="group-scroll" onScroll={syncGroupScroll}><GroupStack selected={activeKind}>{presentKinds.map((kind) => {
             const groupFiles = files.filter((file) => file.kind === kind);
             const target = destinationsFor(kind, groupFiles, previewCatalog).find((format) => format.id === settings[kind].target);
+            const groupResults = job?.files.filter(result => groupFiles.some(file => file.id === result.id)) ?? [];
+            const groupSucceeded = groupResults.filter(result => result.status === 'succeeded');
+            const groupFailed = groupResults.filter(result => result.status === 'failed').length;
+            const groupText = groupResults.some(result => result.status === 'running') ? 'Converting…' : groupResults.every(result => result.status === 'pending') ? 'Waiting' : `${groupSucceeded.length} converted${groupFailed ? ` · ${groupFailed} failed` : ''}${groupResults.some(result => result.status === 'cancelled') ? ' · Cancelled' : ''}`;
             return <section key={kind} className="output-group" style={{ minHeight: groupSizes[kind] }}>
               <button className="group-header output-select" data-selection-key={kind} aria-label={`${kindLabels[kind]} output`} aria-pressed={activeKind === kind} onClick={() => setSelected(kind)}>
                 <span className={`output-result ${target ? '' : 'pending-output'}`}>{groupFiles.length} {target?.label ?? 'files'}</span>
-                <span className="output-detail">{job && kind === 'images' ? jobText : target ? outputFolder ? folderName : 'Same folder as source' : 'Choose an output format'}</span>
+                <span className="output-detail">{job ? groupText : kind === 'audio' && !audioSettingsValid ? 'Choose compatible audio settings' : target ? outputFolder ? folderName : 'Same folder as source' : 'Choose an output format'}</span>
               </button>
-              {kind === 'images' && succeeded.length > 0 && <div className="output-files" aria-label="Converted files">{succeeded.map(file => <button className="output-file" key={file.id} title={file.outputPath!} aria-label={`Show ${file.outputPath!.split(/[\\/]/).at(-1)} in folder`} onClick={() => void revealOutput(file.outputPath!)}><Check size={13} aria-hidden="true" /><span>{file.outputPath!.split(/[\\/]/).at(-1)}</span><Folder size={13} aria-hidden="true" /></button>)}</div>}
+              {groupSucceeded.length > 0 && <div className="output-files" aria-label="Converted files">{groupSucceeded.map(file => <button className="output-file" key={file.id} title={file.outputPath!} aria-label={`Show ${file.outputPath!.split(/[\\/]/).at(-1)} in folder`} onClick={() => void revealOutput(file.outputPath!)}><Check size={13} aria-hidden="true" /><span>{file.outputPath!.split(/[\\/]/).at(-1)}</span><Folder size={13} aria-hidden="true" /></button>)}</div>}
             </section>;
           })}</GroupStack>
             </ScrollArea></div>
@@ -342,9 +360,10 @@ export default function App() {
 
       <footer className="batch-footer">
         <div className="batch-total"><span role="status" aria-live="polite">{job || conversion.starting ? jobText : `${files.length} files`}</span>{busy && job && <progress aria-label="Files processed" max={job.files.length} value={succeeded.length + failed.length} />}{currentFile && <span className="current-file" title={currentFile.name}>{currentFile.name}</span>}</div>
+        {!busy && failed.some(file => file.canAllowClipping) && <button className="quiet-button" onClick={() => { setSettings(current => ({ ...current, audio: { ...current.audio, allowClipping: true } })); void runConversion(true, true); }}>Allow clipping & retry</button>}
         {!busy && job && retryCount > 0 && <button className="quiet-button" onClick={newBatch}>New batch</button>}
         <div className="folder-choice"><button className="folder-button" disabled={busy} onClick={() => void chooseFolder()} title={outputFolder ?? 'Choose an output folder'}><Folder size={16} strokeWidth={1.6} /><span>{folderName}</span><ChevronDown size={12} /></button>{outputFolder && <button className="icon-button" disabled={busy} aria-label="Use source folders" title="Use source folders" onClick={() => { conversion.clear(); setOutputFolder(null); }}><X size={12} /></button>}</div>
-        {busy ? <button className="primary-button" disabled={conversion.starting || job?.status === 'cancelling'} onClick={() => void conversion.cancel().catch(error => setNotice(String(error)))}>{job?.status === 'cancelling' ? 'Cancelling…' : 'Cancel'}</button> : job ? retryCount > 0 ? <button className="primary-button" onClick={() => void runConversion(true)}>Retry {retryCount} {retryCount === 1 ? 'file' : 'files'}</button> : <button className="primary-button" onClick={newBatch}>New batch</button> : <button className={`primary-button convert-button ${allConfigured ? 'configured' : ''}`} disabled={!canConvert} onClick={() => void runConversion()} title={previewCatalog ? 'Sample files are for design review. Add real PNG or JPEG files to convert.' : !allConfigured ? 'Choose a supported output for every group.' : undefined}>Convert {files.length} {files.length === 1 ? 'file' : 'files'}</button>}
+        {busy ? <button className="primary-button" disabled={conversion.starting || job?.status === 'cancelling'} onClick={() => void conversion.cancel().catch(error => setNotice(String(error)))}>{job?.status === 'cancelling' ? 'Cancelling…' : 'Cancel'}</button> : job ? retryCount > 0 ? <button className="primary-button" onClick={() => void runConversion(true)}>Retry {retryCount} {retryCount === 1 ? 'file' : 'files'}</button> : <button className="primary-button" onClick={newBatch}>New batch</button> : <button className={`primary-button convert-button ${allConfigured ? 'configured' : ''}`} disabled={!canConvert} onClick={() => void runConversion()} title={previewCatalog ? 'Sample files are for design review. Add real images, WAV, or FLAC files to convert.' : !allConfigured ? 'Choose a supported output for every group.' : !audioSettingsValid ? 'Choose compatible audio settings.' : undefined}>Convert {files.length} {files.length === 1 ? 'file' : 'files'}</button>}
       </footer>
     </>}
 

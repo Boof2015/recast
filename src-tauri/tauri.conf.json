@@ -27,7 +27,7 @@
   "bundle": {
     "active": true,
     "targets": ["app"],
-    "resources": { "resources/image-backend/": "image-backend/" },
+    "resources": { "resources/image-backend/": "image-backend/", "resources/audio-backend/": "audio-backend/" },
     "macOS": { "minimumSystemVersion": "13.0" },
     "icon": ["icons/icon.png", "icons/icon.icns", "icons/icon.ico"]
   }

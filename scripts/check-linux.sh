@@ -4,15 +4,17 @@ set -euo pipefail
 # Only this disposable /work copy is built; native host resources stay intact.
 tar -C /source --exclude=./.git --exclude=./node_modules --exclude=./dist \
   --exclude=./src-tauri/target --exclude=./src-tauri/resources/image-backend \
+  --exclude=./src-tauri/resources/audio-backend \
   --exclude=./.backend-build --exclude=./.agents --exclude=./.codex -cf - . | tar -C /work -xf -
 mkdir -p .backend-build/downloads
 if [ -d /source/.backend-build/downloads ]; then
-  cp /source/.backend-build/downloads/*.tar.gz .backend-build/downloads/
+  cp /source/.backend-build/downloads/*.tar.* .backend-build/downloads/
 fi
 npm ci
 rustup component add rustfmt clippy
 python3 -m unittest discover -s scripts/tests -v
 python3 scripts/prepare-image-backend.py
+python3 scripts/prepare-audio-backend.py
 cargo fmt --manifest-path src-tauri/Cargo.toml --check
 cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 cargo test --locked --manifest-path src-tauri/Cargo.toml

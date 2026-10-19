@@ -1,3 +1,4 @@
+use crate::audio_backend::{AudioBackend, AudioOptions};
 use crate::image_backend::{ConversionError, ImageBackend, ImageOptions};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -8,14 +9,15 @@ use std::{
         Arc, Mutex,
     },
 };
-use tauri::{ipc::Channel, State, WebviewWindow};
+use tauri::{ipc::Channel, Manager, State, WebviewWindow};
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConversionRequest {
     pub paths: Vec<String>,
     pub output_folder: Option<String>,
-    pub options: ImageOptions,
+    pub image_options: Option<ImageOptions>,
+    pub audio_options: Option<AudioOptions>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -37,6 +39,9 @@ pub struct FileResult {
     pub output_path: Option<String>,
     pub output_bytes: Option<u64>,
     pub error: Option<String>,
+    pub warnings: Vec<String>,
+    pub details: Option<String>,
+    pub can_allow_clipping: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -161,13 +166,36 @@ impl JobManager {
                     file.error = None;
                     file.output_path = None;
                     file.output_bytes = None;
+                    file.warnings.clear();
+                    file.details = None;
+                    file.can_allow_clipping = false;
                 }
             }
-            (previous.request.clone(), files)
+            let mut saved = previous.request.clone();
+            // Retry freezes all original settings except this explicit consent.
+            // Successful outputs stay untouched when retrying clipped files.
+            if request
+                .audio_options
+                .as_ref()
+                .is_some_and(|options| options.allow_clipping)
+            {
+                if let Some(options) = &mut saved.audio_options {
+                    options.allow_clipping = true;
+                }
+            }
+            (saved, files)
         } else {
-            request.options.validate()?;
+            if let Some(options) = &request.image_options {
+                options.validate()?;
+            }
+            if let Some(options) = &request.audio_options {
+                options.validate()?;
+            }
+            if request.image_options.is_none() && request.audio_options.is_none() {
+                return Err("Choose an output format before converting.".into());
+            }
             if request.paths.is_empty() {
-                return Err("Choose at least one image to convert.".into());
+                return Err("Choose at least one file to convert.".into());
             }
             if let Some(folder) = &request.output_folder {
                 if !Path::new(folder).is_absolute() || !Path::new(folder).is_dir() {
@@ -198,6 +226,9 @@ impl JobManager {
                     output_path: None,
                     output_bytes: None,
                     error: None,
+                    warnings: vec![],
+                    details: None,
+                    can_allow_clipping: false,
                 });
             }
             (request, files)
@@ -217,7 +248,12 @@ impl JobManager {
     }
 }
 
-pub fn run_job(job: &Job, backend: &ImageBackend, report: impl Fn(BatchSnapshot)) {
+pub fn run_job(
+    job: &Job,
+    backend: &ImageBackend,
+    audio: &AudioBackend,
+    report: impl Fn(BatchSnapshot),
+) {
     for index in 0..job.snapshot().files.len() {
         if job.snapshot().files[index].status == FileStatus::Succeeded {
             continue;
@@ -228,12 +264,32 @@ pub fn run_job(job: &Job, backend: &ImageBackend, report: impl Fn(BatchSnapshot)
         let snapshot = job.update(|state| state.files[index].status = FileStatus::Running);
         let source = snapshot.files[index].id.clone();
         report(snapshot);
-        let result = backend.convert(
-            Path::new(&source),
-            job.request.output_folder.as_deref().map(Path::new),
-            &job.request.options,
-            &job.cancel,
-        );
+        let folder = job.request.output_folder.as_deref().map(Path::new);
+        let result = crate::inputs::inspect(Path::new(&source))
+            .map_err(ConversionError::from)
+            .and_then(|input| match input.kind.as_str() {
+                "images" => backend.convert(
+                    Path::new(&source),
+                    folder,
+                    job.request
+                        .image_options
+                        .as_ref()
+                        .ok_or_else(|| "Choose an image output format.".to_string())?,
+                    &job.cancel,
+                ),
+                "audio" => audio.convert(
+                    Path::new(&source),
+                    folder,
+                    job.request
+                        .audio_options
+                        .as_ref()
+                        .ok_or_else(|| "Choose an audio output format.".to_string())?,
+                    &job.cancel,
+                ),
+                _ => Err(ConversionError::Failed(
+                    "This file type is not supported for conversion yet.".into(),
+                )),
+            });
         let snapshot = job.update(|state| {
             let file = &mut state.files[index];
             match result {
@@ -241,8 +297,15 @@ pub fn run_job(job: &Job, backend: &ImageBackend, report: impl Fn(BatchSnapshot)
                     file.status = FileStatus::Succeeded;
                     file.output_path = Some(output.path);
                     file.output_bytes = Some(output.bytes);
+                    file.warnings = output.warnings;
+                    file.details = output.details;
                 }
                 Err(ConversionError::Cancelled) => file.status = FileStatus::Cancelled,
+                Err(ConversionError::Clipping) => {
+                    file.status = FileStatus::Failed;
+                    file.can_allow_clipping = true;
+                    file.error = Some("This conversion exceeds the integer output range. Allow clipping and retry, or choose floating-point WAV.".into());
+                }
                 Err(ConversionError::Failed(error)) => {
                     file.status = FileStatus::Failed;
                     file.error = Some(error);
@@ -266,12 +329,17 @@ pub fn run_job(job: &Job, backend: &ImageBackend, report: impl Fn(BatchSnapshot)
     }));
 }
 
-fn launch(job: Arc<Job>, backend: ImageBackend, channel: Channel<BatchSnapshot>) -> BatchSnapshot {
+fn launch(
+    job: Arc<Job>,
+    backend: ImageBackend,
+    audio: AudioBackend,
+    channel: Channel<BatchSnapshot>,
+) -> BatchSnapshot {
     let initial = job.snapshot();
     let _ = channel.send(initial.clone());
     tauri::async_runtime::spawn_blocking(move || {
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            run_job(&job, &backend, |snapshot| {
+            run_job(&job, &backend, &audio, |snapshot| {
                 let _ = channel.send(snapshot);
             })
         }));
@@ -298,16 +366,61 @@ pub async fn start_conversion(
     window: WebviewWindow,
     manager: State<'_, JobManager>,
     backend: State<'_, ImageBackend>,
+    audio: State<'_, AudioBackend>,
     request: ConversionRequest,
     on_progress: Channel<BatchSnapshot>,
 ) -> Result<BatchSnapshot, String> {
     let backend = backend.inner().clone();
     let check = backend.clone();
-    tauri::async_runtime::spawn_blocking(move || check.verify())
-        .await
-        .map_err(|_| "The image converter could not be checked.".to_string())??;
+    let audio = audio.inner().clone();
+    let audio_check = audio.clone();
+    let preflight = request.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        if preflight.image_options.is_some() {
+            check.verify()?;
+        }
+        if preflight.audio_options.is_some() {
+            audio_check.verify()?;
+        }
+        for path in &preflight.paths {
+            let input = crate::inputs::inspect_with_audio(
+                Path::new(path),
+                &audio_check,
+                &AtomicBool::new(false),
+            )?;
+            let valid = match input.kind.as_str() {
+                "images" => crate::inputs::require_target(
+                    Path::new(path),
+                    &preflight
+                        .image_options
+                        .as_ref()
+                        .ok_or("Choose an image output format.")?
+                        .target,
+                )
+                .map(|_| ()),
+                "audio" => input.require_audio_target(
+                    preflight
+                        .audio_options
+                        .as_ref()
+                        .ok_or("Choose an audio output format.")?,
+                ),
+                _ => Err("This file type is not supported for conversion yet.".into()),
+            };
+            valid.map_err(|message| format!("{}: {message}", input.name))?;
+        }
+        Ok::<(), String>(())
+    })
+    .await
+    .map_err(|_| "The converters could not be checked.".to_string())??;
+    if window
+        .app_handle()
+        .get_webview_window(window.label())
+        .is_none()
+    {
+        return Err("This batch window was closed.".into());
+    }
     let job = manager.prepare(window.label(), request, false)?;
-    Ok(launch(job, backend, on_progress))
+    Ok(launch(job, backend, audio, on_progress))
 }
 
 #[tauri::command]
@@ -315,9 +428,11 @@ pub fn retry_conversion(
     window: WebviewWindow,
     manager: State<'_, JobManager>,
     backend: State<'_, ImageBackend>,
+    audio: State<'_, AudioBackend>,
+    allow_clipping: Option<bool>,
     on_progress: Channel<BatchSnapshot>,
 ) -> Result<BatchSnapshot, String> {
-    let request = manager
+    let mut request = manager
         .0
         .lock()
         .map_err(|_| "The batch state is unavailable.")?
@@ -325,8 +440,18 @@ pub fn retry_conversion(
         .ok_or("There is no batch to retry.")?
         .request
         .clone();
+    if allow_clipping == Some(true) {
+        if let Some(options) = &mut request.audio_options {
+            options.allow_clipping = true;
+        }
+    }
     let job = manager.prepare(window.label(), request, true)?;
-    Ok(launch(job, backend.inner().clone(), on_progress))
+    Ok(launch(
+        job,
+        backend.inner().clone(),
+        audio.inner().clone(),
+        on_progress,
+    ))
 }
 
 #[tauri::command]
@@ -349,11 +474,18 @@ pub fn cancel_conversion(
 mod tests;
 
 #[tauri::command]
-pub async fn backend_status(backend: State<'_, ImageBackend>) -> Result<(), String> {
+pub async fn backend_status(
+    backend: State<'_, ImageBackend>,
+    audio: State<'_, AudioBackend>,
+) -> Result<(), String> {
     let backend = backend.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || backend.verify())
-        .await
-        .map_err(|_| "The image converter could not be checked.".to_string())?
+    let audio = audio.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        backend.verify()?;
+        audio.verify()
+    })
+    .await
+    .map_err(|_| "The converters could not be checked.".to_string())?
 }
 
 #[tauri::command]

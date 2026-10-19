@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Channel, invoke, isTauri } from '@tauri-apps/api/core';
-import type { GroupSettings, InputFile } from './model';
+import { audioSampleFormats, type GroupSettings, type InputFile, type MediaKind } from './model';
 
 export interface FileResult {
   id: string;
@@ -9,6 +9,9 @@ export interface FileResult {
   outputPath: string | null;
   outputBytes: number | null;
   error: string | null;
+  warnings?: string[];
+  details?: string | null;
+  canAllowClipping?: boolean;
 }
 
 export interface BatchSnapshot {
@@ -39,7 +42,7 @@ export function useConversion() {
     if (snapshot.status === 'completed' || snapshot.status === 'cancelled') busyRef.current = false;
   }
 
-  async function start(files: InputFile[], settings: GroupSettings, outputFolder: string | null, retry = false) {
+  async function start(files: InputFile[], groups: Record<MediaKind, GroupSettings>, outputFolder: string | null, retry = false, allowClipping = false) {
     if (busyRef.current) return;
     busyRef.current = true;
     setStarting(true);
@@ -47,11 +50,15 @@ export function useConversion() {
     const channel = new Channel<BatchSnapshot>();
     channel.onmessage = snapshot => { if (token === generation.current) accept(snapshot); };
     try {
+      const settings = groups.images;
+      const audio = groups.audio;
       const snapshot = await invoke<BatchSnapshot>(retry ? 'retry_conversion' : 'start_conversion', {
         onProgress: channel,
+        ...(retry ? { allowClipping } : {}),
         ...(!retry ? { request: {
           paths: files.map(file => file.path), outputFolder,
-          options: { target: settings.target, quality: settings.quality, lossless: settings.lossless, resize: settings.resize === 'Original' ? 100 : Number.parseInt(settings.resize, 10), metadata: settings.metadata, background: settings.background, colors: settings.colors, dither: settings.dither },
+          imageOptions: files.some(file => file.kind === 'images') ? { target: settings.target, quality: settings.quality, lossless: settings.lossless, resize: settings.resize === 'Original' ? 100 : Number.parseInt(settings.resize, 10), metadata: settings.metadata, background: settings.background, colors: settings.colors, dither: settings.dither } : null,
+          audioOptions: files.some(file => file.kind === 'audio') ? { target: audio.target, sampleRate: audio.sampleRate === 'Keep source' ? null : Number(audio.sampleRate), sampleFormat: audioSampleFormats[audio.sampleFormat], dither: audio.audioDither, metadata: audio.metadata, allowClipping: audio.allowClipping } : null,
         } } : {}),
       });
       if (token === generation.current) accept(snapshot);

@@ -18,6 +18,15 @@ fn backend() -> ImageBackend {
         .expect("Run npm run backend:prepare before native tests");
     backend
 }
+fn audio_backend() -> AudioBackend {
+    AudioBackend {
+        root: std::env::var_os("RECAST_TEST_AUDIO_BACKEND")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/audio-backend")
+            }),
+    }
+}
 fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures")
@@ -46,7 +55,8 @@ fn request(paths: &[PathBuf], folder: &Path) -> ConversionRequest {
             .map(|p| p.to_string_lossy().into_owned())
             .collect(),
         output_folder: Some(folder.to_string_lossy().into_owned()),
-        options: options(),
+        image_options: Some(options()),
+        audio_options: None,
     }
 }
 fn identify(path: &Path, format: &str) -> String {
@@ -317,9 +327,9 @@ fn mixed_image_batch_creates_one_output_per_input_for_each_target() {
         .collect();
         let manager = JobManager::default();
         let mut request = request(&sources, dir.path());
-        request.options.target = target.id().into();
+        request.image_options.as_mut().unwrap().target = target.id().into();
         let job = manager.prepare("mixed", request, false).unwrap();
-        run_job(&job, &backend(), |_| {});
+        run_job(&job, &backend(), &audio_backend(), |_| {});
         let snapshot = job.snapshot();
         assert_eq!(snapshot.status, BatchStatus::Completed);
         assert_eq!(snapshot.files.len(), sources.len());
@@ -685,7 +695,7 @@ fn continues_after_failure_and_retries_only_unfinished_files() {
     let request = request(&[bad.clone(), good], dir.path());
     let job = manager.prepare("one", request.clone(), false).unwrap();
     let updates = AtomicUsize::new(0);
-    run_job(&job, &backend(), |_| {
+    run_job(&job, &backend(), &audio_backend(), |_| {
         updates.fetch_add(1, Ordering::Relaxed);
     });
     assert!(updates.load(Ordering::Relaxed) >= 5);
@@ -697,7 +707,7 @@ fn continues_after_failure_and_retries_only_unfinished_files() {
     let bytes = fs::read(&output).unwrap();
     copy("photo.jpg", &bad);
     let retry = manager.prepare("one", request, true).unwrap();
-    run_job(&retry, &backend(), |_| {});
+    run_job(&retry, &backend(), &audio_backend(), |_| {});
     assert!(retry
         .snapshot()
         .files
@@ -716,7 +726,7 @@ fn cancelling_preserves_completed_files_and_retry_does_not_duplicate_them() {
     let manager = JobManager::default();
     let request = request(&[a, b], dir.path());
     let job = manager.prepare("one", request.clone(), false).unwrap();
-    run_job(&job, &backend(), |snapshot| {
+    run_job(&job, &backend(), &audio_backend(), |snapshot| {
         if snapshot.files[0].status == FileStatus::Succeeded {
             job.request_cancel();
         }
@@ -727,7 +737,7 @@ fn cancelling_preserves_completed_files_and_retry_does_not_duplicate_them() {
     assert_eq!(snapshot.files[1].status, FileStatus::Cancelled);
     assert!(!dir.path().join("second.webp").exists());
     let retry = manager.prepare("one", request, true).unwrap();
-    run_job(&retry, &backend(), |_| {});
+    run_job(&retry, &backend(), &audio_backend(), |_| {});
     assert!(retry
         .snapshot()
         .files
@@ -777,7 +787,7 @@ fn active_window_rejects_another_run_but_other_windows_are_independent() {
     assert!(manager.prepare("one", request.clone(), false).is_err());
     assert!(manager.prepare("two", request, false).is_ok());
     let job = manager.cancel_before_close("one").unwrap();
-    run_job(&job, &backend(), |_| {});
+    run_job(&job, &backend(), &audio_backend(), |_| {});
     assert_eq!(job.snapshot().status, BatchStatus::Cancelled);
     assert!(manager.0.lock().unwrap()["two"].active());
 }
@@ -794,7 +804,7 @@ fn quitting_cancels_all_windows_preserves_outputs_and_blocks_new_jobs() {
     let request = request(&[first, second], dir.path());
     let one = manager.prepare("one", request.clone(), false).unwrap();
     let two = manager.prepare("two", request.clone(), false).unwrap();
-    run_job(&one, &backend(), |snapshot| {
+    run_job(&one, &backend(), &audio_backend(), |snapshot| {
         if snapshot.status == BatchStatus::Running
             && snapshot.files[0].status == FileStatus::Succeeded
         {
@@ -803,7 +813,7 @@ fn quitting_cancels_all_windows_preserves_outputs_and_blocks_new_jobs() {
     });
     assert!(manager.prepare("three", request.clone(), false).is_err());
     assert!(manager.prepare("one", request, true).is_err());
-    run_job(&two, &backend(), |_| {});
+    run_job(&two, &backend(), &audio_backend(), |_| {});
     assert_eq!(one.snapshot().status, BatchStatus::Cancelled);
     assert_eq!(one.snapshot().files[0].status, FileStatus::Succeeded);
     assert_eq!(one.snapshot().files[1].status, FileStatus::Cancelled);
@@ -822,3 +832,6 @@ fn quitting_cancels_all_windows_preserves_outputs_and_blocks_new_jobs() {
 
 #[path = "animation_tests.rs"]
 mod animation;
+
+#[path = "audio_tests.rs"]
+mod audio;

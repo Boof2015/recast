@@ -33,6 +33,24 @@ def mac_binary(path, minimum, architecture):
     return {'path': path.name, 'minimumMacOS': versions, 'architecture': actual, 'dynamicLibraries': [line.strip() for line in linked]}
 
 
+def check_audio_manifest(resources):
+    lock = json.loads((ROOT / 'scripts/audio-backend.lock.json').read_text())
+    manifest = json.loads((resources / 'build-manifest.json').read_text())
+    if manifest['source'] != lock['source']:
+        raise SystemExit('Packaged audio source differs from the source lock.')
+    suffix = '.exe' if manifest['system'] == 'windows' else ''
+    expected = {name + suffix for name in ['ffmpeg', 'ffprobe']}
+    if set(manifest['binaries']) != expected:
+        raise SystemExit('Audio worker/inspector inventory differs from the build manifest.')
+    for name in expected:
+        if hashlib.sha256((resources / name).read_bytes()).hexdigest() != manifest['binaries'][name]['sha256']:
+            raise SystemExit(f'Packaged audio executable differs from the build manifest: {name}')
+    for name in ['licenses/COPYING.LGPLv2.1', 'licenses/LICENSE.md', 'SOURCE.txt']:
+        if not (resources / name).is_file():
+            raise SystemExit(f'Missing audio source/license notice: {name}')
+    return manifest
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--package', required=True, type=Path, help='.app, .deb, NSIS .exe, or directory containing one package')
@@ -82,6 +100,15 @@ def main():
         builder = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(builder)
         report['worker'] = builder.audit(worker, manifest['system'], manifest['architecture'])
+        audio_workers = [p for p in unpacked.rglob('*') if p.name in ('ffmpeg', 'ffmpeg.exe') and p.parent.name == 'audio-backend']
+        if len(audio_workers) != 1:
+            raise SystemExit(f'Expected one packaged audio worker; found {audio_workers}')
+        audio_resources = audio_workers[0].parent
+        audio_manifest = check_audio_manifest(audio_resources)
+        if (audio_manifest['system'], audio_manifest['architecture']) != (manifest['system'], manifest['architecture']):
+            raise SystemExit('Audio and image workers target different platforms.')
+        report['audio'] = {name: builder.audit(audio_resources / name, audio_manifest['system'], audio_manifest['architecture']) for name in audio_manifest['binaries']}
+        report['checks'].append('audio executable hashes, source manifest, dependency audit, and license inventory')
         if package.suffix == '.app':
             import plistlib
             plist = plistlib.loads((package / 'Contents/Info.plist').read_bytes())
@@ -92,9 +119,12 @@ def main():
         env = os.environ.copy()
         env['PATH'] = os.environ.get('SystemRoot', r'C:\Windows') + r'\System32' if os.name == 'nt' else '/usr/bin:/bin'
         command([str(worker), '-version'], env=env)
-        report['checks'].append('worker starts with a system-only PATH')
+        for name in audio_manifest['binaries']:
+            command([str(audio_resources / name), '-version'], env=env)
+        report['checks'].append('image/audio workers and inspector start with a system-only PATH')
         env = os.environ.copy()
         env['RECAST_TEST_BACKEND'] = str(resources)
+        env['RECAST_TEST_AUDIO_BACKEND'] = str(audio_resources)
         command(['cargo', 'test', '--locked', '--manifest-path', str(ROOT / 'src-tauri/Cargo.toml')], cwd=ROOT, env=env)
         report['checks'].append('real conversion and job tests against extracted worker')
     print(json.dumps(report, indent=2))

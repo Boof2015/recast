@@ -57,7 +57,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: .backend-build/downloads
-          key: image-sources-${{ hashFiles('scripts/image-backend.lock.json') }}
+          key: converter-sources-${{ hashFiles('scripts/image-backend.lock.json', 'scripts/audio-backend.lock.json') }}
       - run: npm ci
       - run: python3 -m unittest discover -s scripts/tests -v
       - run: npm run backend:prepare
@@ -111,12 +111,13 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: .backend-build/downloads
-          key: image-sources-${{ hashFiles('scripts/image-backend.lock.json') }}
+          key: converter-sources-${{ hashFiles('scripts/image-backend.lock.json', 'scripts/audio-backend.lock.json') }}
       - name: Build native Windows worker from pinned sources
         shell: msys2 {0}
         run: |
           /usr/bin/python -m unittest discover -s scripts/tests -v
           /usr/bin/python scripts/prepare-image-backend.py
+          /usr/bin/python scripts/prepare-audio-backend.py
       - run: npm ci
       - run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
       - run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings

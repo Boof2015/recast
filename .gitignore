@@ -15,3 +15,6 @@ src-tauri/resources/.image-backend-*/
 DESIGN.md
 BACKEND.md
 PLATFORM_CHECKS.md
+
+src-tauri/resources/audio-backend/
+src-tauri/resources/.audio-backend-*/

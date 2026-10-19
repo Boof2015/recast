@@ -74,11 +74,14 @@ impl ImageOptions {
 pub struct OutputFile {
     pub path: String,
     pub bytes: u64,
+    pub warnings: Vec<String>,
+    pub details: Option<String>,
 }
 
 #[derive(Debug)]
 pub enum ConversionError {
     Cancelled,
+    Clipping,
     Failed(String),
 }
 impl From<String> for ConversionError {
@@ -429,16 +432,18 @@ impl ImageBackend {
             output,
             source.file_stem().unwrap_or_default(),
             parent,
-            format,
+            format.extension(),
         )?;
         Ok(OutputFile {
             path: path.to_string_lossy().into_owned(),
             bytes,
+            warnings: vec![],
+            details: None,
         })
     }
 }
 
-fn check_cancel(cancel: &AtomicBool) -> Result<(), ConversionError> {
+pub(crate) fn check_cancel(cancel: &AtomicBool) -> Result<(), ConversionError> {
     if cancel.load(Ordering::Relaxed) {
         Err(ConversionError::Cancelled)
     } else {
@@ -446,18 +451,18 @@ fn check_cancel(cancel: &AtomicBool) -> Result<(), ConversionError> {
     }
 }
 
-fn publish(
+pub(crate) fn publish(
     mut temporary: NamedTempFile,
     stem: &std::ffi::OsStr,
     folder: &Path,
-    format: ImageFormat,
+    extension: &str,
 ) -> Result<PathBuf, String> {
     for index in 0..10_000 {
         let mut name = stem.to_os_string();
         if index > 0 {
             name.push(format!(" ({index})"));
         }
-        name.push(format!(".{}", format.extension()));
+        name.push(format!(".{extension}"));
         let destination = folder.join(name);
         // Atomic no-clobber publication also protects concurrent windows and
         // unrelated processes creating the same destination during conversion.

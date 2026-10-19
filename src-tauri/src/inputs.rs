@@ -12,7 +12,7 @@ pub struct InputFile {
     pub id: String,
     pub name: String,
     pub path: String,
-    kind: String,
+    pub kind: String,
     format: String,
     bytes: u64,
     // Stream inspection is a later backend step. Unknown is never treated as true.
@@ -20,6 +20,7 @@ pub struct InputFile {
     targets: Vec<String>,
     conversion_issue: Option<String>,
     animated: bool,
+    pub audio: Option<crate::audio_backend::AudioInfo>,
     target_issues: std::collections::HashMap<String, String>,
     #[serde(skip)]
     pub sequence: Option<crate::animation::Sequence>,
@@ -55,7 +56,12 @@ pub fn inspect(path: &Path) -> Result<InputFile, String> {
     let is_tiff = crate::tiff::has_signature(&header[..read]);
     let detected = infer::get(&header[..read]);
     // infer only recognizes classic TIFF; inspect BigTIFF by its full signature.
-    let (mime, extension) = if is_tiff {
+    let (mime, extension) = if read >= 12
+        && [&b"RIFF"[..], &b"RF64"[..], &b"BW64"[..]].contains(&&header[..4])
+        && &header[8..12] == b"WAVE"
+    {
+        ("audio/wav", "wav")
+    } else if is_tiff {
         ("image/tiff", "tiff")
     } else if crate::avif::has_signature(&header[..read]) {
         ("image/avif", "avif")
@@ -125,6 +131,7 @@ pub fn inspect(path: &Path) -> Result<InputFile, String> {
         },
         bytes: metadata.len(),
         has_audio: None,
+        audio: None,
         targets,
         conversion_issue,
         animated: sequence.as_ref().is_some_and(|s| s.animated()),
@@ -248,15 +255,72 @@ pub fn require_target(path: &Path, target: &str) -> Result<InputFile, String> {
     if let Some(issue) = input.target_issues.get(target) {
         return Err(issue.clone());
     }
+    if !input.targets.iter().any(|candidate| candidate == target) {
+        return Err("This file does not support the selected output format.".into());
+    }
     Ok(input)
 }
 
+pub fn inspect_with_audio(
+    path: &Path,
+    backend: &crate::audio_backend::AudioBackend,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Result<InputFile, String> {
+    let mut input = inspect(path)?;
+    if input.kind == "audio" {
+        match backend.inspect(path, cancel) {
+            Ok(audio) => {
+                input.format = audio.container.to_uppercase();
+                input.has_audio = Some(true);
+                input.targets = vec!["wav".into(), "flac".into()];
+                input.conversion_issue = None;
+                input.audio = Some(audio);
+            }
+            Err(crate::image_backend::ConversionError::Failed(message)) => {
+                input.conversion_issue = Some(message)
+            }
+            Err(crate::image_backend::ConversionError::Cancelled) => {
+                return Err("Audio inspection was cancelled.".into())
+            }
+            Err(crate::image_backend::ConversionError::Clipping) => {
+                return Err("This audio needs an explicit clipping choice.".into())
+            }
+        }
+    }
+    Ok(input)
+}
+
+impl InputFile {
+    pub fn require_audio_target(
+        &self,
+        options: &crate::audio_backend::AudioOptions,
+    ) -> Result<(), String> {
+        if let Some(issue) = &self.conversion_issue {
+            return Err(issue.clone());
+        }
+        let audio = self
+            .audio
+            .as_ref()
+            .ok_or("This file is not supported audio.")?;
+        options.resolve(audio)?;
+        Ok(())
+    }
+}
+
 #[tauri::command]
-pub async fn inspect_inputs(paths: Vec<String>) -> Result<Inspection, String> {
+pub async fn inspect_inputs(
+    paths: Vec<String>,
+    audio: tauri::State<'_, crate::audio_backend::AudioBackend>,
+) -> Result<Inspection, String> {
+    let audio = audio.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let mut result = Inspection::default();
         for path in paths {
-            match inspect(Path::new(&path)) {
+            match inspect_with_audio(
+                Path::new(&path),
+                &audio,
+                &std::sync::atomic::AtomicBool::new(false),
+            ) {
                 Ok(file) => result.files.push(file),
                 Err(message) => result.errors.push(InputError {
                     name: Path::new(&path)

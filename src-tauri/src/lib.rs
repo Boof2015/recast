@@ -1,4 +1,5 @@
 mod animation;
+mod audio_backend;
 mod avif;
 mod desktop;
 mod image_backend;
@@ -20,6 +21,12 @@ pub fn run() {
                 app.path().resource_dir()?.join("image-backend")
             };
             app.manage(image_backend::ImageBackend { root });
+            let root = if cfg!(debug_assertions) {
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/audio-backend")
+            } else {
+                app.path().resource_dir()?.join("audio-backend")
+            };
+            app.manage(audio_backend::AudioBackend { root });
             desktop::install_menu(app.handle())?;
             Ok(())
         })

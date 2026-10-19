@@ -301,7 +301,7 @@ fn animated_and_still_files_share_one_batch_without_combining_or_overwriting() {
     let job = manager
         .prepare("animation", request(&[a, b], dir.path()), false)
         .unwrap();
-    run_job(&job, &backend(), |_| {});
+    run_job(&job, &backend(), &audio_backend(), |_| {});
     for file in job.snapshot().files {
         assert_eq!(file.status, FileStatus::Succeeded, "{:?}", file.error);
     }
