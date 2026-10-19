@@ -9,6 +9,7 @@ fn audio_options(target: &str) -> AudioOptions {
         dither: true,
         metadata: true,
         allow_clipping: false,
+        mp3: Default::default(),
     }
 }
 
@@ -800,3 +801,6 @@ fn alac_float_conversion_obeys_clipping_and_resampling_choices() {
     assert!(resampled.details.unwrap().ends_with("Dither applied"));
     no_partials(dir.path());
 }
+
+#[path = "mp3_tests.rs"]
+mod mp3;

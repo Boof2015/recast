@@ -67,3 +67,11 @@ Audio fixtures are generated independently with macOS CoreAudio by `python3 src-
 - `unsupported-aac.m4a`: AAC at 128 kb/s, verifying that an M4A container is not mistaken for ALAC. AAC support is a later increment.
 
 The initial files were generated on macOS 26.5.1. Container metadata may differ when regenerated; the PCM pattern is deterministic. Separate local checks also used CoreAudio to decode Recast's 16/24-bit ALAC output and compare every sample against the same independent pattern.
+
+MP3 input fixtures use the standalone LAME 4.0 executable, independently of Recast's FFmpeg integration: `python3 src-tauri/tests/fixtures/generate_mp3.py /path/to/lame`. The source is synthetic 16-bit stereo PCM, 44.1 kHz, 44,117 frames; left/right tones are 431/997 Hz with amplitudes 9000/7000, truncated to integer samples. The generator disables ReplayGain analysis. CI reads the checked-in files without needing a standalone LAME installation.
+
+- `lame-vbr.mp3`: V2 variable bitrate, ordinary title/artist tags, and a LAME/Xing gapless header.
+- `lame-crc.mp3`: 192 kb/s constant bitrate with MPEG CRC protection, exercising raw `FF FA` recognition and gapless decoding.
+- `lame-no-xing.mp3`: 128 kb/s without a Xing/LAME header; tests retain its full decoded frames because exact encoder delay/padding is unavailable.
+
+MP3 tests independently reconstruct the original tones and check channel integrity and decoded sample count, rather than requiring lossy samples to equal the source. Tests also encode every supported rate, verify CBR bitrates, short/partial-frame lengths, retained tags, explicit compatibility choices, PCM defaults, clipping/retry, malformed/truncated/concatenated input, and active cancellation. The 12 kHz / 12,117-frame case reproduces FFmpeg 9.0.2's trailing-padding overwrite and verifies the checked muxer correction. Local mpg123 1.33.7 independently decodes VBR/CBR outputs at 12/44.1/48 kHz and verifies exact gapless lengths and the synthetic tone content.

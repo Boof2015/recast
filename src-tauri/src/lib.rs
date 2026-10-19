@@ -6,6 +6,7 @@ mod image_backend;
 mod image_format;
 mod inputs;
 mod jobs;
+mod mp3;
 mod tiff;
 use tauri::Manager;
 

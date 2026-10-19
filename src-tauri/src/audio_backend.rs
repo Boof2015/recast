@@ -23,6 +23,47 @@ pub struct AudioOptions {
     pub dither: bool,
     pub metadata: bool,
     pub allow_clipping: bool,
+    #[serde(default)]
+    pub mp3: Mp3Options,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Mp3Mode {
+    Vbr,
+    Cbr,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Mp3Options {
+    pub mode: Mp3Mode,
+    pub quality: u8,
+    pub bitrate: u16,
+}
+
+impl Default for Mp3Options {
+    fn default() -> Self {
+        Self {
+            mode: Mp3Mode::Vbr,
+            quality: 2,
+            bitrate: 192,
+        }
+    }
+}
+
+pub const MP3_RATES: &[u32] = &[8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000];
+
+fn mp3_bitrates(rate: u32) -> &'static [u16] {
+    if rate < 16000 {
+        &[8, 16, 24, 32, 40, 48, 56, 64]
+    } else if rate < 32000 {
+        &[8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160]
+    } else {
+        &[
+            32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320,
+        ]
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -40,7 +81,14 @@ pub struct AudioInfo {
 }
 
 impl AudioInfo {
+    fn decoded_float(&self) -> bool {
+        self.sample_format.starts_with('f') || self.codec == "mp3"
+    }
+
     pub fn target_issue(&self, target: &str) -> Option<String> {
+        if target == "mp3" && !matches!(self.channel_layout.as_deref(), Some("mono" | "stereo")) {
+            return Some("MP3 requires mono or stereo. Recast does not downmix channels; use WAV or FLAC, or remove this file to convert the rest.".into());
+        }
         // These are the native ALAC layouts supported by the bundled encoder.
         // Reject others before FFmpeg can insert an automatic channel remap.
         if target == "alac"
@@ -69,12 +117,13 @@ impl AudioInfo {
 
 impl AudioOptions {
     pub fn validate(&self) -> Result<(), String> {
-        if !["wav", "flac", "alac"].contains(&self.target.as_str()) {
-            return Err("Choose WAV, FLAC, or ALAC for this audio conversion.".into());
+        if !["wav", "flac", "alac", "mp3"].contains(&self.target.as_str()) {
+            return Err("Choose WAV, FLAC, ALAC, or MP3 for this audio conversion.".into());
         }
         if self.sample_rate.is_some_and(|rate| {
             ![
-                8000, 11025, 16000, 22050, 24000, 32000, 44100, 48000, 88200, 96000, 176400, 192000,
+                8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000, 88200, 96000, 176400,
+                192000,
             ]
             .contains(&rate)
         }) {
@@ -82,6 +131,9 @@ impl AudioOptions {
         }
         if self.sample_format != "source" && format_bits(&self.sample_format).is_none() {
             return Err("Choose a supported audio sample format.".into());
+        }
+        if self.target == "mp3" && matches!(self.mp3.mode, Mp3Mode::Vbr) && self.mp3.quality > 9 {
+            return Err("Choose an MP3 VBR quality from 0 (highest) to 9 (smallest).".into());
         }
         Ok(())
     }
@@ -92,14 +144,33 @@ impl AudioOptions {
             return Err(issue);
         }
         let rate = self.sample_rate.unwrap_or(input.sample_rate);
+        if self.target == "mp3" {
+            if !MP3_RATES.contains(&rate) {
+                return Err("MP3 cannot preserve this sample rate. Choose an explicit supported rate from 8000 to 48000 Hz.".into());
+            }
+            if matches!(self.mp3.mode, Mp3Mode::Cbr)
+                && !mp3_bitrates(rate).contains(&self.mp3.bitrate)
+            {
+                return Err(format!("{} kbps is not available for MP3 at {rate} Hz. Choose a compatible bitrate or use variable bitrate.", self.mp3.bitrate));
+            }
+            // MP3 receives floating-point samples; PCM format/dither settings
+            // remembered from other destinations must never quantize this path.
+            return Ok((rate, "f32".into()));
+        }
         let format = if self.sample_format == "source" {
-            &input.sample_format
+            if input.codec == "mp3" {
+                if self.target == "wav" {
+                    "f32"
+                } else {
+                    "s24"
+                }
+            } else {
+                &input.sample_format
+            }
         } else {
             &self.sample_format
         };
-        if ["flac", "alac"].contains(&self.target.as_str())
-            && !["s16", "s24"].contains(&format.as_str())
-        {
+        if ["flac", "alac"].contains(&self.target.as_str()) && !["s16", "s24"].contains(&format) {
             return Err(format!("This {} encoder supports 16-bit or 24-bit PCM. Choose one explicitly, or use WAV to keep the source sample format.", self.target.to_uppercase()));
         }
         if self.target == "flac" && rate > 655_350 {
@@ -108,7 +179,7 @@ impl AudioOptions {
         if self.target == "alac" && rate > 384_000 {
             return Err("ALAC output is limited to 384000 Hz. Choose an explicit compatible rate or use WAV.".into());
         }
-        Ok((rate, format.clone()))
+        Ok((rate, format.to_owned()))
     }
 }
 
@@ -173,13 +244,17 @@ impl AudioBackend {
             .args(["-hide_banner", "-codecs"])
             .output()
             .map_err(|_| "The bundled audio codecs could not be checked.".to_string())?;
-        let supported = String::from_utf8_lossy(&codecs.stdout).lines().any(|line| {
-            let mut parts = line.split_whitespace();
-            parts.next().is_some_and(|flags| flags.starts_with("DE"))
-                && parts.next() == Some("alac")
+        let supported = ["alac", "mp3"].iter().all(|codec| {
+            String::from_utf8_lossy(&codecs.stdout).lines().any(|line| {
+                let mut parts = line.split_whitespace();
+                parts.next().is_some_and(|flags| flags.starts_with("DE"))
+                    && parts.next() == Some(codec)
+            })
         });
         if !codecs.status.success() || !supported {
-            return Err("The bundled audio converter needs rebuilding for ALAC support.".into());
+            return Err(
+                "The bundled audio converter needs rebuilding for ALAC/MP3 support.".into(),
+            );
         }
         Ok(())
     }
@@ -213,7 +288,11 @@ impl AudioBackend {
         }
         let probe: serde_json::Value = serde_json::from_slice(&bytes)
             .map_err(|_| "This audio file could not be inspected.".to_string())?;
-        parse_probe(&probe).map_err(Into::into)
+        let info = parse_probe(&probe)?;
+        if info.codec == "mp3" {
+            crate::mp3::validate(path, cancel)?;
+        }
+        Ok(info)
     }
 
     pub fn convert(
@@ -261,19 +340,21 @@ impl AudioBackend {
         let info = self.inspect(&staged, cancel)?;
         let (rate, sample_format) = options.resolve(&info)?;
         let bits = format_bits(&sample_format).unwrap();
+        let mp3_output = options.target == "mp3";
         let integer = !sample_format.starts_with('f');
         let resampling = rate != info.sample_rate;
         let quantizing = integer
             && (resampling
-                || info.sample_format.starts_with('f')
+                || info.decoded_float()
                 || bits < format_bits(&info.sample_format).unwrap());
         let dither = quantizing && options.dither;
         let mut warnings = Vec::new();
         // Keep unchanged/widened integer samples on the integer path. A double
-        // intermediate is only needed for resampling or float -> integer, where
-        // we must detect overload BEFORE the encoder clamps away the evidence.
+        // intermediate checks resampling and float -> integer before an encoder
+        // can clamp away overload. MP3 also uses it to validate finite input and
+        // compare the final gapless sample count without integer quantization.
         let intermediate = work.path().join("processed.f64");
-        let processed = resampling || (integer && info.sample_format.starts_with('f'));
+        let processed = mp3_output || resampling || (integer && info.decoded_float());
         if processed {
             let mut command = self.transcoder();
             command
@@ -367,7 +448,28 @@ impl AudioBackend {
                 ),
             ]);
         }
-        if options.target == "flac" {
+        if mp3_output {
+            command.args([
+                "-c:a",
+                "libmp3lame",
+                "-sample_fmt",
+                "fltp",
+                "-compression_level",
+                "2",
+                "-write_xing",
+                "1",
+                "-id3v2_version",
+                "3",
+            ]);
+            match options.mp3.mode {
+                Mp3Mode::Vbr => {
+                    command.args(["-q:a", &options.mp3.quality.to_string()]);
+                }
+                Mp3Mode::Cbr => {
+                    command.args(["-b:a", &format!("{}k", options.mp3.bitrate)]);
+                }
+            }
+        } else if options.target == "flac" {
             command.args([
                 "-c:a",
                 "flac",
@@ -412,12 +514,54 @@ impl AudioBackend {
         )?;
         let actual = self.inspect(output.path(), cancel)?;
         if (options.target == "alac" && actual.codec != "alac")
+            || (mp3_output && actual.codec != "mp3")
             || actual.sample_rate != rate
-            || actual.sample_format != sample_format
+            || (!mp3_output && actual.sample_format != sample_format)
             || actual.channels != info.channels
             || (info.channel_layout.is_some() && actual.channel_layout != info.channel_layout)
         {
             return Err("The converted audio did not retain the requested sample format, rate, or channel layout.".to_string().into());
+        }
+        if mp3_output {
+            // Check the complete decoded output and gapless sample count before
+            // publishing. MP3 headers include codec delay/padding in duration.
+            let decoded = work.path().join("output.f64");
+            let mut command = self.transcoder();
+            command
+                .args(["-f", "mp3", "-i"])
+                .arg(output.path())
+                .args(["-map", "0:a:0", "-c:a", "pcm_f64le", "-f", "f64le"])
+                .arg(&decoded);
+            run(
+                &mut command,
+                &work.path().join("validate.log"),
+                cancel,
+                Duration::from_secs(21600),
+            )?;
+            let expected = std::fs::metadata(&intermediate)
+                .map_err(|_| "The processed audio could not be checked.".to_string())?
+                .len();
+            let actual = std::fs::metadata(&decoded)
+                .map_err(|_| "The MP3 could not be checked.".to_string())?
+                .len();
+            if actual != expected {
+                return Err("The MP3 did not retain the complete audio length."
+                    .to_string()
+                    .into());
+            }
+            if scan_samples(&decoded, cancel)? {
+                warnings.push("Decoded MP3 peaks exceed full scale and may clip during playback. No normalization was applied.".into());
+            }
+        }
+        if info.codec == "mp3" {
+            warnings.push(
+                if mp3_output {
+                    "Re-encoding MP3 adds another lossy generation."
+                } else {
+                    "Converting MP3 to PCM or a lossless format does not restore lost detail."
+                }
+                .into(),
+            );
         }
         let bytes = output
             .as_file()
@@ -439,12 +583,23 @@ impl AudioBackend {
             path: path.to_string_lossy().into_owned(),
             bytes,
             warnings,
-            details: Some(format!(
-                "{rate} Hz · {bits}-bit {} · {} channels · Dither {}",
-                if integer { "PCM" } else { "float" },
-                info.channels,
-                if dither { "applied" } else { "off" }
-            )),
+            details: Some(if mp3_output {
+                format!(
+                    "{rate} Hz · {} channels · MP3 {}",
+                    info.channels,
+                    match options.mp3.mode {
+                        Mp3Mode::Vbr => format!("VBR V{}", options.mp3.quality),
+                        Mp3Mode::Cbr => format!("{} kbps CBR", options.mp3.bitrate),
+                    }
+                )
+            } else {
+                format!(
+                    "{rate} Hz · {bits}-bit {} · {} channels · Dither {}",
+                    if integer { "PCM" } else { "float" },
+                    info.channels,
+                    if dither { "applied" } else { "off" }
+                )
+            }),
         })
     }
 
@@ -473,16 +628,15 @@ impl AudioBackend {
 
 fn parse_probe(probe: &serde_json::Value) -> Result<AudioInfo, String> {
     let container = probe["format"]["format_name"].as_str().unwrap_or("");
-    let container = match container {
-        "wav" | "flac" => container,
-        "mov,mp4,m4a,3gp,3g2,mj2" => "mov",
-        _ => {
-            return Err(
-                "This audio build currently accepts PCM WAV, FLAC, and ALAC in M4A/MP4 files."
+    let container =
+        match container {
+            "wav" | "flac" | "mp3" => container,
+            "mov,mp4,m4a,3gp,3g2,mj2" => "mov",
+            _ => return Err(
+                "This audio build currently accepts PCM WAV, FLAC, MP3, and ALAC in M4A/MP4 files."
                     .into(),
-            )
-        }
-    };
+            ),
+        };
     let streams = probe["streams"]
         .as_array()
         .ok_or("No audio stream was found.")?;
@@ -502,6 +656,9 @@ fn parse_probe(probe: &serde_json::Value) -> Result<AudioInfo, String> {
     if container == "mov" && codec != "alac" {
         return Err("This M4A/MP4 file does not contain supported ALAC audio. AAC and other codecs are not supported yet.".into());
     }
+    if container == "mp3" && codec != "mp3" {
+        return Err("This build accepts MPEG Layer III (MP3), not Layer I or II audio.".into());
+    }
     let number = |key: &str| {
         stream[key]
             .as_u64()
@@ -515,6 +672,7 @@ fn parse_probe(probe: &serde_json::Value) -> Result<AudioInfo, String> {
         .ok_or("This build accepts audio with one to eight channels.")? as u16;
     let sample_format =
         match codec {
+            "mp3" if container == "mp3" => "lossy",
             "pcm_u8" => "u8",
             "pcm_s16le" => "s16",
             "pcm_s24le" => "s24",

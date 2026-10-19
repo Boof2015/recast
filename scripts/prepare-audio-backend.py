@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the isolated lossless-audio worker and inspector from pinned FFmpeg sources."""
+"""Build the isolated audio worker and inspector from pinned codec sources."""
 import argparse
 import hashlib
 import importlib.util
@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -26,10 +27,11 @@ def configuration(system, arch):
         '--disable-doc', '--disable-debug', '--disable-shared', '--enable-static',
         '--disable-avdevice', '--disable-swscale', '--disable-ffplay', '--disable-x86asm',
         '--enable-ffmpeg', '--enable-ffprobe', '--enable-protocol=file,pipe',
-        '--enable-demuxer=wav,flac,mov,pcm_f64le',
-        '--enable-muxer=wav,flac,ipod,pcm_f64le,pcm_s32le,null',
-        f'--enable-decoder={pcm},flac,alac', f'--enable-encoder={pcm},flac,alac',
-        '--enable-parser=flac', '--enable-filter=aresample,aformat,anull',
+        '--enable-demuxer=wav,flac,mov,mp3,pcm_f64le',
+        '--enable-muxer=wav,flac,ipod,mp3,pcm_f64le,pcm_s32le,null',
+        f'--enable-decoder={pcm},flac,alac,mp3float', f'--enable-encoder={pcm},flac,alac,libmp3lame',
+        '--enable-libmp3lame', '--enable-parser=flac,mpegaudio',
+        '--enable-filter=aresample,aformat,anull',
     ]
     if system == 'darwin':
         result += ['--cc=clang', f'--arch={"aarch64" if arch == "arm64" else arch}',
@@ -39,6 +41,42 @@ def configuration(system, arch):
         result += ['--target-os=mingw32', '--arch=x86_64', '--cc=/ucrt64/bin/gcc',
                    '--extra-ldflags=-static -static-libgcc']
     return result
+
+
+def build_lame(work, logs, env, system, arch):
+    dependency = next(item for item in LOCK['dependencies'] if item['name'] == 'lame')
+    source = COMMON.extract(dependency, work / 'lame')
+    stage = work / 'install'
+    flags = '-O2 -fPIC -std=gnu11'
+    cc = '/ucrt64/bin/gcc' if system == 'windows' else 'clang' if system == 'darwin' else 'gcc'
+    if system == 'darwin':
+        flags += f' -arch {arch} -mmacosx-version-min={LOCK["minimumMacOS"]}'
+    build_env = env | {'CC': cc, 'CFLAGS': flags, 'ac_cv_prog_cc_c23': 'no'}
+    config = [f'--prefix={stage}', '--disable-shared', '--enable-static',
+              '--disable-frontend', '--disable-decoder', '--disable-analyzer-hooks',
+              '--disable-nasm', '--disable-dependency-tracking']
+    if system == 'darwin':
+        config += [f'--host={"aarch64" if arch == "arm64" else arch}-apple-darwin']
+    COMMON.run(['sh', str(source / 'configure'), *config], cwd=source, env=build_env, log=logs / 'lame-configure.log')
+    COMMON.run(['make', '-j', COMMON.JOBS], cwd=source, env=build_env, log=logs / 'lame-build.log')
+    COMMON.run(['make', 'install'], cwd=source, env=build_env, log=logs / 'lame-install.log')
+    return source, stage, config
+
+
+def patch_mp3_padding(source):
+    # A delayed encoder can emit padding across more than one final packet.
+    # FFmpeg 9.0.2 overwrites the preceding packet's discard count, extending
+    # some outputs (e.g. 12117 mono samples at 12 kHz) by 26 samples on decode.
+    # Accumulate contiguous discard counts; ordinary packets reset padding.
+    path = source / 'libavformat/mp3enc.c'
+    original = 'mp3->padding = FFMAX((int64_t)AV_RL32(side_data + 4) + 528 + 1, 0);'
+    corrected = 'mp3->padding = FFMAX((int64_t)AV_RL32(side_data + 4) + (mp3->padding ? mp3->padding : 528 + 1), 0);'
+    text = path.read_text()
+    if corrected in text:
+        return
+    if text.count(original) != 1:
+        raise SystemExit('Pinned MP3 padding patch no longer matches; review the upstream source.')
+    path.write_text(text.replace(original, corrected))
 
 
 def main():
@@ -62,14 +100,19 @@ def main():
     logs = work / 'logs'
     logs.mkdir(parents=True, exist_ok=True)
     source = COMMON.extract(LOCK['source'], work / 'source')
+    patch_mp3_padding(source)
     env = os.environ.copy()
     for key in ['CPATH', 'C_INCLUDE_PATH', 'CPLUS_INCLUDE_PATH', 'LIBRARY_PATH', 'SDKROOT',
-                'CFLAGS', 'CXXFLAGS', 'CPPFLAGS', 'LDFLAGS', 'LIBS', 'CC', 'CXX', 'PKG_CONFIG_PATH']:
+                'CFLAGS', 'CXXFLAGS', 'CPPFLAGS', 'LDFLAGS', 'LIBS', 'CC', 'CXX',
+                'PKG_CONFIG_PATH', 'PKG_CONFIG', 'mpg123_CFLAGS', 'mpg123_LIBS']:
         env.pop(key, None)
     env['PKG_CONFIG_LIBDIR'] = str(work / 'no-system-packages')
     if system == 'darwin':
         env['MACOSX_DEPLOYMENT_TARGET'] = LOCK['minimumMacOS']
+    lame_source, stage, lame_config = build_lame(work, logs, env, system, arch)
     config = configuration(system, arch)
+    config += [f'--extra-cflags=-I{shlex.quote(str(stage / "include"))}',
+               f'--extra-ldflags=-L{shlex.quote(str(stage / "lib"))}']
     if arch != host:
         config += ['--enable-cross-compile', '--target-os=darwin']
     print(f'Building FFmpeg {LOCK["source"]["version"]} for {system}/{arch}…', flush=True)
@@ -99,12 +142,19 @@ def main():
         notices.mkdir()
         for name in ['COPYING.LGPLv2.1', 'LICENSE.md']:
             shutil.copyfile(source / name, notices / name)
+        for name in LOCK['dependencies'][0]['licenses']:
+            shutil.copyfile(lame_source / name, notices / f'lame-{name}')
         (output / 'SOURCE.txt').write_text(
             'FFmpeg source: ' + LOCK['source']['url'] + '\n'
             'Source SHA-256: ' + LOCK['source']['sha256'] + '\n'
-            'Unmodified source; rebuild with scripts/prepare-audio-backend.py.\n'
-            'Configuration: ' + ' '.join(config) + '\n')
+            'FFmpeg MP3 trailing-padding accumulation corrected by a checked source patch.\n'
+            'LAME source unmodified; rebuild with scripts/prepare-audio-backend.py.\n'
+            'Configuration: ' + ' '.join(config) + '\n'
+            'LAME source: ' + LOCK['dependencies'][0]['url'] + '\n'
+            'LAME SHA-256: ' + LOCK['dependencies'][0]['sha256'] + '\n'
+            'LAME configuration: ' + ' '.join(lame_config) + '\n')
         manifest = {'system': system, 'architecture': arch, 'source': LOCK['source'],
+                    'dependencies': LOCK['dependencies'],
                     'recipeFingerprint': fingerprint, 'configuration': config, 'binaries': binaries}
         (output / 'build-manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
         backup = OUT.with_name('.audio-backend-previous')

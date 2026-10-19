@@ -19,8 +19,11 @@ class AudioPackageTests(unittest.TestCase):
         (self.root / 'licenses').mkdir()
         for name in ['licenses/COPYING.LGPLv2.1', 'licenses/LICENSE.md', 'SOURCE.txt']:
             (self.root / name).write_text('notice')
-        source = json.loads((ROOT / 'scripts/audio-backend.lock.json').read_text())['source']
-        self.manifest = {'source': source, 'system': 'linux', 'binaries': {}}
+        lock = json.loads((ROOT / 'scripts/audio-backend.lock.json').read_text())
+        for dependency in lock['dependencies']:
+            for name in dependency['licenses']:
+                (self.root / 'licenses' / f'{dependency["name"]}-{name}').write_text('notice')
+        self.manifest = {'source': lock['source'], 'dependencies': lock['dependencies'], 'system': 'linux', 'binaries': {}}
         for name in ['ffmpeg', 'ffprobe']:
             content = (name + ' executable fixture').encode()
             (self.root / name).write_bytes(content)
@@ -51,4 +54,15 @@ class AudioPackageTests(unittest.TestCase):
     def test_requires_source_and_license_notices(self):
         (self.root / 'SOURCE.txt').unlink()
         with self.assertRaisesRegex(SystemExit, 'notice'):
+            CHECK.check_audio_manifest(self.root)
+
+    def test_detects_wrong_encoder_dependency(self):
+        self.manifest['dependencies'][0]['sha256'] = '0' * 64
+        self.save()
+        with self.assertRaisesRegex(SystemExit, 'dependencies'):
+            CHECK.check_audio_manifest(self.root)
+
+    def test_requires_encoder_license_notice(self):
+        (self.root / 'licenses/lame-COPYING').unlink()
+        with self.assertRaisesRegex(SystemExit, 'dependency license'):
             CHECK.check_audio_manifest(self.root)

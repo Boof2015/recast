@@ -65,6 +65,8 @@ pub fn inspect(path: &Path) -> Result<InputFile, String> {
         ("image/tiff", "tiff")
     } else if crate::avif::has_signature(&header[..read]) {
         ("image/avif", "avif")
+    } else if crate::mp3::has_signature(&header[..read]) {
+        ("audio/mpeg", "mp3")
     } else {
         let detected = detected.ok_or("This file type is not recognized yet.")?;
         (detected.mime_type(), detected.extension())
@@ -280,7 +282,7 @@ pub fn inspect_with_audio(
                 };
                 input.has_audio = Some(true);
                 input.target_issues.clear();
-                input.targets = ["wav", "flac", "alac"]
+                input.targets = ["wav", "flac", "alac", "mp3"]
                     .into_iter()
                     .filter_map(|target| {
                         if let Some(issue) = audio.target_issue(target) {
