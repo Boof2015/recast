@@ -74,13 +74,14 @@ def main():
         config += ['--enable-cross-compile', '--target-os=darwin']
     print(f'Building FFmpeg {LOCK["source"]["version"]} for {system}/{arch}…', flush=True)
     COMMON.run(['sh', str(source / 'configure'), *config], cwd=source, env=env, log=logs / 'configure.log')
-    COMMON.run(['make', '-j', COMMON.JOBS, 'ffmpeg', 'ffprobe'], cwd=source, env=env, log=logs / 'build.log')
+    # FFmpeg's Make targets include EXESUF, which is .exe on Windows.
+    programs = {name: name + ('.exe' if system == 'windows' else '') for name in ['ffmpeg', 'ffprobe']}
+    COMMON.run(['make', '-j', COMMON.JOBS, *programs.values()], cwd=source, env=env, log=logs / 'build.log')
     OUT.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='.audio-backend-', dir=OUT.parent) as temporary:
         output = Path(temporary)
         binaries = {}
-        for name in ['ffmpeg', 'ffprobe']:
-            filename = name + ('.exe' if system == 'windows' else '')
+        for name, filename in programs.items():
             binary = output / filename
             shutil.copy2(source / filename, binary)
             COMMON.run(['strip', '-x' if system == 'darwin' else '--strip-unneeded', str(binary)])
