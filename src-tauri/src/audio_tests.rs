@@ -11,6 +11,7 @@ fn audio_options(target: &str) -> AudioOptions {
         allow_clipping: false,
         mp3: Default::default(),
         aac: Default::default(),
+        opus: Default::default(),
     }
 }
 
@@ -804,3 +805,6 @@ mod mp3;
 
 #[path = "aac_tests.rs"]
 mod aac;
+
+#[path = "opus_tests.rs"]
+mod opus;

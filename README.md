@@ -2,7 +2,7 @@
 
 A local file converter, built with Tauri 2, React, TypeScript, and Rust.
 
-Recast converts **still PNG, JPEG, WebP, BMP, TIFF, AVIF, and GIF**, **animated GIF ↔ animated WebP**, and **PCM WAV, FLAC, ALAC, MP3, and AAC-LC**, including same-format conversion. Images and audio can share a batch with independent group settings. Everything runs locally through bundled converters.
+Recast converts **still PNG, JPEG, WebP, BMP, TIFF, AVIF, and GIF**, **animated GIF ↔ animated WebP**, and **PCM WAV, FLAC, ALAC, MP3, AAC-LC, and Opus**, including same-format conversion. Images and audio can share a batch with independent group settings. Everything runs locally through bundled converters.
 
 ## Images
 
@@ -20,7 +20,7 @@ ALAC writes Apple Lossless audio in `.m4a` files. This build rejects 20/32-bit A
 
 MP3 uses bundled LAME, with **variable bitrate quality** (V2 by default) or **constant bitrate**. It retains mono/stereo and supports 8, 11.025, 12, 16, 22.05, 24, 32, 44.1, and 48 kHz; unsupported source rates need an explicit compatible choice. Available constant bitrates depend on the selected rates across the group. Recast never silently changes the rate/bitrate or downmixes surround audio. PCM bit depth and dithering do not apply to MP3 encoding.
 
-MP3 and AAC have no source PCM bit depth. When lossy inputs are present, the sample-format default is labelled **Auto**: lossy audio becomes **32-bit float WAV** or **24-bit PCM FLAC/ALAC**, while existing PCM/lossless sources retain their own formats where supported. Explicit choices remain available. Neither decoding MP3 into a lossless format nor increasing bitrate restores lost detail; MP3-to-MP3 conversion re-encodes and adds another lossy generation.
+MP3, AAC, and Opus have no source PCM bit depth. When lossy inputs are present, the sample-format default is labelled **Auto**: lossy audio becomes **32-bit float WAV** or **24-bit PCM FLAC/ALAC**, while existing PCM/lossless sources retain their own formats where supported. Explicit choices remain available. Neither decoding MP3 into a lossless format nor increasing bitrate restores lost detail; MP3-to-MP3 conversion re-encodes and adds another lossy generation.
 
 MP3 checks complete frame boundaries, consistent rate/channel count, and declared Xing frame counts before conversion. Export checks the full decoded result and exact gapless sample count. Files without delay/padding metadata retain all decoded samples; Recast does not guess a trim. Free-format MP3, changing stream parameters, concatenated stream headers, and malformed/incomplete frames are unsupported. Lossy encoding can create peaks above full scale; these are reported without normalization. Converting such peaks to integer PCM follows the existing clipping-consent policy.
 
@@ -28,13 +28,17 @@ AAC writes **AAC-LC in `.m4a` files**, using a target bitrate (192 kbps by defau
 
 AAC-LC input includes independently encoded Apple M4A and raw ADTS `.aac` files. Raw AAC retains all decoded samples because it has no reliable gapless trim metadata. Truncated ADTS frames, changing stream parameters, multi-block/PCE ADTS, and containers with multiple audio tracks or video are rejected. **HE-AAC/HE-AACv2 remain unsupported for now**: independent checks found a timing offset in the bundled decoder, and these files receive a clear explanation. Other AAC profiles and LATM/LOAS are also outside this increment. Re-encoding lossy audio adds another lossy generation; decoding it to PCM/lossless does not restore lost detail.
 
+Opus writes **Ogg `.opus` files**, with variable bitrate targeting 128 kbps by default. Output is always **48,000 Hz**, with resampling clearly shown in the controls; rate and PCM-depth settings remembered from other formats do not alter this path. Bitrate is for the complete stream, with choices from 16 to 512 kbps (up to 256 kbps for mono). Standard mono, stereo, 3.0, quad, 5.0, 5.1, 6.1, and 7.1 channel layouts are preserved without downmixing.
+
+Opus input is identified by content in Ogg containers, including `.opus` and `.ogg` names. Header gain, pre-skip, and final padding are honored. Complete page checksums, sequence/continuation checks, and sample timing validation prevent damaged streams from being silently shortened; every export is fully decoded and its sample count checked. Chained/multiplexed Ogg streams and nonstandard/ambisonic mapping families are unsupported. Opus in WebM/MP4 belongs to later container work. Text metadata, lossy-input defaults, clipping consent, safe names, cancellation, and mixed batches use the existing workflow.
+
 - **Keep source** preserves each file's sample rate and sample format where the destination supports them. Explicit selections apply to the whole audio group.
 - One to eight channels are retained; files with more than two channels need a recognized channel layout. Channel mixing is not implemented.
 - **Dithering: Auto** applies unshaped triangular dither once at final integer quantization when reducing precision or resampling. Unchanged integer samples and exact widening bypass it. **Off** is also available.
 - **Allow clipping** permits integer output when decoded or resampled peaks exceed its range. Without consent, affected files fail with an **Allow clipping & retry** action that preserves completed outputs. Recast does not normalize or limit the signal; compatible float WAV retains out-of-range values.
 - **Keep metadata** carries supported ordinary text tags. Artwork, loudness-analysis tags, and production metadata are omitted. Output details report sample properties and whether dithering was applied.
 
-Opus, Ogg Vorbis, and the planned video formats remain on the roadmap. Audio format coverage is not complete yet.
+Ogg Vorbis and the planned video formats remain on the roadmap. Audio format coverage is not complete yet.
 
 ## Batches
 
@@ -54,7 +58,7 @@ npm run desktop
 
 `backend:prepare` builds both the image worker and FFmpeg/ffprobe from pinned, checksum-verified sources. To rebuild only one, use `npm run backend:image` or `npm run backend:audio`. Windows equivalents are `/usr/bin/python scripts/prepare-image-backend.py` and `/usr/bin/python scripts/prepare-audio-backend.py` in MSYS2 UCRT64.
 
-Choose or drop supported images, WAV, FLAC, ALAC, MP3, or AAC-LC files, select an output for each group, adjust settings, and convert. Outputs go beside their sources by default; a different folder can be selected. Existing names, including the original during same-format conversion, get a numbered alternative. JPEG outputs use `.jpg`; TIFF outputs use `.tiff` (both `.tif` and `.tiff` inputs are recognized by content). Click a completed output to reveal it in its folder.
+Choose or drop supported images, WAV, FLAC, ALAC, MP3, AAC-LC, or Opus files, select an output for each group, adjust settings, and convert. Outputs go beside their sources by default; a different folder can be selected. Existing names, including the original during same-format conversion, get a numbered alternative. JPEG outputs use `.jpg`; TIFF outputs use `.tiff` (both `.tif` and `.tiff` inputs are recognized by content). Click a completed output to reveal it in its folder.
 
 Use **File → New Window** (⌘N on macOS, Ctrl+N elsewhere) for an independent batch. **File → Add Files…** (⌘O / Ctrl+O) adds to the focused window. Closing a running window cancels that batch and waits for cleanup; quitting Recast cancels all active batches and waits for cleanup. Completed outputs stay on disk. Adding an existing input again, cancelling a picker, or selecting the same setting or output folder leaves completed results available.
 
@@ -81,6 +85,8 @@ npm run tauri -- build --bundles app -- --locked
 
 Native tests use the real bundled converters and require `backend:prepare`. `npm run package:check -- --package <package path> --output artifacts` checks executable hashes, architecture, runtime dependencies, and source/license notices, then repeats the tests against packaged resources. The macOS app is generated at `src-tauri/target/release/bundle/macos/Recast.app`. It needs no Homebrew installation at runtime. Other platforms use their configured bundle targets instead of `--bundles app`.
 
-Source versions and hashes are recorded in [image-backend.lock.json](scripts/image-backend.lock.json) and [audio-backend.lock.json](scripts/audio-backend.lock.json). The minimal FFmpeg build enables WAV/FLAC/ALAC/MP3/AAC and PCM processing without network access, with a statically linked, source-built LAME 4.0 encoder. A checked FFmpeg source correction accumulates trailing MP3 padding across final packets to preserve exact decoded lengths. Generated resources carry build manifests and license notices and are ignored by Git.
+Source versions and hashes are recorded in [image-backend.lock.json](scripts/image-backend.lock.json) and [audio-backend.lock.json](scripts/audio-backend.lock.json). The minimal FFmpeg build enables WAV/FLAC/ALAC/MP3/AAC/Opus and PCM processing without network access, with statically linked, source-built LAME 4.0 and libopus 1.6.1 encoders. A checked FFmpeg source correction accumulates trailing MP3 padding across final packets to preserve exact decoded lengths. Generated resources carry build manifests and license notices and are ignored by Git.
 
-The platform workflow covers Windows x86_64, Linux x86_64/ARM64, and both Mac architectures. The image and WAV/FLAC/ALAC/MP3 workflow passes [all five targets at `5fe0055`](https://github.com/Boof2015/recast/actions/runs/39205740495), including 98 Rust tests before and after packaging and 21 build/audit tests on each target. The subsequent AAC-LC increment passes 108 Rust tests against the packaged Apple Silicon app, 21 Python checks, UI checks, and independent CoreAudio decoding; its five-platform CI run is pending. Older macOS runtime checks, native desktop/accessibility checks, and distribution signing remain separate release work.
+The platform workflow covers Windows x86_64, Linux x86_64/ARM64, and both Mac architectures. The image and WAV/FLAC/ALAC/MP3/AAC-LC workflow passes [all five targets at `b26b350`](https://github.com/Boof2015/recast/actions/runs/39210227739), including 108 Rust tests before and after packaging and 21 build/audit tests on each target. Local UI checks and independent CoreAudio decoding also pass. Older macOS runtime checks, native desktop/accessibility checks, and distribution signing remain separate release work.
+
+Opus passes 117 Rust tests before and after Apple Silicon packaging, 22 Python checks, UI checks, and direct-libopus verification. Its five-platform CI run is pending the next user push. The prior all-green matrix above covers AAC-LC.

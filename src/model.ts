@@ -29,6 +29,7 @@ export interface GroupSettings {
   mp3Mode: 'vbr' | 'cbr';
   mp3Quality: string;
   aacBitrate: string;
+  opusBitrate: string;
   resolution: string;
   frameRate: string;
   sampleRate: string;
@@ -97,7 +98,7 @@ export function defaultSettings(): Record<MediaKind, GroupSettings> {
     target: null, quality: 85, lossless: false, metadata: true, background: '#ffffff',
     colors: 256, dither: true, resize: 'Original', bitrate: '192 kbps', resolution: 'Original', frameRate: 'Original',
     sampleRate: 'Keep source', sampleFormat: 'Keep source', audioDither: true, allowClipping: false,
-    mp3Mode: 'vbr', mp3Quality: 'V2 · High', aacBitrate: '192 kbps',
+    mp3Mode: 'vbr', mp3Quality: 'V2 · High', aacBitrate: '192 kbps', opusBitrate: '128 kbps',
   };
   return { images: { ...settings }, audio: { ...settings }, video: { ...settings } };
 }
@@ -116,8 +117,13 @@ export function aacBitrateChoices(files: InputFile[], settings: GroupSettings): 
     .map(bitrate => `${bitrate} kbps`);
 }
 
+export const opusBitrates = [16, 24, 32, 48, 64, 80, 96, 128, 160, 192, 224, 256, 320, 384, 448, 512];
+export function opusBitrateChoices(files: InputFile[]): string[] {
+  return opusBitrates.filter(bitrate => files.every(file => !file.audio || bitrate <= 256 * file.audio.channels)).map(bitrate => `${bitrate} kbps`);
+}
+
 export function isLossyAudio(file: InputFile): boolean {
-  return ['mp3', 'aac'].includes(file.audio?.codec ?? '');
+  return ['mp3', 'aac', 'opus'].includes(file.audio?.codec ?? '');
 }
 
 export const mp3Qualities = ['V0 · Highest', 'V2 · High', 'V4 · Standard', 'V6 · Smaller', 'V8 · Smallest'];
@@ -136,13 +142,17 @@ export function mp3BitrateChoices(files: InputFile[], settings: GroupSettings): 
 }
 
 function resolvedAudioFormat(file: InputFile, settings: GroupSettings): string {
-  if (['mp3', 'm4a'].includes(settings.target ?? '')) return 'f32';
+  if (['mp3', 'm4a', 'opus'].includes(settings.target ?? '')) return 'f32';
   if (settings.sampleFormat !== 'Keep source') return audioSampleFormats[settings.sampleFormat];
   return isLossyAudio(file) ? settings.target === 'wav' ? 'f32' : 's24' : file.audio!.sampleFormat;
 }
 
 export function audioSettingIssue(file: InputFile, settings: GroupSettings): string | null {
   if (!file.audio || !settings.target) return null;
+  if (settings.target === 'opus') {
+    const bitrate = Number.parseInt(settings.opusBitrate);
+    return !opusBitrates.includes(bitrate) || bitrate > 256 * file.audio.channels ? `${file.name}: choose a compatible Opus bitrate (at most 256 kbps per channel).` : null;
+  }
   if (settings.target === 'mp3') {
     const rate = settings.sampleRate === 'Keep source' ? file.audio.sampleRate : Number(settings.sampleRate);
     if (!mp3Rates.includes(String(rate))) return `${file.name}: MP3 cannot preserve ${rate} Hz. Choose a supported sample rate.`;
@@ -170,7 +180,7 @@ export function audioSettingIssue(file: InputFile, settings: GroupSettings): str
 }
 
 export function audioWillDither(file: InputFile, settings: GroupSettings): boolean {
-  if (!file.audio || !settings.audioDither || ['mp3', 'm4a'].includes(settings.target ?? '')) return false;
+  if (!file.audio || !settings.audioDither || ['mp3', 'm4a', 'opus'].includes(settings.target ?? '')) return false;
   const format = resolvedAudioFormat(file, settings);
   return !format.startsWith('f') && (isLossyAudio(file) || file.audio.sampleFormat.startsWith('f')
     || (settings.sampleRate !== 'Keep source' && Number(settings.sampleRate) !== file.audio.sampleRate)

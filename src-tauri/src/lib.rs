@@ -8,6 +8,7 @@ mod image_format;
 mod inputs;
 mod jobs;
 mod mp3;
+mod opus;
 mod tiff;
 use tauri::Manager;
 

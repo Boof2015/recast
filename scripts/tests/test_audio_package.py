@@ -66,3 +66,15 @@ class AudioPackageTests(unittest.TestCase):
         (self.root / 'licenses/lame-COPYING').unlink()
         with self.assertRaisesRegex(SystemExit, 'dependency license'):
             CHECK.check_audio_manifest(self.root)
+
+    def test_requires_opus_dependency_and_license(self):
+        opus = next(item for item in self.manifest['dependencies'] if item['name'] == 'opus')
+        self.manifest['dependencies'].remove(opus)
+        self.save()
+        with self.assertRaisesRegex(SystemExit, 'dependencies'):
+            CHECK.check_audio_manifest(self.root)
+        self.manifest['dependencies'].append(opus)
+        self.save()
+        (self.root / 'licenses/opus-COPYING').unlink()
+        with self.assertRaisesRegex(SystemExit, 'dependency license'):
+            CHECK.check_audio_manifest(self.root)

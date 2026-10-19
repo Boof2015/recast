@@ -1,6 +1,6 @@
 use super::*;
 
-fn tone(
+pub(super) fn tone(
     path: &Path,
     rate: u32,
     channels: u16,
@@ -35,7 +35,7 @@ fn tone(
     samples
 }
 
-fn floats(path: &str) -> Vec<f32> {
+pub(super) fn floats(path: &str) -> Vec<f32> {
     pcm(Path::new(path))
         .as_chunks::<4>()
         .0
@@ -44,13 +44,13 @@ fn floats(path: &str) -> Vec<f32> {
         .collect()
 }
 
-fn inspect(path: &str) -> crate::audio_backend::AudioInfo {
+pub(super) fn inspect(path: &str) -> crate::audio_backend::AudioInfo {
     audio_backend()
         .inspect(Path::new(path), &AtomicBool::new(false))
         .unwrap()
 }
 
-fn probe(path: &str) -> serde_json::Value {
+pub(super) fn probe(path: &str) -> serde_json::Value {
     let output = audio_backend()
         .command("ffprobe")
         .args([

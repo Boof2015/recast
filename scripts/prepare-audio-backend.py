@@ -27,10 +27,11 @@ def configuration(system, arch):
         '--disable-doc', '--disable-debug', '--disable-shared', '--enable-static',
         '--disable-avdevice', '--disable-swscale', '--disable-ffplay', '--disable-x86asm',
         '--enable-ffmpeg', '--enable-ffprobe', '--enable-protocol=file,pipe',
-        '--enable-demuxer=wav,flac,mov,mp3,aac,pcm_f64le',
-        '--enable-muxer=wav,flac,ipod,mp3,pcm_f64le,pcm_s32le,null',
-        f'--enable-decoder={pcm},flac,alac,mp3float,aac', f'--enable-encoder={pcm},flac,alac,libmp3lame,aac',
-        '--enable-libmp3lame', '--enable-parser=flac,mpegaudio,aac',
+        '--enable-demuxer=wav,flac,mov,mp3,aac,ogg,pcm_f64le',
+        '--enable-muxer=wav,flac,ipod,mp3,opus,pcm_f64le,pcm_s32le,null',
+        f'--enable-decoder={pcm},flac,alac,mp3float,aac,opus', f'--enable-encoder={pcm},flac,alac,libmp3lame,aac,libopus',
+        '--enable-libmp3lame', '--enable-libopus', '--pkg-config-flags=--static',
+        '--enable-parser=flac,mpegaudio,aac,opus',
         '--enable-filter=aresample,aformat,anull',
     ]
     if system == 'darwin':
@@ -61,6 +62,22 @@ def build_lame(work, logs, env, system, arch):
     COMMON.run(['make', '-j', COMMON.JOBS], cwd=source, env=build_env, log=logs / 'lame-build.log')
     COMMON.run(['make', 'install'], cwd=source, env=build_env, log=logs / 'lame-install.log')
     return source, stage, config
+
+
+def build_opus(work, logs, env, system, arch):
+    dependency = next(item for item in LOCK['dependencies'] if item['name'] == 'opus')
+    source = COMMON.extract(dependency, work / 'opus')
+    stage = work / 'install'
+    build = work / 'opus-build'
+    config = COMMON.cmake_arguments(stage, system, arch) + [
+        '-DBUILD_SHARED_LIBS=OFF', '-DOPUS_BUILD_SHARED_LIBRARY=OFF',
+        '-DOPUS_BUILD_PROGRAMS=OFF', '-DOPUS_BUILD_TESTING=OFF',
+        '-DOPUS_DRED=OFF', '-DOPUS_OSCE=OFF', '-DOPUS_DEEP_PLC=OFF',
+    ]
+    COMMON.run(['cmake', '-S', str(source), '-B', str(build), *config], env=env, log=logs / 'opus-configure.log')
+    COMMON.run(['cmake', '--build', str(build), '--parallel', COMMON.JOBS], env=env, log=logs / 'opus-build.log')
+    COMMON.run(['cmake', '--install', str(build)], env=env, log=logs / 'opus-install.log')
+    return source, config
 
 
 def patch_mp3_padding(source):
@@ -110,6 +127,10 @@ def main():
     if system == 'darwin':
         env['MACOSX_DEPLOYMENT_TARGET'] = LOCK['minimumMacOS']
     lame_source, stage, lame_config = build_lame(work, logs, env, system, arch)
+    opus_source, opus_config = build_opus(work, logs, env, system, arch)
+    dependency_builds = {'lame': (lame_source, lame_config), 'opus': (opus_source, opus_config)}
+    # Expose only our pinned static libraries to FFmpeg's pkg-config probes.
+    env['PKG_CONFIG_LIBDIR'] = str(stage / 'lib/pkgconfig')
     config = configuration(system, arch)
     config += [f'--extra-cflags=-I{shlex.quote(str(stage / "include"))}',
                f'--extra-ldflags=-L{shlex.quote(str(stage / "lib"))}']
@@ -142,17 +163,22 @@ def main():
         notices.mkdir()
         for name in ['COPYING.LGPLv2.1', 'LICENSE.md']:
             shutil.copyfile(source / name, notices / name)
-        for name in LOCK['dependencies'][0]['licenses']:
-            shutil.copyfile(lame_source / name, notices / f'lame-{name}')
+        dependency_notices = ''
+        for dependency in LOCK['dependencies']:
+            name = dependency['name']
+            dependency_source, dependency_config = dependency_builds[name]
+            for license_name in dependency['licenses']:
+                shutil.copyfile(dependency_source / license_name, notices / f'{name}-{license_name}')
+            dependency_notices += (f'{name} source (unmodified): {dependency["url"]}\n'
+                                   f'{name} SHA-256: {dependency["sha256"]}\n'
+                                   f'{name} configuration: {shlex.join(dependency_config)}\n')
         (output / 'SOURCE.txt').write_text(
             'FFmpeg source: ' + LOCK['source']['url'] + '\n'
             'Source SHA-256: ' + LOCK['source']['sha256'] + '\n'
             'FFmpeg MP3 trailing-padding accumulation corrected by a checked source patch.\n'
-            'LAME source unmodified; rebuild with scripts/prepare-audio-backend.py.\n'
+            'Rebuild with scripts/prepare-audio-backend.py.\n'
             'Configuration: ' + ' '.join(config) + '\n'
-            'LAME source: ' + LOCK['dependencies'][0]['url'] + '\n'
-            'LAME SHA-256: ' + LOCK['dependencies'][0]['sha256'] + '\n'
-            'LAME configuration: ' + ' '.join(lame_config) + '\n')
+            + dependency_notices)
         manifest = {'system': system, 'architecture': arch, 'source': LOCK['source'],
                     'dependencies': LOCK['dependencies'],
                     'recipeFingerprint': fingerprint, 'configuration': config, 'binaries': binaries}

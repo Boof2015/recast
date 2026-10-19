@@ -27,6 +27,8 @@ pub struct AudioOptions {
     pub mp3: Mp3Options,
     #[serde(default)]
     pub aac: AacOptions,
+    #[serde(default)]
+    pub opus: OpusOptions,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -65,6 +67,22 @@ impl Default for AacOptions {
         Self { bitrate: 192 }
     }
 }
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OpusOptions {
+    pub bitrate: u16,
+}
+
+impl Default for OpusOptions {
+    fn default() -> Self {
+        Self { bitrate: 128 }
+    }
+}
+
+pub const OPUS_BITRATES: &[u16] = &[
+    16, 24, 32, 48, 64, 80, 96, 128, 160, 192, 224, 256, 320, 384, 448, 512,
+];
 
 pub const AAC_RATES: &[u32] = &[
     7350, 8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000, 64000, 88200, 96000,
@@ -107,10 +125,18 @@ impl AudioInfo {
     }
 
     fn lossy(&self) -> bool {
-        matches!(self.codec.as_str(), "mp3" | "aac")
+        matches!(self.codec.as_str(), "mp3" | "aac" | "opus")
     }
 
     pub fn target_issue(&self, target: &str) -> Option<String> {
+        if target == "opus"
+            && !matches!(
+                self.channel_layout.as_deref(),
+                Some("mono" | "stereo" | "3.0" | "quad" | "5.0" | "5.1" | "6.1" | "7.1")
+            )
+        {
+            return Some(format!("Opus cannot retain this file’s {} channel layout. Use WAV or FLAC, or remove this file to convert the rest.", self.channel_layout.as_deref().unwrap_or("unknown")));
+        }
         // Standard AAC channel configurations; do not silently remap a layout
         // into a different one or depend on less interoperable PCE layouts.
         if target == "m4a"
@@ -152,9 +178,9 @@ impl AudioInfo {
 
 impl AudioOptions {
     pub fn validate(&self) -> Result<(), String> {
-        if !["wav", "flac", "alac", "mp3", "m4a"].contains(&self.target.as_str()) {
+        if !["wav", "flac", "alac", "mp3", "m4a", "opus"].contains(&self.target.as_str()) {
             return Err(
-                "Choose WAV, FLAC, ALAC, MP3, or AAC/M4A for this audio conversion.".into(),
+                "Choose WAV, FLAC, ALAC, MP3, AAC/M4A, or Opus for this audio conversion.".into(),
             );
         }
         if self.sample_rate.is_some_and(|rate| {
@@ -179,6 +205,18 @@ impl AudioOptions {
         self.validate()?;
         if let Some(issue) = input.target_issue(&self.target) {
             return Err(issue);
+        }
+        // Opus has a dedicated, visible fixed 48 kHz output policy. Ignore the
+        // PCM sample rate remembered while switching between destinations.
+        if self.target == "opus" {
+            if !OPUS_BITRATES.contains(&self.opus.bitrate)
+                || u32::from(self.opus.bitrate) > 256 * u32::from(input.channels)
+            {
+                return Err(
+                    "Choose a compatible Opus bitrate (at most 256 kbps per channel).".into(),
+                );
+            }
+            return Ok((48000, "f32".into()));
         }
         let rate = self.sample_rate.unwrap_or(input.sample_rate);
         if self.target == "mp3" {
@@ -294,7 +332,7 @@ impl AudioBackend {
             .args(["-hide_banner", "-codecs"])
             .output()
             .map_err(|_| "The bundled audio codecs could not be checked.".to_string())?;
-        let supported = ["alac", "mp3", "aac"].iter().all(|codec| {
+        let supported = ["alac", "mp3", "aac", "opus"].iter().all(|codec| {
             String::from_utf8_lossy(&codecs.stdout).lines().any(|line| {
                 let mut parts = line.split_whitespace();
                 parts.next().is_some_and(|flags| flags.starts_with("DE"))
@@ -303,7 +341,8 @@ impl AudioBackend {
         });
         if !codecs.status.success() || !supported {
             return Err(
-                "The bundled audio converter needs rebuilding for ALAC/MP3/AAC support.".into(),
+                "The bundled audio converter needs rebuilding for ALAC/MP3/AAC/Opus support."
+                    .into(),
             );
         }
         Ok(())
@@ -344,6 +383,9 @@ impl AudioBackend {
         }
         if info.container == "aac" {
             crate::aac::validate_adts(path, cancel)?;
+        }
+        if info.container == "ogg" {
+            crate::opus::validate(path, cancel)?;
         }
         Ok(info)
     }
@@ -395,7 +437,8 @@ impl AudioBackend {
         let bits = format_bits(&sample_format).unwrap();
         let mp3_output = options.target == "mp3";
         let aac_output = options.target == "m4a";
-        let lossy_output = mp3_output || aac_output;
+        let opus_output = options.target == "opus";
+        let lossy_output = mp3_output || aac_output || opus_output;
         let integer = !sample_format.starts_with('f');
         let resampling = rate != info.sample_rate;
         let quantizing = integer
@@ -409,8 +452,10 @@ impl AudioBackend {
         // can clamp away overload. Lossy encoding also validates finite input and
         // compare the final gapless sample count without integer quantization.
         let intermediate = work.path().join("processed.f64");
-        let processed =
-            lossy_output || info.codec == "aac" || resampling || (integer && info.decoded_float());
+        let processed = lossy_output
+            || matches!(info.codec.as_str(), "aac" | "opus")
+            || resampling
+            || (integer && info.decoded_float());
         if processed {
             let mut command = self.transcoder();
             command
@@ -433,6 +478,17 @@ impl AudioBackend {
                 cancel,
                 Duration::from_secs(21600),
             )?;
+            if info.codec == "opus" && !resampling {
+                let frames = crate::opus::validate(&staged, cancel)?;
+                let bytes = std::fs::metadata(&intermediate)
+                    .map_err(|_| "The decoded Opus audio could not be checked.".to_string())?
+                    .len();
+                if bytes != frames * u64::from(info.channels) * 8 {
+                    return Err("The Opus decoder did not retain the complete audio length."
+                        .to_string()
+                        .into());
+                }
+            }
             let overloaded = scan_samples(&intermediate, cancel)?;
             if integer && overloaded {
                 if !options.allow_clipping {
@@ -546,6 +602,25 @@ impl AudioBackend {
                 "-movie_timescale",
                 &rate.to_string(),
             ]);
+        } else if opus_output {
+            command.args([
+                "-c:a",
+                "libopus",
+                "-sample_fmt",
+                "flt",
+                "-application",
+                "audio",
+                "-vbr",
+                "on",
+                "-compression_level",
+                "10",
+                "-frame_duration",
+                "20",
+                "-b:a",
+                &format!("{}k", options.opus.bitrate),
+                "-mapping_family",
+                if info.channels > 2 { "1" } else { "0" },
+            ]);
         } else if options.target == "flac" {
             command.args([
                 "-c:a",
@@ -593,6 +668,7 @@ impl AudioBackend {
         if (options.target == "alac" && actual.codec != "alac")
             || (mp3_output && actual.codec != "mp3")
             || (aac_output && actual.codec != "aac")
+            || (opus_output && actual.codec != "opus")
             || actual.sample_rate != rate
             || (!lossy_output && actual.sample_format != sample_format)
             || actual.channels != info.channels
@@ -630,7 +706,7 @@ impl AudioBackend {
                 );
             }
             if scan_samples(&decoded, cancel)? {
-                warnings.push(format!("Decoded {} peaks exceed full scale and may clip during playback. No normalization was applied.", if aac_output { "AAC" } else { "MP3" }));
+                warnings.push(format!("Decoded {} peaks exceed full scale and may clip during playback. No normalization was applied.", if aac_output { "AAC" } else if opus_output { "Opus" } else { "MP3" }));
             }
         }
         if info.lossy() {
@@ -681,6 +757,11 @@ impl AudioBackend {
                         Mp3Mode::Cbr => format!("{} kbps CBR", options.mp3.bitrate),
                     }
                 )
+            } else if opus_output {
+                format!(
+                    "{rate} Hz · {} channels · Opus · {} kbps VBR target",
+                    info.channels, options.opus.bitrate
+                )
             } else if aac_output {
                 format!(
                     "{rate} Hz · {} channels · AAC-LC · {} kbps target",
@@ -723,10 +804,10 @@ impl AudioBackend {
 fn parse_probe(probe: &serde_json::Value) -> Result<AudioInfo, String> {
     let container = probe["format"]["format_name"].as_str().unwrap_or("");
     let container = match container {
-        "wav" | "flac" | "mp3" | "aac" => container,
+        "wav" | "flac" | "mp3" | "aac" | "ogg" => container,
         "mov,mp4,m4a,3gp,3g2,mj2" => "mov",
         _ => return Err(
-            "This audio build accepts PCM WAV, FLAC, MP3, raw AAC, and ALAC/AAC in M4A/MP4 files."
+            "This audio build accepts PCM WAV, FLAC, MP3, raw AAC, Ogg Opus, and ALAC/AAC in M4A/MP4 files."
                 .into(),
         ),
     };
@@ -749,6 +830,11 @@ fn parse_probe(probe: &serde_json::Value) -> Result<AudioInfo, String> {
     if container == "mov" && !["alac", "aac"].contains(&codec) {
         return Err("This M4A/MP4 file does not contain supported ALAC or AAC audio.".into());
     }
+    if container == "ogg" && codec != "opus" {
+        return Err(
+            "This build accepts Opus audio in Ogg files. Ogg Vorbis is not enabled yet.".into(),
+        );
+    }
     if container == "mp3" && codec != "mp3" {
         return Err("This build accepts MPEG Layer III (MP3), not Layer I or II audio.".into());
     }
@@ -769,6 +855,7 @@ fn parse_probe(probe: &serde_json::Value) -> Result<AudioInfo, String> {
     let sample_format =
         match codec {
             "mp3" if container == "mp3" => "lossy",
+            "opus" if container == "ogg" => "lossy",
             "aac" if ["aac", "mov"].contains(&container) => "lossy",
             "pcm_u8" => "u8",
             "pcm_s16le" => "s16",
