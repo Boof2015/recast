@@ -8,8 +8,10 @@ mod image_format;
 mod inputs;
 mod jobs;
 mod mp3;
+mod ogg;
 mod opus;
 mod tiff;
+mod vorbis;
 use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

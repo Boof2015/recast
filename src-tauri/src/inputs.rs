@@ -279,14 +279,15 @@ pub fn inspect_with_audio(
         match backend.inspect(path, cancel) {
             Ok(audio) => {
                 input.kind = "audio".into();
-                input.format = if ["alac", "aac", "opus"].contains(&audio.codec.as_str()) {
+                input.format = if ["alac", "aac", "opus", "vorbis"].contains(&audio.codec.as_str())
+                {
                     audio.codec.to_uppercase()
                 } else {
                     audio.container.to_uppercase()
                 };
                 input.has_audio = Some(true);
                 input.target_issues.clear();
-                input.targets = ["wav", "flac", "alac", "mp3", "m4a", "opus"]
+                input.targets = ["wav", "flac", "alac", "mp3", "m4a", "opus", "ogg"]
                     .into_iter()
                     .filter_map(|target| {
                         if let Some(issue) = audio.target_issue(target) {

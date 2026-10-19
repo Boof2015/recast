@@ -265,7 +265,7 @@ fn pages(bytes: &[u8]) -> Vec<std::ops::Range<usize>> {
 
 fn checksum(page: &mut [u8]) {
     page[22..26].fill(0);
-    let sum = crate::opus::crc(page);
+    let sum = crate::ogg::crc(page);
     page[22..26].copy_from_slice(&sum.to_le_bytes());
 }
 

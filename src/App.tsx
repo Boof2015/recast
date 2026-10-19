@@ -4,7 +4,7 @@ import { invoke, isTauri } from '@tauri-apps/api/core';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { open } from '@tauri-apps/plugin-dialog';
-import { opusBitrateChoices, aacBitrateChoices, aacRates, isLossyAudio, audioDescription, audioSampleFormats, audioSettingIssue, audioWillDither, defaultSettings, destinationsFor, formatCounts, kindLabels, kinds, unitLabels, mp3BitrateChoices, mp3Qualities, mp3Rates, type Appearance, type Destination, type GroupSettings, type InputFile, type MediaKind } from './model';
+import { vorbisQualities, opusBitrateChoices, aacBitrateChoices, aacRates, isLossyAudio, audioDescription, audioSampleFormats, audioSettingIssue, audioWillDither, defaultSettings, destinationsFor, formatCounts, kindLabels, kinds, unitLabels, mp3BitrateChoices, mp3Qualities, mp3Rates, type Appearance, type Destination, type GroupSettings, type InputFile, type MediaKind } from './model';
 import { sampleFiles, type Scenario } from './fixtures';
 import { CheckboxSetting, QualitySetting, SelectSetting } from './controls';
 import { ColorSetting } from './ColorSetting';
@@ -66,7 +66,7 @@ function FormatSettings({ kind, destination, value, onChange, disabled, animated
     </>}
     {isAudio && destination.id === 'm4a' && <SelectSetting label="Bitrate" value={value.aacBitrate} options={aacBitrateChoices(files, value)} onChange={(aacBitrate) => onChange({ aacBitrate })} />}
     {isAudio && destination.id === 'opus' && <SelectSetting label="Bitrate" value={value.opusBitrate} options={opusBitrateChoices(files)} onChange={(opusBitrate) => onChange({ opusBitrate })} />}
-    {isAudio && destination.id === 'ogg' && <SelectSetting label="Bitrate" value={value.bitrate} options={['128 kbps', '192 kbps', '256 kbps', '320 kbps']} onChange={(bitrate) => onChange({ bitrate })} />}
+    {isAudio && destination.id === 'ogg' && <SelectSetting label="Quality" value={value.vorbisQuality} options={vorbisQualities} onChange={(vorbisQuality) => onChange({ vorbisQuality })} />}
     {isAudio && <>
       {destination.id !== 'opus' && <SelectSetting label="Sample rate" value={value.sampleRate} options={['Keep source', ...(destination.id === 'mp3' ? mp3Rates : destination.id === 'm4a' ? aacRates : ['7350', ...mp3Rates, '64000', '88200', '96000', '176400', '192000'])]} onChange={(sampleRate) => onChange({ sampleRate })} />}
       {['wav', 'flac', 'alac'].includes(destination.id) && <>
@@ -92,7 +92,8 @@ function FormatSettings({ kind, destination, value, onChange, disabled, animated
     {isAudio && destination.id === 'mp3' && <p className="settings-note">{value.mp3Mode === 'vbr' ? 'Bitrate varies with the audio to meet the selected quality.' : 'Bitrate stays fixed; available rates depend on sample rate.'} MP3 encoding is lossy.</p>}
     {isAudio && destination.id === 'm4a' && <p className="settings-note">AAC-LC audio in an .m4a file. Bitrate is a target for the whole stream; actual bitrate varies with the audio.</p>}
     {isAudio && destination.id === 'opus' && <p className="settings-note">Opus audio in an .opus file. Variable bitrate targets the whole stream; actual bitrate varies with the audio.</p>}
-    {isAudio && lossyInput && <p className="settings-note">{['mp3', 'm4a', 'opus'].includes(destination.id) ? 'Re-encoding lossy audio adds another lossy generation.' : 'Converting lossy audio to PCM or a lossless format does not restore lost detail.'}</p>}
+    {isAudio && destination.id === 'ogg' && <p className="settings-note">Vorbis audio in an .ogg file. Higher quality makes larger files; bitrate varies with the audio, sample rate, and channels.</p>}
+    {isAudio && lossyInput && <p className="settings-note">{['mp3', 'm4a', 'opus', 'ogg'].includes(destination.id) ? 'Re-encoding lossy audio adds another lossy generation.' : 'Converting lossy audio to PCM or a lossless format does not restore lost detail.'}</p>}
     {isImage && destination.id === 'tiff' && value.metadata && <p className="settings-note">Keeps color profiles and supported tags. Camera EXIF may not carry over.</p>}
     {isImage && destination.id === 'gif' && <p className="settings-note">Partial transparency becomes clear or opaque.{animated && <> Timing rounds to 10&nbsp;ms.</>}</p>}
     {isImage && destination.id === 'avif' && <p className="settings-note">AVIF supports up to 12-bit color.</p>}
@@ -307,7 +308,7 @@ export default function App() {
     {files.length === 0 ? <main className="empty-state">
       <div className="empty-symbol" aria-hidden="true"><File className="file-back" size={49} strokeWidth={1.15} /><File className="file-front" size={49} strokeWidth={1.15} /><ArrowDownToLine className="file-arrow" size={18} strokeWidth={1.6} /></div>
       <h1>Drop files here</h1>
-      <p>{previewCatalog ? 'Images, audio, or video. All on your device.' : 'Images, WAV, FLAC, ALAC, MP3, AAC, and Opus. All on your device.'}</p>
+      <p>{previewCatalog ? 'Images, audio, or video. All on your device.' : 'Images, WAV, FLAC, ALAC, MP3, AAC, Opus, and Ogg Vorbis. All on your device.'}</p>
       <button className="primary-button choose-files" onClick={() => void chooseFiles()} disabled={inspecting}>{inspecting ? 'Reading files…' : 'Choose files'}<Plus size={16} /></button>
     </main> : <>
       <main className="workspace" ref={workspaceRef}>
@@ -378,7 +379,7 @@ export default function App() {
         {!busy && failed.some(file => file.canAllowClipping) && <button className="quiet-button" onClick={() => { setSettings(current => ({ ...current, audio: { ...current.audio, allowClipping: true } })); void runConversion(true, true); }}>Allow clipping & retry</button>}
         {!busy && job && retryCount > 0 && <button className="quiet-button" onClick={newBatch}>New batch</button>}
         <div className="folder-choice"><button className="folder-button" disabled={busy} onClick={() => void chooseFolder()} title={outputFolder ?? 'Choose an output folder'}><Folder size={16} strokeWidth={1.6} /><span>{folderName}</span><ChevronDown size={12} /></button>{outputFolder && <button className="icon-button" disabled={busy} aria-label="Use source folders" title="Use source folders" onClick={() => { conversion.clear(); setOutputFolder(null); }}><X size={12} /></button>}</div>
-        {busy ? <button className="primary-button" disabled={conversion.starting || job?.status === 'cancelling'} onClick={() => void conversion.cancel().catch(error => setNotice(String(error)))}>{job?.status === 'cancelling' ? 'Cancelling…' : 'Cancel'}</button> : job ? retryCount > 0 ? <button className="primary-button" onClick={() => void runConversion(true)}>Retry {retryCount} {retryCount === 1 ? 'file' : 'files'}</button> : <button className="primary-button" onClick={newBatch}>New batch</button> : <button className={`primary-button convert-button ${allConfigured ? 'configured' : ''}`} disabled={!canConvert} onClick={() => void runConversion()} title={previewCatalog ? 'Sample files are for design review. Add real images, WAV, FLAC, ALAC, MP3, AAC, or Opus files to convert.' : !allConfigured ? 'Choose a supported output for every group.' : !audioSettingsValid ? 'Choose compatible audio settings.' : undefined}>Convert {files.length} {files.length === 1 ? 'file' : 'files'}</button>}
+        {busy ? <button className="primary-button" disabled={conversion.starting || job?.status === 'cancelling'} onClick={() => void conversion.cancel().catch(error => setNotice(String(error)))}>{job?.status === 'cancelling' ? 'Cancelling…' : 'Cancel'}</button> : job ? retryCount > 0 ? <button className="primary-button" onClick={() => void runConversion(true)}>Retry {retryCount} {retryCount === 1 ? 'file' : 'files'}</button> : <button className="primary-button" onClick={newBatch}>New batch</button> : <button className={`primary-button convert-button ${allConfigured ? 'configured' : ''}`} disabled={!canConvert} onClick={() => void runConversion()} title={previewCatalog ? 'Sample files are for design review. Add real images, WAV, FLAC, ALAC, MP3, AAC, Opus, or Ogg Vorbis files to convert.' : !allConfigured ? 'Choose a supported output for every group.' : !audioSettingsValid ? 'Choose compatible audio settings.' : undefined}>Convert {files.length} {files.length === 1 ? 'file' : 'files'}</button>}
       </footer>
     </>}
 

@@ -28,10 +28,10 @@ def configuration(system, arch):
         '--disable-avdevice', '--disable-swscale', '--disable-ffplay', '--disable-x86asm',
         '--enable-ffmpeg', '--enable-ffprobe', '--enable-protocol=file,pipe',
         '--enable-demuxer=wav,flac,mov,mp3,aac,ogg,pcm_f64le',
-        '--enable-muxer=wav,flac,ipod,mp3,opus,pcm_f64le,pcm_s32le,null',
-        f'--enable-decoder={pcm},flac,alac,mp3float,aac,opus', f'--enable-encoder={pcm},flac,alac,libmp3lame,aac,libopus',
-        '--enable-libmp3lame', '--enable-libopus', '--pkg-config-flags=--static',
-        '--enable-parser=flac,mpegaudio,aac,opus',
+        '--enable-muxer=wav,flac,ipod,mp3,opus,ogg,pcm_f64le,pcm_s32le,null',
+        f'--enable-decoder={pcm},flac,alac,mp3float,aac,opus,vorbis', f'--enable-encoder={pcm},flac,alac,libmp3lame,aac,libopus,libvorbis',
+        '--enable-libmp3lame', '--enable-libopus', '--enable-libvorbis', '--pkg-config-flags=--static',
+        '--enable-parser=flac,mpegaudio,aac,opus,vorbis',
         '--enable-filter=aresample,aformat,anull',
     ]
     if system == 'darwin':
@@ -96,6 +96,51 @@ def patch_mp3_padding(source):
     path.write_text(text.replace(original, corrected))
 
 
+def patch_vorbis_single_page_timing(source):
+    # The first-packet path excludes EOS pages. When all audio fits on one
+    # page, the demuxer counts the initial overlap as output and over-trims
+    # the end (or emits padding for very short clips). Set the first packet's
+    # negative overlap timestamp before the ordinary EOS accounting. Seeking
+    # back to the start resets lastpts to zero, so this also handles re-reads.
+    path = source / 'libavformat/oggparsevorbis.c'
+    original = '''    if (os->flags & OGG_FLAG_EOS) {
+        if (os->lastpts != AV_NOPTS_VALUE) {'''
+    corrected = '''    if (os->flags & OGG_FLAG_EOS) {
+        if (os->lastpts == 0)
+            os->lastpts = os->lastdts = -(int64_t)os->pduration;
+        if (os->lastpts != AV_NOPTS_VALUE) {'''
+    text = path.read_text()
+    if corrected in text:
+        return
+    if text.count(original) != 1:
+        raise SystemExit('Pinned Vorbis timing patch no longer matches; review the upstream source.')
+    path.write_text(text.replace(original, corrected))
+
+
+def build_vorbis(work, logs, env, system, arch):
+    builds = {}
+    stage = work / 'install'
+    for name in ['ogg', 'vorbis']:
+        dependency = next(item for item in LOCK['dependencies'] if item['name'] == name)
+        source = COMMON.extract(dependency, work / name)
+        build = work / f'{name}-build'
+        config = COMMON.cmake_arguments(stage, system, arch) + [
+            '-DBUILD_SHARED_LIBS=OFF', '-DBUILD_TESTING=OFF',
+            '-DCMAKE_POLICY_VERSION_MINIMUM=3.5',
+        ]
+        if name == 'ogg':
+            config += ['-DINSTALL_DOCS=OFF']
+        else:
+            # Do not discover a Homebrew/MSYS shared Ogg library or headers.
+            config += [f'-DOGG_LIBRARY={stage / "lib/libogg.a"}',
+                       f'-DOGG_INCLUDE_DIR={stage / "include"}']
+        COMMON.run(['cmake', '-S', str(source), '-B', str(build), *config], env=env, log=logs / f'{name}-configure.log')
+        COMMON.run(['cmake', '--build', str(build), '--parallel', COMMON.JOBS], env=env, log=logs / f'{name}-build.log')
+        COMMON.run(['cmake', '--install', str(build)], env=env, log=logs / f'{name}-install.log')
+        builds[name] = (source, config)
+    return builds
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--arch', choices=['arm64', 'x86_64'])
@@ -118,6 +163,7 @@ def main():
     logs.mkdir(parents=True, exist_ok=True)
     source = COMMON.extract(LOCK['source'], work / 'source')
     patch_mp3_padding(source)
+    patch_vorbis_single_page_timing(source)
     env = os.environ.copy()
     for key in ['CPATH', 'C_INCLUDE_PATH', 'CPLUS_INCLUDE_PATH', 'LIBRARY_PATH', 'SDKROOT',
                 'CFLAGS', 'CXXFLAGS', 'CPPFLAGS', 'LDFLAGS', 'LIBS', 'CC', 'CXX',
@@ -131,6 +177,7 @@ def main():
     dependency_builds = {'lame': (lame_source, lame_config), 'opus': (opus_source, opus_config)}
     # Expose only our pinned static libraries to FFmpeg's pkg-config probes.
     env['PKG_CONFIG_LIBDIR'] = str(stage / 'lib/pkgconfig')
+    dependency_builds.update(build_vorbis(work, logs, env, system, arch))
     config = configuration(system, arch)
     config += [f'--extra-cflags=-I{shlex.quote(str(stage / "include"))}',
                f'--extra-ldflags=-L{shlex.quote(str(stage / "lib"))}']
@@ -176,6 +223,7 @@ def main():
             'FFmpeg source: ' + LOCK['source']['url'] + '\n'
             'Source SHA-256: ' + LOCK['source']['sha256'] + '\n'
             'FFmpeg MP3 trailing-padding accumulation corrected by a checked source patch.\n'
+            'FFmpeg single-audio-page Ogg Vorbis overlap timestamp corrected by a checked source patch.\n'
             'Rebuild with scripts/prepare-audio-backend.py.\n'
             'Configuration: ' + ' '.join(config) + '\n'
             + dependency_notices)

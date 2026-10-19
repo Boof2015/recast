@@ -12,6 +12,7 @@ fn audio_options(target: &str) -> AudioOptions {
         mp3: Default::default(),
         aac: Default::default(),
         opus: Default::default(),
+        vorbis: Default::default(),
     }
 }
 
@@ -808,3 +809,6 @@ mod aac;
 
 #[path = "opus_tests.rs"]
 mod opus;
+
+#[path = "vorbis_tests.rs"]
+mod vorbis;

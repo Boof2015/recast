@@ -29,6 +29,8 @@ pub struct AudioOptions {
     pub aac: AacOptions,
     #[serde(default)]
     pub opus: OpusOptions,
+    #[serde(default)]
+    pub vorbis: VorbisOptions,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -80,6 +82,18 @@ impl Default for OpusOptions {
     }
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct VorbisOptions {
+    pub quality: i8,
+}
+
+impl Default for VorbisOptions {
+    fn default() -> Self {
+        Self { quality: 5 }
+    }
+}
+
 pub const OPUS_BITRATES: &[u16] = &[
     16, 24, 32, 48, 64, 80, 96, 128, 160, 192, 224, 256, 320, 384, 448, 512,
 ];
@@ -125,17 +139,17 @@ impl AudioInfo {
     }
 
     fn lossy(&self) -> bool {
-        matches!(self.codec.as_str(), "mp3" | "aac" | "opus")
+        matches!(self.codec.as_str(), "mp3" | "aac" | "opus" | "vorbis")
     }
 
     pub fn target_issue(&self, target: &str) -> Option<String> {
-        if target == "opus"
+        if matches!(target, "opus" | "ogg")
             && !matches!(
                 self.channel_layout.as_deref(),
                 Some("mono" | "stereo" | "3.0" | "quad" | "5.0" | "5.1" | "6.1" | "7.1")
             )
         {
-            return Some(format!("Opus cannot retain this file’s {} channel layout. Use WAV or FLAC, or remove this file to convert the rest.", self.channel_layout.as_deref().unwrap_or("unknown")));
+            return Some(format!("{} cannot retain this file’s {} channel layout. Use WAV or FLAC, or remove this file to convert the rest.", if target == "ogg" { "Vorbis" } else { "Opus" }, self.channel_layout.as_deref().unwrap_or("unknown")));
         }
         // Standard AAC channel configurations; do not silently remap a layout
         // into a different one or depend on less interoperable PCE layouts.
@@ -178,9 +192,9 @@ impl AudioInfo {
 
 impl AudioOptions {
     pub fn validate(&self) -> Result<(), String> {
-        if !["wav", "flac", "alac", "mp3", "m4a", "opus"].contains(&self.target.as_str()) {
+        if !["wav", "flac", "alac", "mp3", "m4a", "opus", "ogg"].contains(&self.target.as_str()) {
             return Err(
-                "Choose WAV, FLAC, ALAC, MP3, AAC/M4A, or Opus for this audio conversion.".into(),
+                "Choose WAV, FLAC, ALAC, MP3, AAC/M4A, Opus, or Ogg Vorbis for this audio conversion.".into(),
             );
         }
         if self.sample_rate.is_some_and(|rate| {
@@ -219,6 +233,15 @@ impl AudioOptions {
             return Ok((48000, "f32".into()));
         }
         let rate = self.sample_rate.unwrap_or(input.sample_rate);
+        if self.target == "ogg" {
+            if rate > 200000 {
+                return Err("Vorbis cannot preserve this sample rate. Choose an explicit rate at or below 200000 Hz.".into());
+            }
+            if !(-1..=10).contains(&self.vorbis.quality) {
+                return Err("Choose a Vorbis quality from -1 (smallest) to 10 (highest).".into());
+            }
+            return Ok((rate, "f32".into()));
+        }
         if self.target == "mp3" {
             if !MP3_RATES.contains(&rate) {
                 return Err("MP3 cannot preserve this sample rate. Choose an explicit supported rate from 8000 to 48000 Hz.".into());
@@ -332,16 +355,18 @@ impl AudioBackend {
             .args(["-hide_banner", "-codecs"])
             .output()
             .map_err(|_| "The bundled audio codecs could not be checked.".to_string())?;
-        let supported = ["alac", "mp3", "aac", "opus"].iter().all(|codec| {
-            String::from_utf8_lossy(&codecs.stdout).lines().any(|line| {
-                let mut parts = line.split_whitespace();
-                parts.next().is_some_and(|flags| flags.starts_with("DE"))
-                    && parts.next() == Some(codec)
-            })
-        });
+        let supported = ["alac", "mp3", "aac", "opus", "vorbis"]
+            .iter()
+            .all(|codec| {
+                String::from_utf8_lossy(&codecs.stdout).lines().any(|line| {
+                    let mut parts = line.split_whitespace();
+                    parts.next().is_some_and(|flags| flags.starts_with("DE"))
+                        && parts.next() == Some(codec)
+                })
+            });
         if !codecs.status.success() || !supported {
             return Err(
-                "The bundled audio converter needs rebuilding for ALAC/MP3/AAC/Opus support."
+                "The bundled audio converter needs rebuilding for ALAC/MP3/AAC/Opus/Vorbis support."
                     .into(),
             );
         }
@@ -384,8 +409,10 @@ impl AudioBackend {
         if info.container == "aac" {
             crate::aac::validate_adts(path, cancel)?;
         }
-        if info.container == "ogg" {
+        if info.codec == "opus" {
             crate::opus::validate(path, cancel)?;
+        } else if info.codec == "vorbis" {
+            crate::vorbis::validate(path, cancel)?;
         }
         Ok(info)
     }
@@ -438,7 +465,8 @@ impl AudioBackend {
         let mp3_output = options.target == "mp3";
         let aac_output = options.target == "m4a";
         let opus_output = options.target == "opus";
-        let lossy_output = mp3_output || aac_output || opus_output;
+        let vorbis_output = options.target == "ogg";
+        let lossy_output = mp3_output || aac_output || opus_output || vorbis_output;
         let integer = !sample_format.starts_with('f');
         let resampling = rate != info.sample_rate;
         let quantizing = integer
@@ -453,41 +481,75 @@ impl AudioBackend {
         // compare the final gapless sample count without integer quantization.
         let intermediate = work.path().join("processed.f64");
         let processed = lossy_output
-            || matches!(info.codec.as_str(), "aac" | "opus")
+            || matches!(info.codec.as_str(), "aac" | "opus" | "vorbis")
             || resampling
             || (integer && info.decoded_float());
         if processed {
-            let mut command = self.transcoder();
-            command
-                .args(["-f", &info.container, "-i"])
-                .arg(&staged)
-                .args([
-                    "-map",
-                    "0:a:0",
-                    "-af",
-                    &format!("aresample={rate}:osf=dbl:tsf=dblp:filter_size=64:cutoff=0.97"),
-                    "-c:a",
-                    "pcm_f64le",
-                    "-f",
-                    "f64le",
-                ])
-                .arg(&intermediate);
-            run(
-                &mut command,
-                &work.path().join("process.log"),
-                cancel,
-                Duration::from_secs(21600),
-            )?;
-            if info.codec == "opus" && !resampling {
-                let frames = crate::opus::validate(&staged, cancel)?;
-                let bytes = std::fs::metadata(&intermediate)
-                    .map_err(|_| "The decoded Opus audio could not be checked.".to_string())?
+            let decoded_ogg = work.path().join("decoded.f64");
+            if info.container == "ogg" {
+                let frames = if info.codec == "opus" {
+                    crate::opus::validate(&staged, cancel)?
+                } else {
+                    crate::vorbis::validate(&staged, cancel)?
+                };
+                let mut command = self.transcoder();
+                command
+                    .args(["-f", "ogg", "-i"])
+                    .arg(&staged)
+                    .args(["-map", "0:a:0", "-c:a", "pcm_f64le", "-f", "f64le"])
+                    .arg(&decoded_ogg);
+                run(
+                    &mut command,
+                    &work.path().join("decode.log"),
+                    cancel,
+                    Duration::from_secs(21600),
+                )?;
+                let bytes = std::fs::metadata(&decoded_ogg)
+                    .map_err(|_| "The decoded audio could not be checked.".to_string())?
                     .len();
-                if bytes != frames * u64::from(info.channels) * 8 {
-                    return Err("The Opus decoder did not retain the complete audio length."
-                        .to_string()
-                        .into());
+                if Some(bytes) != frames.checked_mul(u64::from(info.channels) * 8) {
+                    return Err("The Ogg decoder did not retain the complete audio length. Cropped or unusual stream timing is not supported yet.".to_string().into());
                 }
+            }
+            if info.container == "ogg" && !resampling {
+                std::fs::rename(&decoded_ogg, &intermediate)
+                    .map_err(|_| "The decoded audio could not be prepared.".to_string())?;
+            } else {
+                let mut command = self.transcoder();
+                if info.container == "ogg" {
+                    command.args([
+                        "-f",
+                        "f64le",
+                        "-ar",
+                        &info.sample_rate.to_string(),
+                        "-ac",
+                        &info.channels.to_string(),
+                    ]);
+                    if let Some(layout) = &info.channel_layout {
+                        command.args(["-channel_layout", layout]);
+                    }
+                    command.arg("-i").arg(&decoded_ogg);
+                } else {
+                    command.args(["-f", &info.container, "-i"]).arg(&staged);
+                }
+                command
+                    .args([
+                        "-map",
+                        "0:a:0",
+                        "-af",
+                        &format!("aresample={rate}:osf=dbl:tsf=dblp:filter_size=64:cutoff=0.97"),
+                        "-c:a",
+                        "pcm_f64le",
+                        "-f",
+                        "f64le",
+                    ])
+                    .arg(&intermediate);
+                run(
+                    &mut command,
+                    &work.path().join("process.log"),
+                    cancel,
+                    Duration::from_secs(21600),
+                )?;
             }
             let overloaded = scan_samples(&intermediate, cancel)?;
             if integer && overloaded {
@@ -621,6 +683,15 @@ impl AudioBackend {
                 "-mapping_family",
                 if info.channels > 2 { "1" } else { "0" },
             ]);
+        } else if vorbis_output {
+            command.args([
+                "-c:a",
+                "libvorbis",
+                "-sample_fmt",
+                "fltp",
+                "-q:a",
+                &options.vorbis.quality.to_string(),
+            ]);
         } else if options.target == "flac" {
             command.args([
                 "-c:a",
@@ -669,6 +740,7 @@ impl AudioBackend {
             || (mp3_output && actual.codec != "mp3")
             || (aac_output && actual.codec != "aac")
             || (opus_output && actual.codec != "opus")
+            || (vorbis_output && actual.codec != "vorbis")
             || actual.sample_rate != rate
             || (!lossy_output && actual.sample_format != sample_format)
             || actual.channels != info.channels
@@ -706,7 +778,7 @@ impl AudioBackend {
                 );
             }
             if scan_samples(&decoded, cancel)? {
-                warnings.push(format!("Decoded {} peaks exceed full scale and may clip during playback. No normalization was applied.", if aac_output { "AAC" } else if opus_output { "Opus" } else { "MP3" }));
+                warnings.push(format!("Decoded {} peaks exceed full scale and may clip during playback. No normalization was applied.", if aac_output { "AAC" } else if opus_output { "Opus" } else if vorbis_output { "Vorbis" } else { "MP3" }));
             }
         }
         if info.lossy() {
@@ -756,6 +828,11 @@ impl AudioBackend {
                         Mp3Mode::Vbr => format!("VBR V{}", options.mp3.quality),
                         Mp3Mode::Cbr => format!("{} kbps CBR", options.mp3.bitrate),
                     }
+                )
+            } else if vorbis_output {
+                format!(
+                    "{rate} Hz · {} channels · Vorbis quality {} · VBR",
+                    info.channels, options.vorbis.quality
                 )
             } else if opus_output {
                 format!(
@@ -807,7 +884,7 @@ fn parse_probe(probe: &serde_json::Value) -> Result<AudioInfo, String> {
         "wav" | "flac" | "mp3" | "aac" | "ogg" => container,
         "mov,mp4,m4a,3gp,3g2,mj2" => "mov",
         _ => return Err(
-            "This audio build accepts PCM WAV, FLAC, MP3, raw AAC, Ogg Opus, and ALAC/AAC in M4A/MP4 files."
+            "This audio build accepts PCM WAV, FLAC, MP3, raw AAC, Ogg Opus/Vorbis, and ALAC/AAC in M4A/MP4 files."
                 .into(),
         ),
     };
@@ -830,10 +907,8 @@ fn parse_probe(probe: &serde_json::Value) -> Result<AudioInfo, String> {
     if container == "mov" && !["alac", "aac"].contains(&codec) {
         return Err("This M4A/MP4 file does not contain supported ALAC or AAC audio.".into());
     }
-    if container == "ogg" && codec != "opus" {
-        return Err(
-            "This build accepts Opus audio in Ogg files. Ogg Vorbis is not enabled yet.".into(),
-        );
+    if container == "ogg" && !["opus", "vorbis"].contains(&codec) {
+        return Err("This build accepts Opus or Vorbis audio in Ogg files.".into());
     }
     if container == "mp3" && codec != "mp3" {
         return Err("This build accepts MPEG Layer III (MP3), not Layer I or II audio.".into());
@@ -855,7 +930,7 @@ fn parse_probe(probe: &serde_json::Value) -> Result<AudioInfo, String> {
     let sample_format =
         match codec {
             "mp3" if container == "mp3" => "lossy",
-            "opus" if container == "ogg" => "lossy",
+            "opus" | "vorbis" if container == "ogg" => "lossy",
             "aac" if ["aac", "mov"].contains(&container) => "lossy",
             "pcm_u8" => "u8",
             "pcm_s16le" => "s16",

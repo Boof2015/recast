@@ -23,6 +23,22 @@
       "url": "https://downloads.xiph.org/releases/opus/opus-1.6.1.tar.gz",
       "sha256": "6ffcb593207be92584df15b32466ed64bbec99109f007c82205f0194572411a1",
       "licenses": ["COPYING"]
+    },
+    {
+      "name": "ogg",
+      "version": "1.3.6",
+      "archive": "libogg-1.3.6.tar.xz",
+      "url": "https://downloads.xiph.org/releases/ogg/libogg-1.3.6.tar.xz",
+      "sha256": "5c8253428e181840cd20d41f3ca16557a9cc04bad4a3d04cce84808677fa1061",
+      "licenses": ["COPYING"]
+    },
+    {
+      "name": "vorbis",
+      "version": "1.3.7",
+      "archive": "libvorbis-1.3.7.tar.xz",
+      "url": "https://downloads.xiph.org/releases/vorbis/libvorbis-1.3.7.tar.xz",
+      "sha256": "b33cc4934322bcbf6efcbacf49e3ca01aadbea4114ec9589d1b1e9d20f72954b",
+      "licenses": ["COPYING"]
     }
   ]
 }

@@ -69,12 +69,22 @@ class AudioPackageTests(unittest.TestCase):
 
     def test_requires_opus_dependency_and_license(self):
         opus = next(item for item in self.manifest['dependencies'] if item['name'] == 'opus')
+        index = self.manifest['dependencies'].index(opus)
         self.manifest['dependencies'].remove(opus)
         self.save()
         with self.assertRaisesRegex(SystemExit, 'dependencies'):
             CHECK.check_audio_manifest(self.root)
-        self.manifest['dependencies'].append(opus)
+        self.manifest['dependencies'].insert(index, opus)
         self.save()
         (self.root / 'licenses/opus-COPYING').unlink()
         with self.assertRaisesRegex(SystemExit, 'dependency license'):
             CHECK.check_audio_manifest(self.root)
+
+    def test_requires_vorbis_and_ogg_license_notices(self):
+        for name in ['ogg', 'vorbis']:
+            with self.subTest(dependency=name):
+                path = self.root / 'licenses' / f'{name}-COPYING'
+                path.unlink()
+                with self.assertRaisesRegex(SystemExit, 'dependency license'):
+                    CHECK.check_audio_manifest(self.root)
+                path.write_text('notice')
