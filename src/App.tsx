@@ -4,7 +4,7 @@ import { invoke, isTauri } from '@tauri-apps/api/core';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { open } from '@tauri-apps/plugin-dialog';
-import { vorbisQualities, opusBitrateChoices, aacBitrateChoices, aacRates, isLossyAudio, audioDescription, audioSampleFormats, audioSettingIssue, audioWillDither, defaultSettings, destinationsFor, formatCounts, kindLabels, kinds, unitLabels, mp3BitrateChoices, mp3Qualities, mp3Rates, type Appearance, type Destination, type GroupSettings, type InputFile, type MediaKind } from './model';
+import { vorbisQualities, opusBitrateChoices, aacBitrateChoices, aacRates, isLossyAudio, audioDescription, videoDescription, audioSampleFormats, audioSettingIssue, audioWillDither, defaultSettings, destinationsFor, formatCounts, kindLabels, kinds, unitLabels, mp3BitrateChoices, mp3Qualities, mp3Rates, type Appearance, type Destination, type GroupSettings, type InputFile, type MediaKind } from './model';
 import { sampleFiles, type Scenario } from './fixtures';
 import { CheckboxSetting, QualitySetting, SelectSetting } from './controls';
 import { ColorSetting } from './ColorSetting';
@@ -47,7 +47,7 @@ function FormatSettings({ kind, destination, value, onChange, disabled, animated
   const isImage = kind === 'images';
   const isAudio = kind === 'audio' || destination.category === 'Audio only';
   const isVideo = kind === 'video' && !isAudio;
-  const hasQuality = isImage && ['webp', 'jpeg', 'avif'].includes(destination.id);
+  const hasQuality = (isImage && ['webp', 'jpeg', 'avif'].includes(destination.id)) || (isVideo && destination.id === 'mp4');
   const hasLossless = isImage && ['webp', 'avif'].includes(destination.id);
   const lossyInput = files.some(isLossyAudio);
   const sampleFormatLabel = (label: string) => lossyInput && label === 'Keep source' ? 'Auto' : label;
@@ -85,6 +85,7 @@ function FormatSettings({ kind, destination, value, onChange, disabled, animated
       <SelectSetting label="Frame rate" value={value.frameRate} options={['Original', '24 fps', '30 fps', '60 fps']} onChange={(frameRate) => onChange({ frameRate })} />
       <div className="setting-row"><span>Audio codec</span><span className="setting-value">{destination.id === 'webm' ? 'Opus' : 'AAC'}</span></div>
     </>}
+    {isVideo && destination.id === 'mp4' && <p className="settings-note">Keeps original timing unless a frame rate is selected. Resolution fits without upscaling. AAC audio is kept; other supported audio is encoded to AAC.</p>}
     {isVideo && destination.id === 'gif' && <div className="range-placeholder"><Film size={24} strokeWidth={1.4} /><p>Preview & source range</p><span>To be explored in the next design pass</span></div>}
     {destination.id !== 'gif' && destination.id !== 'bmp' && <CheckboxSetting label="Keep metadata" checked={value.metadata} onChange={(metadata) => onChange({ metadata })} />}
     {isAudio && value.metadata && <p className="settings-note">Keeps supported text tags. Artwork, loudness tags, and production metadata are omitted.</p>}
@@ -166,7 +167,7 @@ export default function App() {
   const failed = job?.files.filter(file => file.status === 'failed') ?? [];
   const retryCount = job ? job.files.length - succeeded.length : 0;
   const currentFile = job?.files.find(file => file.status === 'running');
-  const canConvert = audioSettingsValid && conversion.backendReady && !previewCatalog && allConfigured && !inspecting && !busy && files.every(file => ['images', 'audio'].includes(file.kind) && file.path);
+  const canConvert = audioSettingsValid && conversion.backendReady && !previewCatalog && allConfigured && !inspecting && !busy && files.every(file => file.path);
   const jobText = conversion.starting ? 'Preparing conversion…' : job?.status === 'cancelling' ? 'Cancelling…' : busy && job ? `Converting ${Math.min(succeeded.length + failed.length + 1, job.files.length)} of ${job.files.length}` : job ? `${succeeded.length} converted${failed.length ? ` · ${failed.length} failed` : ''}${job.status === 'cancelled' ? ' · Cancelled' : ''}` : '';
 
   useEffect(() => {
@@ -308,7 +309,7 @@ export default function App() {
     {files.length === 0 ? <main className="empty-state">
       <div className="empty-symbol" aria-hidden="true"><File className="file-back" size={49} strokeWidth={1.15} /><File className="file-front" size={49} strokeWidth={1.15} /><ArrowDownToLine className="file-arrow" size={18} strokeWidth={1.6} /></div>
       <h1>Drop files here</h1>
-      <p>{previewCatalog ? 'Images, audio, or video. All on your device.' : 'Images, WAV, FLAC, ALAC, MP3, AAC, Opus, and Ogg Vorbis. All on your device.'}</p>
+      <p>{previewCatalog ? 'Images, audio, or video. All on your device.' : 'Images, audio, and video. All on your device.'}</p>
       <button className="primary-button choose-files" onClick={() => void chooseFiles()} disabled={inspecting}>{inspecting ? 'Reading files…' : 'Choose files'}<Plus size={16} /></button>
     </main> : <>
       <main className="workspace" ref={workspaceRef}>
@@ -329,7 +330,7 @@ export default function App() {
                 </div>
                 {isExpanded && <ScrollArea className="file-list-scroll"><div className="file-list" id={`files-${kind}`}>{groupFiles.map((file) => {
                   const result = job?.files.find(result => result.id === file.id);
-                  const detail = result?.error ?? (result?.warnings?.length ? result.warnings.join(' ') : undefined) ?? file.conversionIssue ?? (settings[kind].target ? file.targetIssues?.[settings[kind].target!] : undefined) ?? (result?.details ?? (result ? ({ pending: 'Waiting', running: 'Converting…', succeeded: 'Converted', failed: 'Failed', cancelled: 'Cancelled' }[result.status]) : file.animated ? 'Animated' : audioDescription(file)));
+                  const detail = result?.error ?? (result?.warnings?.length ? result.warnings.join(' ') : undefined) ?? file.conversionIssue ?? (settings[kind].target ? file.targetIssues?.[settings[kind].target!] : undefined) ?? (result?.details ?? (result ? ({ pending: 'Waiting', running: result.phase ? `${result.phase} · ${Math.round((result.progress ?? 0) * 100)}%` : 'Converting…', succeeded: 'Converted', failed: 'Failed', cancelled: 'Cancelled' }[result.status]) : file.animated ? 'Animated' : videoDescription(file) || audioDescription(file)));
                   return <div className="file-row" key={file.id}><div className="file-detail"><span title={file.path || file.name}>{file.name}</span>{detail && <span className="file-status">{detail}</span>}</div><button className="remove-file" disabled={busy} aria-label={`Remove ${file.name}`} onClick={() => { conversion.clear(); setFiles((current) => current.filter((item) => item.id !== file.id)); }}><X size={13} /></button></div>;
                 })}</div></ScrollArea>}
               </section>;
@@ -361,7 +362,8 @@ export default function App() {
             const groupResults = job?.files.filter(result => groupFiles.some(file => file.id === result.id)) ?? [];
             const groupSucceeded = groupResults.filter(result => result.status === 'succeeded');
             const groupFailed = groupResults.filter(result => result.status === 'failed').length;
-            const groupText = groupResults.some(result => result.status === 'running') ? 'Converting…' : groupResults.every(result => result.status === 'pending') ? 'Waiting' : `${groupSucceeded.length} converted${groupFailed ? ` · ${groupFailed} failed` : ''}${groupResults.some(result => result.status === 'cancelled') ? ' · Cancelled' : ''}`;
+            const running = groupResults.find(result => result.status === 'running');
+            const groupText = running ? running.phase ? `${running.phase} · ${Math.round((running.progress ?? 0) * 100)}%` : 'Converting…' : groupResults.every(result => result.status === 'pending') ? 'Waiting' : `${groupSucceeded.length} converted${groupFailed ? ` · ${groupFailed} failed` : ''}${groupResults.some(result => result.status === 'cancelled') ? ' · Cancelled' : ''}`;
             return <section key={kind} className="output-group" style={{ minHeight: groupSizes[kind] }}>
               <button className="group-header output-select" data-selection-key={kind} aria-label={`${kindLabels[kind]} output`} aria-pressed={activeKind === kind} onClick={() => setSelected(kind)}>
                 <span className={`output-result ${target ? '' : 'pending-output'}`}>{groupFiles.length} {target?.label ?? 'files'}</span>
@@ -375,11 +377,11 @@ export default function App() {
       </main>
 
       <footer className="batch-footer">
-        <div className="batch-total"><span role="status" aria-live="polite">{job || conversion.starting ? jobText : `${files.length} files`}</span>{busy && job && <progress aria-label="Files processed" max={job.files.length} value={succeeded.length + failed.length} />}{currentFile && <span className="current-file" title={currentFile.name}>{currentFile.name}</span>}</div>
+        <div className="batch-total"><span role="status" aria-live="polite">{job || conversion.starting ? jobText : `${files.length} files`}</span>{busy && job && <progress aria-label="Batch progress" max={job.files.length} value={succeeded.length + failed.length + (currentFile?.progress ?? 0)} />}{currentFile && <span className="current-file" title={currentFile.name}>{currentFile.name}</span>}</div>
         {!busy && failed.some(file => file.canAllowClipping) && <button className="quiet-button" onClick={() => { setSettings(current => ({ ...current, audio: { ...current.audio, allowClipping: true } })); void runConversion(true, true); }}>Allow clipping & retry</button>}
         {!busy && job && retryCount > 0 && <button className="quiet-button" onClick={newBatch}>New batch</button>}
         <div className="folder-choice"><button className="folder-button" disabled={busy} onClick={() => void chooseFolder()} title={outputFolder ?? 'Choose an output folder'}><Folder size={16} strokeWidth={1.6} /><span>{folderName}</span><ChevronDown size={12} /></button>{outputFolder && <button className="icon-button" disabled={busy} aria-label="Use source folders" title="Use source folders" onClick={() => { conversion.clear(); setOutputFolder(null); }}><X size={12} /></button>}</div>
-        {busy ? <button className="primary-button" disabled={conversion.starting || job?.status === 'cancelling'} onClick={() => void conversion.cancel().catch(error => setNotice(String(error)))}>{job?.status === 'cancelling' ? 'Cancelling…' : 'Cancel'}</button> : job ? retryCount > 0 ? <button className="primary-button" onClick={() => void runConversion(true)}>Retry {retryCount} {retryCount === 1 ? 'file' : 'files'}</button> : <button className="primary-button" onClick={newBatch}>New batch</button> : <button className={`primary-button convert-button ${allConfigured ? 'configured' : ''}`} disabled={!canConvert} onClick={() => void runConversion()} title={previewCatalog ? 'Sample files are for design review. Add real images, WAV, FLAC, ALAC, MP3, AAC, Opus, or Ogg Vorbis files to convert.' : !allConfigured ? 'Choose a supported output for every group.' : !audioSettingsValid ? 'Choose compatible audio settings.' : undefined}>Convert {files.length} {files.length === 1 ? 'file' : 'files'}</button>}
+        {busy ? <button className="primary-button" disabled={conversion.starting || job?.status === 'cancelling'} onClick={() => void conversion.cancel().catch(error => setNotice(String(error)))}>{job?.status === 'cancelling' ? 'Cancelling…' : 'Cancel'}</button> : job ? retryCount > 0 ? <button className="primary-button" onClick={() => void runConversion(true)}>Retry {retryCount} {retryCount === 1 ? 'file' : 'files'}</button> : <button className="primary-button" onClick={newBatch}>New batch</button> : <button className={`primary-button convert-button ${allConfigured ? 'configured' : ''}`} disabled={!canConvert} onClick={() => void runConversion()} title={previewCatalog ? 'Sample files are for design review. Add real images, audio, or video files to convert.' : !allConfigured ? 'Choose a supported output for every group.' : !audioSettingsValid ? 'Choose compatible audio settings.' : undefined}>Convert {files.length} {files.length === 1 ? 'file' : 'files'}</button>}
       </footer>
     </>}
 

@@ -95,3 +95,13 @@ Vorbis input fixtures use Xiph's unmodified `encoder_example.c` with pinned libo
 - `xiph-vorbis-short.ogg`: 117 frames, exercising a very short final packet.
 
 Rust reconstructs the reference tones and checks decoded length/alignment. The one-page cases reproduce FFmpeg 9.0.2's missing initial-overlap timestamp during EOS accounting: uncorrected decoding changes 44,117 frames to 43,989 and 117 frames to 128. A checked source patch fixes this without changing encoded files. Regressions cover all exposed rates from 7350–192000 Hz, every quality, mono through standard 7.1 layouts with distinct channel tones, tiny and multiple-page clips, metadata/names, cross-format and mixed batches, damaged/chained streams and invalid sample positions, clipping consent/retry, and cancellation. Local Xiph `decoder_example.c`/libvorbisfile independently verifies exported 1-, 117-, 44,117-, 88,117-, and 48,117-frame files with exact counts and correct tone content. CI consumes the checked-in input fixtures without compiling the generator; no external recordings are included.
+
+
+Video fixtures contain only synthetic pixels and tones. `generate_video.swift` uses Apple's AVAssetWriter/H.264 encoder on macOS; CI consumes its checked-in files without Apple codecs:
+
+- `apple-h264.mp4`: 64×48, 60 frames, approximately 29.97 fps. Its 600 Hz container clock deliberately exposes rounding when an encoder replaces original presentation timestamps with a nominal frame rate.
+- `apple-vfr-rotated.mov`: nine irregularly spaced frames and a 90° display transform. Its final visible frame is shortened by an edit list, exposing both VFR reordering-duration errors and accidental extension of the last frame.
+
+`generate_video_containers.py /path/to/ffmpeg` adds synthetic subtitles or converts those pixels using a separate FFmpeg installation (initially Homebrew 9.0.1): `video-captions.mp4` has an MP4 text track; `video-srt.mkv` exercises unsupported subtitle rejection; `video-vp9-opus.webm` has VP9 and stereo Opus from the existing synthetic Apple AAC tones.
+
+Native tests check original PTS and visible duration, rotation/dimensions, silent videos, AAC packet-copy identity, multiple audio tracks and relative offsets, ALAC/Opus-to-AAC, subtitles/language/dispositions, quality/resize/frame rate, metadata, corrupted/HDR/extra-track rejection, all three media groups in one batch, retry preservation, and cancellation during encoding and validation. `RECAST_VIDEO_EVIDENCE=<directory>` optionally saves the independent-Apple test outputs for another decoder to inspect. Local AVAssetReader checks verify decoded frame counts, presentation times, visible durations, and correctly rotated image content; no external recordings are used.

@@ -1,7 +1,7 @@
 use super::*;
 use crate::audio_backend::AudioOptions;
 
-fn audio_options(target: &str) -> AudioOptions {
+pub(super) fn audio_options(target: &str) -> AudioOptions {
     AudioOptions {
         target: target.into(),
         sample_rate: None,

@@ -1,0 +1,893 @@
+//! MP4 conversion through the bundled media worker. All publication is no-clobber.
+use crate::{
+    audio_backend::AudioBackend,
+    image_backend::{check_cancel, publish, ConversionError, OutputFile},
+};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::{
+    collections::BTreeMap,
+    fs::File,
+    io::{BufRead, BufReader, Read, Seek, SeekFrom, Write},
+    path::Path,
+    process::{Command, Stdio},
+    sync::atomic::{AtomicBool, Ordering},
+    time::{Duration, Instant},
+};
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct VideoOptions {
+    pub target: String,
+    pub quality: u8,
+    pub resolution: Option<u32>,
+    pub frame_rate: Option<u32>,
+    pub metadata: bool,
+}
+impl VideoOptions {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.target != "mp4" {
+            return Err("Choose MP4 for this video conversion.".into());
+        }
+        if !(1..=100).contains(&self.quality) {
+            return Err("Choose video quality from 1 to 100.".into());
+        }
+        if self
+            .resolution
+            .is_some_and(|r| ![480, 720, 1080].contains(&r))
+            || self.frame_rate.is_some_and(|r| ![24, 30, 60].contains(&r))
+        {
+            return Err("Choose a supported resolution and frame rate.".into());
+        }
+        Ok(())
+    }
+    pub fn dimensions(&self, info: &VideoInfo) -> (u32, u32) {
+        let (w, h) = if info.rotation.abs() == 90 || info.rotation.abs() == 270 {
+            (info.height, info.width)
+        } else {
+            (info.width, info.height)
+        };
+        let factor = self
+            .resolution
+            .map(|r| {
+                (f64::from(r) / f64::from(w.min(h)))
+                    .min((f64::from(r) * 16.0 / 9.0) / f64::from(w.max(h)))
+                    .min(1.0)
+            })
+            .unwrap_or(1.0);
+        (
+            ((f64::from(w) * factor) as u32 / 2 * 2).max(2),
+            ((f64::from(h) * factor) as u32 / 2 * 2).max(2),
+        )
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VideoInfo {
+    pub container: String,
+    pub codec: String,
+    pub width: u32,
+    pub height: u32,
+    pub rotation: i32,
+    pub duration: f64,
+    pub frame_rate: f64,
+    pub audio_tracks: usize,
+    pub subtitle_tracks: usize,
+    pub issue: Option<String>,
+    #[serde(skip)]
+    probe: Value,
+}
+fn num(v: &Value) -> Option<f64> {
+    v.as_f64()
+        .or_else(|| v.as_str()?.parse().ok())
+        .filter(|n| n.is_finite())
+}
+fn ratio(v: &Value) -> Option<f64> {
+    let s = v.as_str()?;
+    let (a, b) = s.split_once('/').or_else(|| s.split_once(':'))?;
+    let result = a.parse::<f64>().ok()? / b.parse::<f64>().ok()?;
+    (result.is_finite() && result > 0.0).then_some(result)
+}
+fn streams(probe: &Value) -> impl Iterator<Item = &Value> {
+    probe["streams"].as_array().into_iter().flatten()
+}
+fn video_stream(probe: &Value) -> Option<&Value> {
+    streams(probe).find(|s| s["codec_type"] == "video" && s["disposition"]["attached_pic"] != 1)
+}
+fn video_end(info: &VideoInfo) -> Option<f64> {
+    let video = video_stream(&info.probe)?;
+    Some(
+        num(&video["duration"])? + num(&video["start_time"]).unwrap_or(0.0)
+            - num(&info.probe["format"]["start_time"]).unwrap_or(0.0),
+    )
+}
+fn rotation(stream: &Value) -> i32 {
+    stream["side_data_list"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find_map(|s| num(&s["rotation"]))
+        .unwrap_or(0.0)
+        .round() as i32
+}
+fn parse(probe: Value) -> Result<Option<VideoInfo>, String> {
+    let Some(video) = video_stream(&probe) else {
+        return Ok(None);
+    };
+    let width = num(&video["width"]).unwrap_or(0.0) as u32;
+    let height = num(&video["height"]).unwrap_or(0.0) as u32;
+    let duration = num(&probe["format"]["duration"])
+        .filter(|v| *v > 0.0 && *v <= 86400.0)
+        .ok_or("This video has no supported finite duration (up to 24 hours).")?;
+    let fps = ratio(&video["avg_frame_rate"])
+        .or_else(|| ratio(&video["r_frame_rate"]))
+        .unwrap_or(0.0);
+    let rot = rotation(video);
+    let exact_rotation = video["side_data_list"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find_map(|s| num(&s["rotation"]))
+        .unwrap_or(0.0);
+    let codec = video["codec_name"]
+        .as_str()
+        .unwrap_or("unknown")
+        .to_string();
+    let container = probe["format"]["format_name"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+    let audios: Vec<_> = streams(&probe)
+        .filter(|s| s["codec_type"] == "audio")
+        .collect();
+    let subtitles: Vec<_> = streams(&probe)
+        .filter(|s| s["codec_type"] == "subtitle")
+        .collect();
+    let mut issue = None;
+    let mut reject = |message: &str| {
+        if issue.is_none() {
+            issue = Some(message.to_string());
+        }
+    };
+    if !["mov,mp4,m4a,3gp,3g2,mj2", "matroska,webm", "avi"].contains(&container.as_str()) {
+        reject("This video build accepts MP4/MOV, MKV/WebM, and AVI containers.");
+    }
+    if streams(&probe)
+        .filter(|s| s["codec_type"] == "video")
+        .count()
+        != 1
+        || streams(&probe).any(|s| {
+            !["video", "audio", "subtitle"].contains(&s["codec_type"].as_str().unwrap_or(""))
+        })
+    {
+        reject("This video contains extra video, attachment, or data tracks. Retaining those tracks is not supported yet.");
+    }
+    if probe["chapters"]
+        .as_array()
+        .is_some_and(|chapters| !chapters.is_empty())
+    {
+        reject("Chaptered video is not supported yet. Recast will not silently discard chapters.");
+    }
+    if !["h264", "hevc", "vp8", "vp9", "mpeg4", "mjpeg", "prores"].contains(&codec.as_str()) {
+        reject("This video codec is not supported in the first MP4 increment yet.");
+    }
+    if width < 2
+        || height < 2
+        || width > 8192
+        || height > 8192
+        || !width.is_multiple_of(2)
+        || !height.is_multiple_of(2)
+        || fps <= 0.0
+        || fps > 240.0
+    {
+        reject("This MP4 build supports even video dimensions up to 8192 pixels and frame rates up to 240 fps.");
+    }
+    if (exact_rotation - f64::from(rot)).abs() > 0.0001
+        || ![0, 90, -90, 180, -180, 270, -270].contains(&rot)
+        || ratio(&video["sample_aspect_ratio"]).is_some_and(|r| (r - 1.0).abs() > 0.0001)
+    {
+        reject("Non-square pixels or non-right-angle rotation need a separate conversion path and are not supported yet.");
+    }
+    if ![
+        "yuv420p", "yuvj420p", "yuv422p", "yuvj422p", "yuv444p", "yuvj444p", "nv12",
+    ]
+    .contains(&video["pix_fmt"].as_str().unwrap_or(""))
+        || ["smpte2084", "arib-std-b67"].contains(&video["color_transfer"].as_str().unwrap_or(""))
+        || video["color_primaries"] == "bt2020"
+        || video["side_data_list"].to_string().contains("DOVI")
+    {
+        reject("This first MP4 output supports 8-bit SDR video. HDR, higher bit depth, and transparency need a preserving conversion path first.");
+    }
+    if !["progressive", "unknown"].contains(&video["field_order"].as_str().unwrap_or("unknown")) {
+        reject("Interlaced video is not supported yet; it needs explicit deinterlacing or preservation.");
+    }
+    if audios.len() > 8 {
+        reject("This MP4 build supports up to eight audio tracks.");
+    }
+    for a in &audios {
+        let c = a["codec_name"].as_str().unwrap_or("");
+        if ![
+            "aac",
+            "mp3",
+            "opus",
+            "vorbis",
+            "flac",
+            "alac",
+            "pcm_u8",
+            "pcm_s16le",
+            "pcm_s24le",
+            "pcm_s32le",
+            "pcm_f32le",
+            "pcm_f64le",
+        ]
+        .contains(&c)
+        {
+            reject("An audio track uses an unsupported codec. Recast will not silently drop it.");
+        }
+        if c == "alac" && ![Some(16.0), Some(24.0)].contains(&num(&a["bits_per_raw_sample"])) {
+            reject("This build supports 16-bit and 24-bit ALAC tracks; other ALAC depths cannot be decoded reliably yet.");
+        }
+        if c == "aac" && a["profile"] != "LC" {
+            reject("HE-AAC and other AAC profiles need the deferred timing fix before they can be used in video conversion.");
+        }
+        let channels = num(&a["channels"]).unwrap_or(0.0) as u32;
+        let layout = a["channel_layout"].as_str().unwrap_or(if channels == 1 {
+            "mono"
+        } else if channels == 2 {
+            "stereo"
+        } else {
+            "unknown"
+        });
+        if ![
+            "mono",
+            "stereo",
+            "3.0",
+            "4.0",
+            "5.0",
+            "5.1",
+            "6.1(back)",
+            "7.1",
+        ]
+        .contains(&layout)
+        {
+            reject("An audio channel layout cannot be retained by AAC. Channel remapping is not part of this conversion.");
+        }
+        let rate = num(&a["sample_rate"]).unwrap_or(0.0) as u32;
+        if ![
+            7350, 8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000, 64000, 88200, 96000,
+        ]
+        .contains(&rate)
+        {
+            reject("An audio sample rate cannot be retained by AAC. Convert that source to a compatible rate first.");
+        }
+    }
+    if subtitles.iter().any(|s| s["codec_name"] != "mov_text") {
+        reject("This MP4 build can retain existing MP4 text subtitles. Other subtitle formats are not supported yet and will not be silently dropped.");
+    }
+    Ok(Some(VideoInfo {
+        container,
+        codec,
+        width,
+        height,
+        rotation: rot,
+        duration,
+        frame_rate: fps,
+        audio_tracks: audios.len(),
+        subtitle_tracks: subtitles.len(),
+        issue,
+        probe,
+    }))
+}
+
+impl AudioBackend {
+    pub fn inspect_video(
+        &self,
+        path: &Path,
+        cancel: &AtomicBool,
+    ) -> Result<Option<VideoInfo>, ConversionError> {
+        let work = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let output = work.path().join("probe.json");
+        let mut cmd = self.command("ffprobe");
+        cmd.args([
+            "-v",
+            "error",
+            "-protocol_whitelist",
+            "file,pipe",
+            "-show_streams",
+            "-show_format",
+            "-show_chapters",
+            "-of",
+            "json",
+        ])
+        .arg(path)
+        .stdout(File::create(&output).map_err(|e| e.to_string())?);
+        run(
+            &mut cmd,
+            &work.path().join("probe.log"),
+            None,
+            cancel,
+            30,
+            &mut |_| {},
+        )?;
+        let mut data = Vec::new();
+        File::open(output)
+            .map_err(|e| e.to_string())?
+            .take(4_194_305)
+            .read_to_end(&mut data)
+            .map_err(|e| e.to_string())?;
+        if data.len() > 4_194_304 {
+            return Err("This video's stream metadata is too large to inspect."
+                .to_string()
+                .into());
+        }
+        parse(
+            serde_json::from_slice(&data)
+                .map_err(|_| "Video inspection returned invalid data.".to_string())?,
+        )
+        .map_err(Into::into)
+    }
+    fn video_command(&self) -> Command {
+        let mut c = self.command("ffmpeg");
+        c.args([
+            "-hide_banner",
+            "-nostdin",
+            "-v",
+            "error",
+            "-nostats",
+            "-y",
+            "-xerror",
+            "-err_detect",
+            "crccheck+explode",
+            "-threads",
+            "2",
+            "-filter_threads",
+            "1",
+            "-protocol_whitelist",
+            "file,pipe",
+        ])
+        .stdout(Stdio::null());
+        c
+    }
+    fn video_fingerprint(
+        &self,
+        source: &Path,
+        work: &Path,
+        name: &str,
+        cancel: &AtomicBool,
+        progress: &mut impl FnMut(f64),
+    ) -> Result<std::path::PathBuf, ConversionError> {
+        let output = work.join(format!("{name}.frames"));
+        let status = work.join(format!("{name}.progress"));
+        let mut cmd = self.video_command();
+        cmd.args(["-copyts", "-start_at_zero", "-i"])
+            .arg(source)
+            .args([
+                "-map",
+                "0:v:0",
+                "-map",
+                "0:a?",
+                "-c:v",
+                "rawvideo",
+                "-c:a",
+                "pcm_f64le",
+                "-threads:v",
+                "1",
+                "-enc_time_base:v",
+                "demux",
+                "-fps_mode",
+                "passthrough",
+                "-f",
+                "framehash",
+                "-progress",
+            ])
+            .arg(&status)
+            .arg(&output);
+        run(
+            &mut cmd,
+            &work.join(format!("{name}.log")),
+            Some(&status),
+            cancel,
+            86400,
+            progress,
+        )?;
+        Ok(output)
+    }
+    pub fn convert_video(
+        &self,
+        source: &Path,
+        folder: Option<&Path>,
+        options: &VideoOptions,
+        cancel: &AtomicBool,
+        mut progress: impl FnMut(f64, &str),
+    ) -> Result<OutputFile, ConversionError> {
+        options.validate()?;
+        check_cancel(cancel)?;
+        let source = source.canonicalize().map_err(|e| e.to_string())?;
+        let parent = folder.unwrap_or_else(|| source.parent().unwrap());
+        let work = tempfile::Builder::new()
+            .prefix("recast-video-")
+            .tempdir()
+            .map_err(|e| e.to_string())?;
+        let staged = work.path().join("input");
+        let mut input = File::open(&source).map_err(|e| e.to_string())?;
+        let mut copy = File::create(&staged).map_err(|e| e.to_string())?;
+        let mut buffer = [0u8; 262144];
+        progress(0.0, "Preparing video");
+        loop {
+            check_cancel(cancel)?;
+            let n = input.read(&mut buffer).map_err(|e| e.to_string())?;
+            if n == 0 {
+                break;
+            }
+            copy.write_all(&buffer[..n]).map_err(|e| e.to_string())?;
+        }
+        drop(copy);
+        let info = self
+            .inspect_video(&staged, cancel)?
+            .ok_or_else(|| "This file does not contain a video track.".to_string())?;
+        if let Some(issue) = &info.issue {
+            return Err(issue.clone().into());
+        }
+        let (width, height) = options.dimensions(&info);
+        progress(0.0, "Checking source");
+        let original =
+            self.video_fingerprint(&staged, work.path(), "source", cancel, &mut |t| {
+                progress((t / info.duration).clamp(0.0, 1.0) * 0.2, "Checking source")
+            })?;
+        let mut source_stats = frame_stats(&original, cancel)?;
+        // MOV edit lists can trim the last displayed frame without changing its
+        // decoded duration. Keep that visible endpoint instead of extending it.
+        let source_video = source_stats.get_mut(&0).unwrap();
+        let video_end = video_end(&info).unwrap_or(source_video.end);
+        if video_end < source_video.end - source_video.duration - 0.00001
+            || video_end > source_video.end + 0.00001
+        {
+            return Err(
+                "This video's declared duration disagrees with its decoded frames."
+                    .to_string()
+                    .into(),
+            );
+        }
+        source_video.end = video_end;
+        let mut temporary = tempfile::Builder::new()
+            .prefix(".recast-")
+            .suffix(".mp4")
+            .tempfile_in(parent)
+            .map_err(|_| "The output folder is not writable.".to_string())?;
+        progress(0.2, "Encoding MP4");
+        let status = work.path().join("encode.progress");
+        let mut cmd = self.video_command();
+        cmd.args(["-copyts", "-start_at_zero", "-i"])
+            .arg(&staged)
+            .args([
+                "-map",
+                "0:v:0",
+                "-map",
+                "0:a?",
+                "-map",
+                "0:s?",
+                "-map_metadata",
+                if options.metadata { "0" } else { "-1" },
+                "-map_chapters",
+                if options.metadata { "0" } else { "-1" },
+            ]);
+        let mut filters = vec![
+            format!("scale={width}:{height}:flags=lanczos"),
+            "setsar=1".to_string(),
+        ];
+        if let Some(rate) = options.frame_rate {
+            filters.push(format!("fps={rate}"));
+        }
+        // 85 maps to CRF 20. Quality is a perceptual target, never a size promise.
+        let crf = 40.0 - f64::from(options.quality) * 24.0 / 100.0;
+        cmd.args([
+            "-vf",
+            &filters.join(","),
+            "-c:v",
+            "libx264",
+            "-preset",
+            "medium",
+            // Avoid reordered DTS durations shortening VFR MP4 edit lists.
+            "-bf",
+            "0",
+            "-crf",
+            &format!("{crf:.2}"),
+            "-pix_fmt",
+            "yuv420p",
+            "-threads:v",
+            "2",
+            "-enc_time_base:v",
+            if options.frame_rate.is_some() {
+                "filter"
+            } else {
+                "demux"
+            },
+            "-fps_mode",
+            "passthrough",
+            "-c:s",
+            "copy",
+        ]);
+        if options.frame_rate.is_none() {
+            cmd.args([
+                "-bsf:v",
+                &format!("setts=duration=min(DURATION\\,max(1\\,round({video_end:.9}/TB)-PTS))"),
+            ]);
+        }
+        for (i, a) in streams(&info.probe)
+            .filter(|s| s["codec_type"] == "audio")
+            .enumerate()
+        {
+            if a["codec_name"] == "aac" {
+                cmd.args([format!("-c:a:{i}"), "copy".into()]);
+            } else {
+                let rate = num(&a["sample_rate"]).unwrap() as u32;
+                let channels = num(&a["channels"]).unwrap() as u32;
+                let bitrate = (96000 * channels).min(rate * channels * 6).max(16000);
+                cmd.args([
+                    format!("-c:a:{i}"),
+                    "aac".into(),
+                    format!("-profile:a:{i}"),
+                    "aac_low".into(),
+                    format!("-b:a:{i}"),
+                    bitrate.to_string(),
+                ]);
+            }
+        }
+        if !options.metadata {
+            cmd.args(["-map_metadata:s", "-1"]);
+        }
+        // Language and default/forced flags identify retained tracks even with ordinary tags off.
+        for kind in ["audio", "subtitle"] {
+            let letter = if kind == "audio" { "a" } else { "s" };
+            for (i, s) in streams(&info.probe)
+                .filter(|s| s["codec_type"] == kind)
+                .enumerate()
+            {
+                if let Some(lang) = s["tags"]["language"].as_str() {
+                    cmd.args([
+                        format!("-metadata:s:{letter}:{i}"),
+                        format!("language={lang}"),
+                    ]);
+                }
+                let dispositions: Vec<_> = s["disposition"]
+                    .as_object()
+                    .into_iter()
+                    .flatten()
+                    .filter(|(_, v)| **v == 1)
+                    .map(|(k, _)| k.as_str())
+                    .collect();
+                cmd.args([
+                    format!("-disposition:{letter}:{i}"),
+                    if dispositions.is_empty() {
+                        "0".into()
+                    } else {
+                        dispositions.join("+")
+                    },
+                ]);
+            }
+        }
+        cmd.args([
+            "-movflags",
+            "+faststart",
+            "-use_editlist",
+            "1",
+            "-movie_timescale",
+            "1000000",
+            "-video_track_timescale",
+            "1000000",
+            "-avoid_negative_ts",
+            "disabled",
+            "-f",
+            "mp4",
+            "-progress",
+        ])
+        .arg(&status)
+        .arg(temporary.path());
+        run(
+            &mut cmd,
+            &work.path().join("encode.log"),
+            Some(&status),
+            cancel,
+            86400,
+            &mut |t| {
+                progress(
+                    0.2 + (t / info.duration).clamp(0.0, 1.0) * 0.65,
+                    "Encoding MP4",
+                )
+            },
+        )?;
+        let actual = self
+            .inspect_video(temporary.path(), cancel)?
+            .ok_or_else(|| "The MP4 has no video track.".to_string())?;
+        if actual.codec != "h264"
+            || actual.width != width
+            || actual.height != height
+            || actual.rotation != 0
+            || actual.audio_tracks != info.audio_tracks
+            || actual.subtitle_tracks != info.subtitle_tracks
+        {
+            return Err("The MP4 did not retain the expected dimensions or tracks."
+                .to_string()
+                .into());
+        }
+        let tolerance = options
+            .frame_rate
+            .map(|rate| 1.0 / f64::from(rate) + 0.00001)
+            .unwrap_or(0.00001);
+        if self::video_end(&actual).is_none_or(|end| (end - video_end).abs() > tolerance) {
+            return Err("The MP4 did not preserve the video's visible duration."
+                .to_string()
+                .into());
+        }
+        for (before, after) in streams(&info.probe)
+            .filter(|s| s["codec_type"] == "audio")
+            .zip(streams(&actual.probe).filter(|s| s["codec_type"] == "audio"))
+        {
+            if before["sample_rate"] != after["sample_rate"]
+                || before["channels"] != after["channels"]
+                || before["channel_layout"] != after["channel_layout"]
+            {
+                return Err(
+                    "An audio track's rate or channel layout changed unexpectedly."
+                        .to_string()
+                        .into(),
+                );
+            }
+        }
+        progress(0.85, "Checking MP4");
+        let checked =
+            self.video_fingerprint(temporary.path(), work.path(), "output", cancel, &mut |t| {
+                progress(
+                    0.85 + (t / info.duration).clamp(0.0, 1.0) * 0.14,
+                    "Checking MP4",
+                )
+            })?;
+        validate_timing(
+            &original,
+            &checked,
+            &source_stats,
+            &frame_stats(&checked, cancel)?,
+            options.frame_rate,
+            info.frame_rate,
+            cancel,
+        )?;
+        check_cancel(cancel)?;
+        temporary.as_file_mut().flush().map_err(|e| e.to_string())?;
+        temporary.as_file().sync_all().map_err(|e| e.to_string())?;
+        let bytes = temporary
+            .as_file()
+            .metadata()
+            .map_err(|e| e.to_string())?
+            .len();
+        let path = publish(
+            temporary,
+            source.file_stem().unwrap_or_default(),
+            parent,
+            "mp4",
+        )?;
+        progress(1.0, "Converted");
+        let converted_audio = streams(&info.probe)
+            .filter(|s| s["codec_type"] == "audio" && s["codec_name"] != "aac")
+            .count();
+        Ok(OutputFile {
+            path: path.to_string_lossy().into_owned(),
+            bytes,
+            warnings: if converted_audio > 0 {
+                vec![format!("{converted_audio} audio track(s) encoded to AAC; original sample rates and channels retained.")]
+            } else {
+                vec![]
+            },
+            details: Some(format!(
+                "{width} × {height} · H.264 · {} · {} audio track(s)",
+                options
+                    .frame_rate
+                    .map(|r| format!("{r} fps"))
+                    .unwrap_or("Original timing".into()),
+                info.audio_tracks
+            )),
+        })
+    }
+}
+
+#[derive(Default)]
+struct StreamStats {
+    count: u64,
+    start: f64,
+    end: f64,
+    duration: f64,
+}
+fn frame_rows(
+    path: &Path,
+) -> Result<impl Iterator<Item = Result<String, std::io::Error>>, ConversionError> {
+    Ok(BufReader::new(File::open(path).map_err(|e| e.to_string())?).lines())
+}
+fn frame_stats(
+    path: &Path,
+    cancel: &AtomicBool,
+) -> Result<BTreeMap<usize, StreamStats>, ConversionError> {
+    let mut times = BTreeMap::new();
+    let mut stats = BTreeMap::new();
+    for line in frame_rows(path)? {
+        check_cancel(cancel)?;
+        let line = line.map_err(|e| e.to_string())?;
+        if let Some(header) = line.strip_prefix("#tb ") {
+            let (i, v) = header
+                .split_once(": ")
+                .ok_or_else(|| "Invalid frame timing.".to_string())?;
+            times.insert(
+                i.parse::<usize>().map_err(|e| e.to_string())?,
+                ratio(&Value::String(v.into()))
+                    .ok_or_else(|| "Invalid frame time base.".to_string())?,
+            );
+        }
+        if line.starts_with('#') || line.is_empty() {
+            continue;
+        }
+        let row: Vec<_> = line.split(',').map(str::trim).collect();
+        if row.len() != 6 {
+            return Err("The video frame check is incomplete.".to_string().into());
+        }
+        let i = row[0].parse::<usize>().map_err(|e| e.to_string())?;
+        let tb = times
+            .get(&i)
+            .ok_or_else(|| "Missing frame time base.".to_string())?;
+        let pts = row[2].parse::<f64>().map_err(|e| e.to_string())? * tb;
+        let duration = row[3].parse::<f64>().map_err(|e| e.to_string())? * tb;
+        if !pts.is_finite() || !duration.is_finite() || duration <= 0.0 {
+            return Err("Unsupported video frame timing.".to_string().into());
+        }
+        let entry = stats.entry(i).or_insert_with(|| StreamStats {
+            start: pts,
+            ..Default::default()
+        });
+        if entry.count > 0 && pts + 0.00001 < entry.end - entry.duration {
+            return Err("This stream has non-monotonic timestamps."
+                .to_string()
+                .into());
+        }
+        entry.count += 1;
+        entry.end = pts + duration;
+        entry.duration = duration;
+    }
+    if stats.get(&0).is_none_or(|s| s.count == 0) {
+        return Err("This video has no decodable frames.".to_string().into());
+    }
+    Ok(stats)
+}
+fn validate_timing(
+    original: &Path,
+    checked: &Path,
+    before: &BTreeMap<usize, StreamStats>,
+    after: &BTreeMap<usize, StreamStats>,
+    fps: Option<u32>,
+    original_fps: f64,
+    cancel: &AtomicBool,
+) -> Result<(), ConversionError> {
+    let fail = || {
+        ConversionError::from(
+            "The MP4 did not preserve complete video/audio timing. No output was published."
+                .to_string(),
+        )
+    };
+    if before.len() != after.len() {
+        return Err(fail());
+    }
+    for (i, a) in before {
+        let b = after.get(i).ok_or_else(fail)?;
+        let tolerance = if *i == 0 {
+            1.0 / f64::from(fps.unwrap_or(original_fps.ceil() as u32)).max(1.0) + 0.00001
+        } else {
+            0.001
+        };
+        if (a.start - b.start).abs() > tolerance
+            || (a.end - b.end).abs() > tolerance
+            || (*i == 0 && fps.is_none() && a.count != b.count)
+        {
+            return Err(fail());
+        }
+    }
+    if fps.is_none() {
+        // Compare each decoded frame's presentation timestamp, including VFR gaps.
+        let get_pts = |path: &Path| -> Result<Vec<f64>, ConversionError> {
+            let mut tb = 0.0;
+            let mut pts = Vec::new();
+            for line in frame_rows(path)? {
+                check_cancel(cancel)?;
+                let line = line.map_err(|e| e.to_string())?;
+                if let Some(v) = line.strip_prefix("#tb 0: ") {
+                    tb = ratio(&Value::String(v.into())).ok_or_else(fail)?;
+                }
+                if line.starts_with("0,") {
+                    let v = line
+                        .split(',')
+                        .nth(2)
+                        .ok_or_else(fail)?
+                        .trim()
+                        .parse::<f64>()
+                        .map_err(|_| fail())?;
+                    pts.push(v * tb);
+                }
+                if pts.len() > 10_000_000 {
+                    return Err("This video exceeds the frame-validation budget."
+                        .to_string()
+                        .into());
+                }
+            }
+            Ok(pts)
+        };
+        let a = get_pts(original)?;
+        let b = get_pts(checked)?;
+        if a.len() != b.len() || a.iter().zip(b).any(|(a, b)| (a - b).abs() > 0.00001) {
+            return Err(fail());
+        }
+    }
+    Ok(())
+}
+fn run(
+    command: &mut Command,
+    log: &Path,
+    progress_path: Option<&Path>,
+    cancel: &AtomicBool,
+    timeout: u64,
+    report: &mut impl FnMut(f64),
+) -> Result<(), ConversionError> {
+    check_cancel(cancel)?;
+    command.stderr(File::create(log).map_err(|e| e.to_string())?);
+    let mut child = command
+        .spawn()
+        .map_err(|_| "The bundled video converter could not start.".to_string())?;
+    let started = Instant::now();
+    let mut reported = Instant::now();
+    let status = loop {
+        if cancel.load(Ordering::Relaxed) || started.elapsed() > Duration::from_secs(timeout) {
+            let _ = child.kill();
+            let _ = child.wait();
+            check_cancel(cancel)?;
+            return Err("The video converter took too long to respond."
+                .to_string()
+                .into());
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => (),
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(e.to_string().into());
+            }
+        }
+        if reported.elapsed() > Duration::from_millis(250) {
+            if let Some(path) = progress_path {
+                if let Ok(mut file) = File::open(path) {
+                    let len = file.metadata().map(|m| m.len()).unwrap_or(0);
+                    let _ = file.seek(SeekFrom::Start(len.saturating_sub(4096)));
+                    let mut text = String::new();
+                    let _ = file.take(4096).read_to_string(&mut text);
+                    if let Some(t) = text
+                        .lines()
+                        .filter_map(|l| l.strip_prefix("out_time_us=")?.parse::<f64>().ok())
+                        .next_back()
+                    {
+                        report(t / 1_000_000.0);
+                    }
+                }
+            }
+            reported = Instant::now();
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    };
+    check_cancel(cancel)?;
+    if !status.success() {
+        let mut text = String::new();
+        let _ = File::open(log).map(|f| f.take(4096).read_to_string(&mut text));
+        return Err(format!(
+            "Video conversion failed: {}",
+            text.lines()
+                .next()
+                .unwrap_or("The source could not be decoded or encoded.")
+        )
+        .into());
+    }
+    Ok(())
+}

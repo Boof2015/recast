@@ -14,7 +14,10 @@
       "archive": "lame-4.0.tar.gz",
       "url": "https://downloads.sourceforge.net/project/lame/lame/4.0/lame-4.0.tar.gz",
       "sha256": "3df5124d5ad3a98312ffd7ba6a9b36230e4f8a3e66d3ce0f425e336c32d216eb",
-      "licenses": ["COPYING", "LICENSE"]
+      "licenses": [
+        "COPYING",
+        "LICENSE"
+      ]
     },
     {
       "name": "opus",
@@ -22,7 +25,9 @@
       "archive": "opus-1.6.1.tar.gz",
       "url": "https://downloads.xiph.org/releases/opus/opus-1.6.1.tar.gz",
       "sha256": "6ffcb593207be92584df15b32466ed64bbec99109f007c82205f0194572411a1",
-      "licenses": ["COPYING"]
+      "licenses": [
+        "COPYING"
+      ]
     },
     {
       "name": "ogg",
@@ -30,7 +35,9 @@
       "archive": "libogg-1.3.6.tar.xz",
       "url": "https://downloads.xiph.org/releases/ogg/libogg-1.3.6.tar.xz",
       "sha256": "5c8253428e181840cd20d41f3ca16557a9cc04bad4a3d04cce84808677fa1061",
-      "licenses": ["COPYING"]
+      "licenses": [
+        "COPYING"
+      ]
     },
     {
       "name": "vorbis",
@@ -38,7 +45,19 @@
       "archive": "libvorbis-1.3.7.tar.xz",
       "url": "https://downloads.xiph.org/releases/vorbis/libvorbis-1.3.7.tar.xz",
       "sha256": "b33cc4934322bcbf6efcbacf49e3ca01aadbea4114ec9589d1b1e9d20f72954b",
-      "licenses": ["COPYING"]
+      "licenses": [
+        "COPYING"
+      ]
+    },
+    {
+      "name": "x264",
+      "version": "b35605ace3ddf7c1a5d67a2eb553f034aef41d55",
+      "archive": "x264-b35605ace3ddf7c1a5d67a2eb553f034aef41d55.tar.gz",
+      "url": "https://code.videolan.org/videolan/x264/-/archive/b35605ace3ddf7c1a5d67a2eb553f034aef41d55/x264-b35605ace3ddf7c1a5d67a2eb553f034aef41d55.tar.gz",
+      "sha256": "cd71a7515b0e9a012e1ac9b1f8415bebcaf6fc97d4db32286642ac4c0fbe24f9",
+      "licenses": [
+        "COPYING"
+      ]
     }
   ]
 }

@@ -11,6 +11,7 @@ mod mp3;
 mod ogg;
 mod opus;
 mod tiff;
+mod video_backend;
 mod vorbis;
 use tauri::Manager;
 

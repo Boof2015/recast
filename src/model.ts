@@ -13,6 +13,7 @@ export interface InputFile {
   conversionIssue?: string | null;
   animated?: boolean;
   targetIssues?: Record<string, string>;
+  video?: { codec: string; width: number; height: number; rotation: number; duration: number; frameRate: number; audioTracks: number; subtitleTracks: number } | null;
   audio?: { container: string; codec: string; sampleRate: number; sampleFormat: string; channels: number; channelLayout: string | null; duration: number | null } | null;
 }
 
@@ -212,4 +213,12 @@ export function formatBytes(bytes: number): string {
   if (bytes >= 1_000_000_000) return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
   if (bytes >= 1_000_000) return `${(bytes / 1_000_000).toFixed(1)} MB`;
   return `${Math.max(1, Math.round(bytes / 1_000))} KB`;
+}
+
+export function videoDescription(file: InputFile): string {
+  const video = file.video;
+  if (!video) return '';
+  const portrait = Math.abs(video.rotation) % 180 === 90;
+  const seconds = Math.round(video.duration);
+  return `${portrait ? video.height : video.width} × ${portrait ? video.width : video.height} · ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')} · ${Number(video.frameRate.toFixed(2))} fps · ${video.audioTracks ? `${video.audioTracks} audio track${video.audioTracks === 1 ? '' : 's'}` : 'No audio'}`;
 }

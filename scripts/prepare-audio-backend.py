@@ -25,14 +25,16 @@ def configuration(system, arch):
     result = [
         '--disable-everything', '--disable-autodetect', '--disable-network',
         '--disable-doc', '--disable-debug', '--disable-shared', '--enable-static',
-        '--disable-avdevice', '--disable-swscale', '--disable-ffplay', '--disable-x86asm',
+        '--disable-avdevice', '--enable-swscale', '--disable-ffplay', '--disable-x86asm',
         '--enable-ffmpeg', '--enable-ffprobe', '--enable-protocol=file,pipe',
-        '--enable-demuxer=wav,flac,mov,mp3,aac,ogg,pcm_f64le',
-        '--enable-muxer=wav,flac,ipod,mp3,opus,ogg,pcm_f64le,pcm_s32le,null',
-        f'--enable-decoder={pcm},flac,alac,mp3float,aac,opus,vorbis', f'--enable-encoder={pcm},flac,alac,libmp3lame,aac,libopus,libvorbis',
-        '--enable-libmp3lame', '--enable-libopus', '--enable-libvorbis', '--pkg-config-flags=--static',
-        '--enable-parser=flac,mpegaudio,aac,opus,vorbis',
-        '--enable-filter=aresample,aformat,anull',
+        '--enable-demuxer=wav,flac,mov,matroska,avi,rawvideo,mp3,aac,ogg,pcm_f64le',
+        '--enable-muxer=wav,flac,ipod,mp4,mov,matroska,rawvideo,framehash,mp3,opus,ogg,pcm_f64le,pcm_s32le,null',
+        f'--enable-decoder={pcm},flac,alac,mp3float,aac,opus,vorbis,h264,hevc,vp8,vp9,mpeg4,mjpeg,prores,rawvideo,mov_text',
+        f'--enable-encoder={pcm},flac,alac,libmp3lame,aac,libopus,libvorbis,libx264,rawvideo,wrapped_avframe',
+        '--enable-gpl', '--enable-libx264', '--enable-libmp3lame', '--enable-libopus', '--enable-libvorbis', '--pkg-config-flags=--static',
+        '--enable-parser=flac,mpegaudio,aac,opus,vorbis,h264,hevc,vp8,vp9,mpeg4video,mjpeg',
+        '--enable-bsf=setts',
+        '--enable-filter=aresample,aformat,anull,scale,format,fps,transpose,hflip,vflip,setsar',
     ]
     if system == 'darwin':
         result += ['--cc=clang', f'--arch={"aarch64" if arch == "arm64" else arch}',
@@ -77,6 +79,27 @@ def build_opus(work, logs, env, system, arch):
     COMMON.run(['cmake', '-S', str(source), '-B', str(build), *config], env=env, log=logs / 'opus-configure.log')
     COMMON.run(['cmake', '--build', str(build), '--parallel', COMMON.JOBS], env=env, log=logs / 'opus-build.log')
     COMMON.run(['cmake', '--install', str(build)], env=env, log=logs / 'opus-install.log')
+    return source, config
+
+
+def build_x264(work, logs, env, system, arch):
+    dependency = next(item for item in LOCK['dependencies'] if item['name'] == 'x264')
+    source = COMMON.extract(dependency, work / 'x264')
+    flags = '-O2 -fPIC'
+    cc = '/ucrt64/bin/gcc' if system == 'windows' else 'clang' if system == 'darwin' else 'gcc'
+    ldflags = ''
+    if system == 'darwin':
+        flags += f' -arch {arch} -mmacosx-version-min={LOCK["minimumMacOS"]}'
+        ldflags = f'-arch {arch} -mmacosx-version-min={LOCK["minimumMacOS"]}'
+    config = [f'--prefix={work / "install"}', '--enable-static', '--enable-pic',
+              '--disable-cli', '--disable-opencl', '--disable-lavf', '--disable-swscale',
+              '--disable-ffms', '--disable-avs']
+    if system == 'darwin':
+        config += [f'--host={"aarch64" if arch == "arm64" else arch}-apple-darwin']
+    build_env = env | {'CC': cc, 'CFLAGS': flags, 'LDFLAGS': ldflags}
+    COMMON.run(['sh', str(source / 'configure'), *config], cwd=source, env=build_env, log=logs / 'x264-configure.log')
+    COMMON.run(['make', '-j', COMMON.JOBS], cwd=source, env=build_env, log=logs / 'x264-build.log')
+    COMMON.run(['make', 'install-lib-static'], cwd=source, env=build_env, log=logs / 'x264-install.log')
     return source, config
 
 
@@ -182,6 +205,7 @@ def main():
     # Expose only our pinned static libraries to FFmpeg's pkg-config probes.
     env['PKG_CONFIG_LIBDIR'] = str(stage / 'lib/pkgconfig')
     dependency_builds.update(build_vorbis(work, logs, env, system, arch))
+    dependency_builds['x264'] = build_x264(work, logs, env, system, arch)
     config = configuration(system, arch)
     config += [f'--extra-cflags=-I{shlex.quote(str(stage / "include"))}',
                f'--extra-ldflags=-L{shlex.quote(str(stage / "lib"))}']
@@ -219,7 +243,7 @@ def main():
             binaries[filename] = {'sha256': COMMON.sha(binary), **audited}
         notices = output / 'licenses'
         notices.mkdir()
-        for name in ['COPYING.LGPLv2.1', 'LICENSE.md']:
+        for name in ['COPYING.LGPLv2.1', 'COPYING.GPLv2', 'LICENSE.md']:
             shutil.copyfile(source / name, notices / name)
         dependency_notices = ''
         for dependency in LOCK['dependencies']:

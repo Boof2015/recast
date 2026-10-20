@@ -51,7 +51,7 @@ def check_audio_manifest(resources):
     for name in expected:
         if hashlib.sha256((resources / name).read_bytes()).hexdigest() != manifest['binaries'][name]['sha256']:
             raise SystemExit(f'Packaged audio executable differs from the build manifest: {name}')
-    for name in ['licenses/COPYING.LGPLv2.1', 'licenses/LICENSE.md', 'SOURCE.txt']:
+    for name in ['licenses/COPYING.LGPLv2.1', 'licenses/COPYING.GPLv2', 'licenses/LICENSE.md', 'SOURCE.txt']:
         if not (resources / name).is_file():
             raise SystemExit(f'Missing audio source/license notice: {name}')
     return manifest

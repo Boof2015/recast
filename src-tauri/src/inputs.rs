@@ -15,12 +15,13 @@ pub struct InputFile {
     pub kind: String,
     format: String,
     bytes: u64,
-    // Stream inspection is a later backend step. Unknown is never treated as true.
+    // Unknown is never treated as true.
     has_audio: Option<bool>,
     targets: Vec<String>,
     conversion_issue: Option<String>,
     animated: bool,
     pub audio: Option<crate::audio_backend::AudioInfo>,
+    pub video: Option<crate::video_backend::VideoInfo>,
     target_issues: std::collections::HashMap<String, String>,
     #[serde(skip)]
     pub sequence: Option<crate::animation::Sequence>,
@@ -138,6 +139,7 @@ pub fn inspect(path: &Path) -> Result<InputFile, String> {
         bytes: metadata.len(),
         has_audio: None,
         audio: None,
+        video: None,
         targets,
         conversion_issue,
         animated: sequence.as_ref().is_some_and(|s| s.animated()),
@@ -273,9 +275,35 @@ pub fn inspect_with_audio(
     cancel: &std::sync::atomic::AtomicBool,
 ) -> Result<InputFile, String> {
     let mut input = inspect(path)?;
-    // M4A and MP4 share a container. Probe the actual streams so an ALAC-only
-    // MP4 joins Audio, while a movie is never silently treated as audio-only.
-    if input.kind == "audio" || matches!(input.format.as_str(), "MP4" | "MOV" | "M4V" | "3GP") {
+    // MP4 and Matroska may carry audio alone. Classify actual streams first.
+    let shared_container = matches!(
+        input.format.as_str(),
+        "MP4" | "MOV" | "M4V" | "M4A" | "3GP" | "MKV" | "WEBM"
+    );
+    if input.kind == "video" || shared_container {
+        match backend.inspect_video(path, cancel) {
+            Ok(Some(video)) => {
+                input.kind = "video".into();
+                input.has_audio = Some(video.audio_tracks > 0);
+                input.conversion_issue = video.issue.clone();
+                input.targets = if video.issue.is_none() {
+                    vec!["mp4".into()]
+                } else {
+                    vec![]
+                };
+                input.target_issues.clear();
+                input.video = Some(video);
+                return Ok(input);
+            }
+            Ok(None) => (),
+            Err(crate::image_backend::ConversionError::Failed(message)) => {
+                input.conversion_issue = Some(message);
+                return Ok(input);
+            }
+            Err(_) => return Err("Video inspection was cancelled.".into()),
+        }
+    }
+    if input.kind == "audio" || input.kind == "video" || shared_container {
         match backend.inspect(path, cancel) {
             Ok(audio) => {
                 input.kind = "audio".into();
@@ -316,6 +344,20 @@ pub fn inspect_with_audio(
 }
 
 impl InputFile {
+    pub fn require_video_target(
+        &self,
+        options: &crate::video_backend::VideoOptions,
+    ) -> Result<(), String> {
+        options.validate()?;
+        if let Some(issue) = &self.conversion_issue {
+            return Err(issue.clone());
+        }
+        self.video
+            .as_ref()
+            .ok_or("This file is not supported video.")?;
+        Ok(())
+    }
+
     pub fn require_audio_target(
         &self,
         options: &crate::audio_backend::AudioOptions,

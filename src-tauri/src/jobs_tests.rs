@@ -57,6 +57,7 @@ fn request(paths: &[PathBuf], folder: &Path) -> ConversionRequest {
         output_folder: Some(folder.to_string_lossy().into_owned()),
         image_options: Some(options()),
         audio_options: None,
+        video_options: None,
     }
 }
 fn identify(path: &Path, format: &str) -> String {
@@ -835,3 +836,6 @@ mod animation;
 
 #[path = "audio_tests.rs"]
 mod audio;
+
+#[path = "video_tests.rs"]
+mod video;

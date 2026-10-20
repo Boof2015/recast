@@ -1,5 +1,6 @@
 use crate::audio_backend::{AudioBackend, AudioOptions};
 use crate::image_backend::{ConversionError, ImageBackend, ImageOptions};
+use crate::video_backend::VideoOptions;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
@@ -18,6 +19,7 @@ pub struct ConversionRequest {
     pub output_folder: Option<String>,
     pub image_options: Option<ImageOptions>,
     pub audio_options: Option<AudioOptions>,
+    pub video_options: Option<VideoOptions>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -41,6 +43,8 @@ pub struct FileResult {
     pub error: Option<String>,
     pub warnings: Vec<String>,
     pub details: Option<String>,
+    pub progress: Option<f64>,
+    pub phase: Option<String>,
     pub can_allow_clipping: bool,
 }
 
@@ -168,6 +172,8 @@ impl JobManager {
                     file.output_bytes = None;
                     file.warnings.clear();
                     file.details = None;
+                    file.progress = None;
+                    file.phase = None;
                     file.can_allow_clipping = false;
                 }
             }
@@ -191,7 +197,13 @@ impl JobManager {
             if let Some(options) = &request.audio_options {
                 options.validate()?;
             }
-            if request.image_options.is_none() && request.audio_options.is_none() {
+            if let Some(options) = &request.video_options {
+                options.validate()?;
+            }
+            if request.image_options.is_none()
+                && request.audio_options.is_none()
+                && request.video_options.is_none()
+            {
                 return Err("Choose an output format before converting.".into());
             }
             if request.paths.is_empty() {
@@ -228,6 +240,8 @@ impl JobManager {
                     error: None,
                     warnings: vec![],
                     details: None,
+                    progress: None,
+                    phase: None,
                     can_allow_clipping: false,
                 });
             }
@@ -286,12 +300,29 @@ pub fn run_job(
                         .ok_or_else(|| "Choose an audio output format.".to_string())?,
                     &job.cancel,
                 ),
+                "video" => audio.convert_video(
+                    Path::new(&source),
+                    folder,
+                    job.request
+                        .video_options
+                        .as_ref()
+                        .ok_or_else(|| "Choose a video output format.".to_string())?,
+                    &job.cancel,
+                    |progress, phase| {
+                        report(job.update(|state| {
+                            state.files[index].progress = Some(progress);
+                            state.files[index].phase = Some(phase.into());
+                        }))
+                    },
+                ),
                 _ => Err(ConversionError::Failed(
                     "This file type is not supported for conversion yet.".into(),
                 )),
             });
         let snapshot = job.update(|state| {
             let file = &mut state.files[index];
+            file.progress = None;
+            file.phase = None;
             match result {
                 Ok(output) => {
                     file.status = FileStatus::Succeeded;
@@ -379,7 +410,7 @@ pub async fn start_conversion(
         if preflight.image_options.is_some() {
             check.verify()?;
         }
-        if preflight.audio_options.is_some() {
+        if preflight.audio_options.is_some() || preflight.video_options.is_some() {
             audio_check.verify()?;
         }
         for path in &preflight.paths {
@@ -403,6 +434,12 @@ pub async fn start_conversion(
                         .audio_options
                         .as_ref()
                         .ok_or("Choose an audio output format.")?,
+                ),
+                "video" => input.require_video_target(
+                    preflight
+                        .video_options
+                        .as_ref()
+                        .ok_or("Choose a video output format.")?,
                 ),
                 _ => Err("This file type is not supported for conversion yet.".into()),
             };

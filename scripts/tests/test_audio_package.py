@@ -17,7 +17,7 @@ class AudioPackageTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         (self.root / 'licenses').mkdir()
-        for name in ['licenses/COPYING.LGPLv2.1', 'licenses/LICENSE.md', 'SOURCE.txt']:
+        for name in ['licenses/COPYING.LGPLv2.1', 'licenses/COPYING.GPLv2', 'licenses/LICENSE.md', 'SOURCE.txt']:
             (self.root / name).write_text('notice')
         lock = json.loads((ROOT / 'scripts/audio-backend.lock.json').read_text())
         for dependency in lock['dependencies']:
@@ -86,5 +86,14 @@ class AudioPackageTests(unittest.TestCase):
                 path = self.root / 'licenses' / f'{name}-COPYING'
                 path.unlink()
                 with self.assertRaisesRegex(SystemExit, 'dependency license'):
+                    CHECK.check_audio_manifest(self.root)
+                path.write_text('notice')
+
+    def test_requires_x264_and_ffmpeg_gpl_notices(self):
+        for name in ['x264-COPYING', 'COPYING.GPLv2']:
+            with self.subTest(notice=name):
+                path = self.root / 'licenses' / name
+                path.unlink()
+                with self.assertRaisesRegex(SystemExit, 'notice|license'):
                     CHECK.check_audio_manifest(self.root)
                 path.write_text('notice')

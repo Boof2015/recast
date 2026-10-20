@@ -340,22 +340,22 @@ impl AudioBackend {
                 .arg("-version")
                 .output()
                 .map_err(|_| {
-                    "The bundled audio converter is missing. Rebuild Recast with its audio backend."
+                    "The bundled media converter is missing. Rebuild Recast with its audio backend."
                         .to_string()
                 })?;
             if !output.status.success()
                 || !String::from_utf8_lossy(&output.stdout)
                     .contains(&format!("{program} version 9.0.2"))
             {
-                return Err("The bundled audio converter is out of date.".into());
+                return Err("The bundled media converter is out of date.".into());
             }
         }
         let codecs = self
             .command("ffmpeg")
             .args(["-hide_banner", "-codecs"])
             .output()
-            .map_err(|_| "The bundled audio codecs could not be checked.".to_string())?;
-        let supported = ["alac", "mp3", "aac", "opus", "vorbis"]
+            .map_err(|_| "The bundled media codecs could not be checked.".to_string())?;
+        let supported = ["alac", "mp3", "aac", "opus", "vorbis", "h264"]
             .iter()
             .all(|codec| {
                 String::from_utf8_lossy(&codecs.stdout).lines().any(|line| {
@@ -366,7 +366,7 @@ impl AudioBackend {
             });
         if !codecs.status.success() || !supported {
             return Err(
-                "The bundled audio converter needs rebuilding for ALAC/MP3/AAC/Opus/Vorbis support."
+                "The bundled media converter needs rebuilding for audio and H.264 MP4 support."
                     .into(),
             );
         }
@@ -1074,7 +1074,7 @@ fn run(
     );
     let mut child = command
         .spawn()
-        .map_err(|_| "The bundled audio converter could not start.".to_string())?;
+        .map_err(|_| "The bundled media converter could not start.".to_string())?;
     let started = Instant::now();
     let status = loop {
         if cancel.load(Ordering::Relaxed) || started.elapsed() > timeout {
