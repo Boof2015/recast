@@ -223,6 +223,72 @@ def patch_vorbis_single_page_timing(source):
     path.write_text(text.replace(original, corrected))
 
 
+def patch_mp4_audio_priming(source):
+    # A positive audio timestamp makes movenc emit an empty edit followed by
+    # untrimmed media. AAC re-encoding then exposes its new encoder priming.
+    # Account for that priming in both the presentation delay and media start;
+    # zero-start audio continues through the existing negative-DTS trim path.
+    path = source / 'libavformat/movenc.c'
+    original = '''    delay = av_rescale_rnd(start_dts + start_ct, mov->movie_timescale,
+                           track->timescale, AV_ROUND_DOWN);'''
+    corrected = '''    /* Recast: retain delayed AAC presentation while trimming encoder priming. */
+    if (track->par->codec_id == AV_CODEC_ID_AAC && track->par->initial_padding > 0) {
+        int64_t priming = av_rescale_q(track->par->initial_padding,
+                                      (AVRational){1, track->par->sample_rate},
+                                      (AVRational){1, track->timescale});
+        if (start_dts + start_ct + priming > 0) {
+            start_ct += priming;
+            duration -= av_rescale_rnd(priming, mov->movie_timescale,
+                                      track->timescale, AV_ROUND_DOWN);
+        }
+    }
+    delay = av_rescale_rnd(start_dts + start_ct, mov->movie_timescale,
+                           track->timescale, AV_ROUND_DOWN);'''
+    text = path.read_text()
+    if corrected not in text:
+        if text.count(original) != 1:
+            raise SystemExit('Pinned MP4 audio priming patch no longer matches; review the upstream source.')
+        path.write_text(text.replace(original, corrected))
+
+    # The demuxer's trailing-padding check also needs the presentation endpoint,
+    # not a zero-based duration. Otherwise delayed AAC exposes its final padding.
+    path = source / 'libavformat/mov.c'
+    patches = [
+        (
+            '    st->duration = FFMIN(st->duration, edit_list_dts_entry_end - start_dts);',
+            '''    /* Recast: empty audio edits are start offsets, not playable duration. */
+    st->duration = FFMIN(st->duration, edit_list_dts_entry_end - start_dts -
+                        (st->codecpar->codec_type == AVMEDIA_TYPE_AUDIO ? empty_edits_sum_duration : 0));''',
+        ),
+        (
+            '''        int64_t total = av_rescale_q(st->duration, st->time_base, (AVRational){ 1, st->codecpar->sample_rate });
+        int64_t duration = pkt->duration;
+
+        if (st->duration < pkt->pts) {
+            duration = 0;
+        } else
+            duration = FFMIN(duration, (uint64_t)st->duration - pkt->pts);''',
+            '''        /* Recast: clip AAC padding against the end of its presentation interval. */
+        int64_t end = av_sat_add64(st->duration, st->start_time == AV_NOPTS_VALUE ? 0 : st->start_time);
+        int64_t total = av_rescale_q(end, st->time_base, (AVRational){ 1, st->codecpar->sample_rate });
+        int64_t duration = pkt->duration;
+
+        if (end < pkt->pts) {
+            duration = 0;
+        } else
+            duration = FFMIN(duration, (uint64_t)end - pkt->pts);''',
+        ),
+    ]
+    text = path.read_text()
+    for original, corrected in patches:
+        if corrected in text:
+            continue
+        if text.count(original) != 1:
+            raise SystemExit('Pinned MP4 audio endpoint patch no longer matches; review the upstream source.')
+        text = text.replace(original, corrected)
+    path.write_text(text)
+
+
 def build_vorbis(work, logs, env, system, arch):
     builds = {}
     stage = work / 'install'
@@ -274,6 +340,7 @@ def main():
     source = COMMON.extract(LOCK['source'], work / 'source')
     patch_mp3_padding(source)
     patch_vorbis_single_page_timing(source)
+    patch_mp4_audio_priming(source)
     env = os.environ.copy()
     for key in ['CPATH', 'C_INCLUDE_PATH', 'CPLUS_INCLUDE_PATH', 'LIBRARY_PATH', 'SDKROOT',
                 'CFLAGS', 'CXXFLAGS', 'CPPFLAGS', 'LDFLAGS', 'LIBS', 'CC', 'CXX',

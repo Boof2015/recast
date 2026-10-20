@@ -28,6 +28,18 @@ export function QualitySetting({ value, disabled, onChange }: { value: number; d
   </div>;
 }
 
+export function SizeSetting({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  const id = useId();
+  const invalid = !/^\d+(\.\d*)?$/.test(value) || Number(value) < 0.1 || Number(value) > 10000;
+  return <div className="setting-row">
+    <label htmlFor={id}>Maximum size</label>
+    <span className="size-control">
+      <input id={id} aria-label="Maximum size (MB)" aria-invalid={invalid} type="text" inputMode="decimal" value={value} onChange={event => onChange(event.target.value)} />
+      <span title="1 MB = 1,000,000 bytes">MB</span>
+    </span>
+  </div>;
+}
+
 export function SelectSetting({ label, value, options, onChange }: { label: string; value: string; options: string[]; onChange: (value: string) => void }) {
   const id = useId();
   const trigger = useRef<HTMLButtonElement>(null);

@@ -55,13 +55,15 @@ export function useConversion() {
       const settings = groups.images;
       const audio = groups.audio;
       const video = groups.video;
+      const targetSize = video.videoMode === 'Target size';
+      const resolution = targetSize ? video.sizeResolution : video.resolution;
       const snapshot = await invoke<BatchSnapshot>(retry ? 'retry_conversion' : 'start_conversion', {
         onProgress: channel,
         ...(retry ? { allowClipping } : {}),
         ...(!retry ? { request: {
           paths: files.map(file => file.path), outputFolder,
           imageOptions: files.some(file => file.kind === 'images') ? { target: settings.target, quality: settings.quality, lossless: settings.lossless, resize: settings.resize === 'Original' ? 100 : Number.parseInt(settings.resize, 10), metadata: settings.metadata, background: settings.background, colors: settings.colors, dither: settings.dither } : null,
-          videoOptions: files.some(file => file.kind === 'video') ? { target: video.target, quality: video.quality, resolution: video.resolution === 'Original' ? null : Number.parseInt(video.resolution), acceleration: video.acceleration.toLowerCase(), frameRate: video.frameRate === 'Original' ? null : Number.parseInt(video.frameRate), metadata: video.metadata } : null,
+          videoOptions: files.some(file => file.kind === 'video') ? { target: video.target, quality: video.quality, resolution: ['Auto', 'Original'].includes(resolution) ? null : Number.parseInt(resolution), sizeLimit: targetSize ? Math.floor(Number(video.targetSize) * 1_000_000) : null, autoResolution: targetSize && resolution === 'Auto', acceleration: video.acceleration.toLowerCase(), frameRate: video.frameRate === 'Original' ? null : Number.parseInt(video.frameRate), metadata: video.metadata } : null,
           audioOptions: files.some(file => file.kind === 'audio') ? { target: audio.target, sampleRate: audio.sampleRate === 'Keep source' ? null : Number(audio.sampleRate), sampleFormat: audioSampleFormats[audio.sampleFormat], dither: audio.audioDither, metadata: audio.metadata, allowClipping: audio.allowClipping, mp3: { mode: audio.mp3Mode, quality: Number.parseInt(audio.mp3Quality.slice(1)), bitrate: Number.parseInt(audio.bitrate) }, aac: { bitrate: Number.parseInt(audio.aacBitrate) }, opus: { bitrate: Number.parseInt(audio.opusBitrate) }, vorbis: { quality: Number.parseInt(audio.vorbisQuality) } } : null,
         } } : {}),
       });

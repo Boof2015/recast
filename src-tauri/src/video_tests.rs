@@ -11,6 +11,8 @@ fn video_options() -> VideoOptions {
         frame_rate: None,
         metadata: true,
         acceleration: crate::video_backend::Acceleration::Software,
+        size_limit: None,
+        auto_resolution: false,
     }
 }
 fn ffmpeg(args: &[&str]) {
@@ -114,6 +116,341 @@ fn convert(source: &Path, options: &VideoOptions) -> crate::image_backend::Outpu
         .unwrap()
 }
 
+fn size_options(limit: u64) -> VideoOptions {
+    VideoOptions {
+        size_limit: Some(limit),
+        auto_resolution: true,
+        // Hidden Quality-mode values must not affect target-size encoding.
+        quality: 0,
+        ..video_options()
+    }
+}
+
+#[test]
+fn video_size_software_keeps_complete_cfr_vfr_rotation_audio_and_subtitles() {
+    let dir = tempfile::tempdir().unwrap();
+    for name in [
+        "apple-h264.mp4",
+        "apple-vfr-rotated.mov",
+        "video-vp9-opus.webm",
+        "video-captions.mp4",
+    ] {
+        let source = copy(name, &dir.path().join(name));
+        let before = fs::read(&source).unwrap();
+        let settings = size_options(300_000);
+        let mut phases = Vec::new();
+        let output = audio_backend()
+            .convert_video(
+                &source,
+                None,
+                &settings,
+                &AtomicBool::new(false),
+                |_, phase| {
+                    phases.push(phase.to_string());
+                },
+            )
+            .unwrap();
+        assert!(output.bytes <= 300_000, "{name}: {output:?}");
+        assert_eq!(fs::read(&source).unwrap(), before);
+        assert!(phases.iter().any(|p| p.starts_with("Analyzing size")));
+        assert!(phases.iter().any(|p| p.contains("pass 2 of 2")));
+        assert!(phases.iter().any(|p| p == "Checking MP4"));
+        let original = probe(&source);
+        let actual = probe(Path::new(&output.path));
+        assert_eq!(
+            original["streams"].as_array().unwrap().len(),
+            actual["streams"].as_array().unwrap().len()
+        );
+        assert!(output.details.as_ref().unwrap().contains("0.30 MB limit"));
+        if let Ok(folder) = std::env::var("RECAST_SIZE_EVIDENCE") {
+            fs::create_dir_all(&folder).unwrap();
+            fs::copy(&output.path, Path::new(&folder).join(format!("{name}.mp4"))).unwrap();
+        }
+        no_partials(dir.path());
+    }
+}
+
+#[test]
+fn video_size_auto_resolution_and_fixed_choices_stay_under_the_cap() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = fixture("apple-h264.mp4");
+    let large = dir.path().join("larger.mp4");
+    ffmpeg(&[
+        "-i",
+        source.to_str().unwrap(),
+        "-vf",
+        "scale=1280:960",
+        "-c:v",
+        "libx264",
+        "-threads:v",
+        "2",
+        large.to_str().unwrap(),
+    ]);
+    let mut settings = size_options(100_000);
+    let automatic = convert(&large, &settings);
+    let actual = probe(Path::new(&automatic.path));
+    assert!(actual["streams"][0]["height"].as_u64().unwrap() < 960);
+    assert!(automatic.bytes <= 100_000);
+    settings.auto_resolution = false;
+    settings.resolution = Some(480);
+    settings.frame_rate = Some(24);
+    let fixed = convert(&large, &settings);
+    let actual = probe(Path::new(&fixed.path));
+    assert_eq!(actual["streams"][0]["height"], 480);
+    assert_eq!(actual["streams"][0]["avg_frame_rate"], "24/1");
+    assert!(fixed.bytes <= 100_000);
+    no_partials(dir.path());
+}
+
+#[test]
+fn video_size_preserves_multiple_audio_tracks_offsets_and_languages() {
+    let dir = tempfile::tempdir().unwrap();
+    let silent = make_video(dir.path(), "silent.mp4", "30", None);
+    let audio = fixture("apple-aac-lc.m4a");
+    for offset in ["0.005", "0.25", "2.25"] {
+        let source = dir.path().join(format!("two-{offset}.mp4"));
+        ffmpeg(&[
+            "-i",
+            silent.to_str().unwrap(),
+            "-i",
+            audio.to_str().unwrap(),
+            "-itsoffset",
+            offset,
+            "-i",
+            audio.to_str().unwrap(),
+            "-map",
+            "0:v",
+            "-map",
+            "1:a",
+            "-map",
+            "2:a",
+            "-c",
+            "copy",
+            "-metadata:s:a:0",
+            "language=eng",
+            "-metadata:s:a:1",
+            "language=fra",
+            "-disposition:a:0",
+            "default",
+            "-disposition:a:1",
+            "0",
+            source.to_str().unwrap(),
+        ]);
+        let output = audio_backend()
+            .convert_video(
+                &source,
+                None,
+                &size_options(100_000),
+                &AtomicBool::new(false),
+                |_, phase| {
+                    if phase == "Checking MP4" {
+                        if let Ok(folder) = std::env::var("RECAST_SIZE_EVIDENCE") {
+                            fs::create_dir_all(&folder).unwrap();
+                            fs::copy(
+                                &source,
+                                Path::new(&folder).join(format!("offset-{offset}-source.mp4")),
+                            )
+                            .unwrap();
+                            let output = fs::read_dir(dir.path())
+                                .unwrap()
+                                .map(Result::unwrap)
+                                .map(|p| p.path())
+                                .find(|p| {
+                                    p.file_name()
+                                        .unwrap()
+                                        .to_string_lossy()
+                                        .starts_with(".recast-")
+                                })
+                                .unwrap();
+                            fs::copy(
+                                output,
+                                Path::new(&folder).join(format!("offset-{offset}-output.mp4")),
+                            )
+                            .unwrap();
+                        }
+                    }
+                },
+            )
+            .unwrap();
+        assert!(output.bytes <= 100_000);
+        let actual = probe(Path::new(&output.path));
+        assert_eq!(actual["streams"].as_array().unwrap().len(), 3);
+        assert_eq!(actual["streams"][1]["tags"]["language"], "eng");
+        assert_eq!(actual["streams"][2]["tags"]["language"], "fra");
+        assert_eq!(actual["streams"][2]["disposition"]["default"], 0);
+        assert_eq!(
+            actual["streams"][2]["sample_rate"],
+            probe(&source)["streams"][2]["sample_rate"]
+        );
+        no_partials(dir.path());
+    }
+}
+
+#[test]
+fn video_size_cancel_at_each_pass_and_validation_leaves_no_output() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = copy("apple-h264.mp4", &dir.path().join("source.mp4"));
+    for prefix in ["Analyzing size", "Encoding", "Checking MP4"] {
+        let cancel = AtomicBool::new(false);
+        let result = audio_backend().convert_video(
+            &source,
+            None,
+            &size_options(100_000),
+            &cancel,
+            |_, phase| {
+                if phase.starts_with(prefix) {
+                    cancel.store(true, Ordering::Relaxed);
+                }
+            },
+        );
+        assert!(
+            matches!(
+                result,
+                Err(crate::image_backend::ConversionError::Cancelled)
+            ),
+            "{prefix}: {result:?}"
+        );
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+}
+
+#[test]
+fn video_size_rejects_impossible_limits_and_rechecks_bytes_before_publication() {
+    let mut invalid = size_options(99_999);
+    assert!(invalid.validate().is_err());
+    invalid.size_limit = Some(u64::MAX);
+    assert!(invalid.validate().is_err());
+    invalid.size_limit = None;
+    assert!(invalid.validate().is_err());
+    let dir = tempfile::tempdir().unwrap();
+    let source = copy("apple-h264.mp4", &dir.path().join("source.mp4"));
+    let mut appended = false;
+    let result = audio_backend().convert_video(
+        &source,
+        None,
+        &size_options(100_000),
+        &AtomicBool::new(false),
+        |_, phase| {
+            if phase == "Checking MP4" && !appended {
+                let path = fs::read_dir(dir.path())
+                    .unwrap()
+                    .map(Result::unwrap)
+                    .map(|p| p.path())
+                    .find(|p| {
+                        p.file_name()
+                            .unwrap()
+                            .to_string_lossy()
+                            .starts_with(".recast-")
+                    })
+                    .unwrap();
+                // Model output growth after the early size check. The final gate must
+                // still refuse publication even if the complete MP4 decodes correctly.
+                let mut f = fs::OpenOptions::new().append(true).open(path).unwrap();
+                f.write_all(&vec![0; 100_001]).unwrap();
+                appended = true;
+            }
+        },
+    );
+    assert!(appended);
+    assert!(result.is_err());
+    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+}
+
+#[test]
+fn video_size_automatic_reports_encoder_and_keeps_each_output_under_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut settings = size_options(300_000);
+    settings.acceleration = crate::video_backend::Acceleration::Automatic;
+    let source = make_video(dir.path(), "source.mp4", "30", Some("copy"));
+    let output = convert(&source, &settings);
+    assert!(output.bytes <= 300_000);
+    let details = output.details.unwrap();
+    assert!(details.contains("0.30 MB limit"));
+    if let Ok(required) = std::env::var("RECAST_REQUIRE_HARDWARE") {
+        assert!(
+            details.contains(&required),
+            "Expected {required}: {details}"
+        );
+    }
+    no_partials(dir.path());
+}
+
+#[test]
+fn video_size_is_per_file_and_mixed_batch_retry_retains_successes() {
+    let dir = tempfile::tempdir().unwrap();
+    let first = make_video(dir.path(), "first.mp4", "30", None);
+    let second = make_video(dir.path(), "second.mp4", "60", None);
+    let image = copy("rgb.png", &dir.path().join("picture.png"));
+    let missing = dir.path().join("later.mp4");
+    let mut request = request(&[first, second, image, missing.clone()], dir.path());
+    request.video_options = Some(size_options(100_000));
+    let manager = JobManager::default();
+    let job = manager
+        .prepare("size-batch", request.clone(), false)
+        .unwrap();
+    run_job(&job, &backend(), &audio_backend(), |_| {});
+    let before = job.snapshot();
+    assert!(
+        before.files[..3]
+            .iter()
+            .all(|f| f.status == FileStatus::Succeeded),
+        "{before:?}"
+    );
+    for file in &before.files[..2] {
+        assert!(file.output_bytes.unwrap() <= 100_000);
+    }
+    assert_eq!(before.files[3].status, FileStatus::Failed);
+    copy("apple-h264.mp4", &missing);
+    let retry = manager.prepare("size-batch", request, true).unwrap();
+    run_job(&retry, &backend(), &audio_backend(), |_| {});
+    let after = retry.snapshot();
+    assert!(
+        after
+            .files
+            .iter()
+            .all(|f| f.status == FileStatus::Succeeded),
+        "{after:?}"
+    );
+    for (a, b) in before.files[..3].iter().zip(&after.files) {
+        assert_eq!(a.output_path, b.output_path);
+    }
+    assert!(after.files[3].output_bytes.unwrap() <= 100_000);
+    no_partials(dir.path());
+}
+
+#[test]
+fn video_size_tiny_budget_for_a_long_clip_fails_without_encoding_or_publication() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = fixture("apple-h264.mp4");
+    let long = dir.path().join("long.mp4");
+    ffmpeg(&[
+        "-stream_loop",
+        "59",
+        "-i",
+        source.to_str().unwrap(),
+        "-c",
+        "copy",
+        long.to_str().unwrap(),
+    ]);
+    let mut encoded = false;
+    let result = audio_backend().convert_video(
+        &long,
+        None,
+        &size_options(100_000),
+        &AtomicBool::new(false),
+        |_, phase| {
+            if phase.starts_with("Encoding") || phase.starts_with("Analyzing size") {
+                encoded = true;
+            }
+        },
+    );
+    assert!(
+        matches!(result, Err(crate::image_backend::ConversionError::Failed(message)) if message.contains("size limit is too small"))
+    );
+    assert!(!encoded);
+    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+}
+
 #[test]
 fn video_mp4_preserves_source_silent_frames_and_same_format_names() {
     audio_backend().verify().unwrap();
@@ -148,7 +485,11 @@ fn video_keeps_aac_tracks_and_encodes_other_audio_without_rate_or_channel_change
         assert_eq!(data["streams"][1]["codec_name"], "aac");
         assert_eq!(data["streams"][1]["sample_rate"], "48000");
         assert_eq!(data["streams"][1]["channels"], 2);
-        assert_eq!(output.warnings.is_empty(), codec == "copy");
+        assert!(output.warnings.is_empty());
+        assert_eq!(
+            output.details.unwrap().contains("encoded to AAC"),
+            codec != "copy"
+        );
     }
 }
 

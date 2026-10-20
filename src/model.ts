@@ -35,6 +35,9 @@ export interface GroupSettings {
   resolution: string;
   frameRate: string;
   acceleration: 'Automatic' | 'Software';
+  videoMode: 'Quality' | 'Target size';
+  targetSize: string;
+  sizeResolution: string;
   sampleRate: string;
   sampleFormat: string;
   audioDither: boolean;
@@ -102,8 +105,16 @@ export function defaultSettings(): Record<MediaKind, GroupSettings> {
     colors: 256, dither: true, resize: 'Original', bitrate: '192 kbps', resolution: 'Original', frameRate: 'Original', acceleration: 'Automatic',
     sampleRate: 'Keep source', sampleFormat: 'Keep source', audioDither: true, allowClipping: false,
     mp3Mode: 'vbr', mp3Quality: 'V2 · High', aacBitrate: '192 kbps', opusBitrate: '128 kbps', vorbisQuality: '5 · High',
+    videoMode: 'Quality', targetSize: '10', sizeResolution: 'Auto',
   };
   return { images: { ...settings }, audio: { ...settings }, video: { ...settings } };
+}
+
+export function videoSettingIssue(settings: GroupSettings): string | null {
+  if (settings.target !== 'mp4' || settings.videoMode !== 'Target size') return null;
+  const size = Number(settings.targetSize);
+  return !/^\d+(\.\d*)?$/.test(settings.targetSize) || !Number.isFinite(size) || size < 0.1 || size > 10000
+    ? 'Enter a maximum size from 0.1 to 10,000 MB.' : null;
 }
 
 export const audioSampleFormats: Record<string, string> = {

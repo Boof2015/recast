@@ -158,6 +158,75 @@ impl Encoder {
             }
         }
     }
+    pub(super) fn configure_bitrate(&self, command: &mut Command, bitrate: u64) {
+        match self {
+            Self::Software => {
+                command.args([
+                    "-c:v", "libx264", "-preset", "medium", "-pix_fmt", "yuv420p",
+                ]);
+            }
+            Self::VideoToolbox => {
+                command.args([
+                    "-c:v",
+                    "h264_videotoolbox",
+                    "-allow_sw",
+                    "0",
+                    "-pix_fmt",
+                    "yuv420p",
+                ]);
+            }
+            Self::Nvenc => {
+                command.args([
+                    "-c:v",
+                    "h264_nvenc",
+                    "-preset",
+                    "p4",
+                    "-rc",
+                    "vbr",
+                    "-pix_fmt",
+                    "yuv420p",
+                ]);
+            }
+            Self::Qsv => {
+                command.args([
+                    "-c:v",
+                    "h264_qsv",
+                    "-preset",
+                    "medium",
+                    "-look_ahead",
+                    "0",
+                    "-pix_fmt",
+                    "nv12",
+                ]);
+            }
+            Self::Amf => {
+                command.args([
+                    "-c:v",
+                    "h264_amf",
+                    "-usage",
+                    "transcoding",
+                    "-quality",
+                    "balanced",
+                    "-rc",
+                    "vbr_peak",
+                    "-pix_fmt",
+                    "nv12",
+                ]);
+            }
+            Self::Vaapi(_) => {
+                command.args(["-c:v", "h264_vaapi", "-rc_mode", "VBR"]);
+            }
+        }
+        command.args(["-b:v", &bitrate.to_string()]);
+        if !matches!(self, Self::VideoToolbox | Self::Software) {
+            command.args([
+                "-maxrate",
+                &(bitrate * 2).to_string(),
+                "-bufsize",
+                &(bitrate * 2).to_string(),
+            ]);
+        }
+    }
 }
 
 fn candidates(system: &str, render_nodes: Vec<PathBuf>) -> Vec<Encoder> {

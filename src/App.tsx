@@ -4,12 +4,12 @@ import { invoke, isTauri } from '@tauri-apps/api/core';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { open } from '@tauri-apps/plugin-dialog';
-import { vorbisQualities, opusBitrateChoices, aacBitrateChoices, aacRates, isLossyAudio, audioDescription, videoDescription, audioSampleFormats, audioSettingIssue, audioWillDither, defaultSettings, destinationsFor, formatCounts, kindLabels, kinds, unitLabels, mp3BitrateChoices, mp3Qualities, mp3Rates, type Appearance, type Destination, type GroupSettings, type InputFile, type MediaKind } from './model';
+import { formatBytes, videoSettingIssue, vorbisQualities, opusBitrateChoices, aacBitrateChoices, aacRates, isLossyAudio, audioDescription, videoDescription, audioSampleFormats, audioSettingIssue, audioWillDither, defaultSettings, destinationsFor, formatCounts, kindLabels, kinds, unitLabels, mp3BitrateChoices, mp3Qualities, mp3Rates, type Appearance, type Destination, type GroupSettings, type InputFile, type MediaKind } from './model';
 import { sampleFiles, type Scenario } from './fixtures';
-import { CheckboxSetting, QualitySetting, SelectSetting } from './controls';
+import { CheckboxSetting, QualitySetting, SelectSetting, SizeSetting } from './controls';
 import { ColorSetting } from './ColorSetting';
 import { GroupStack } from './GroupStack';
-import { useConversion } from './useConversion';
+import { useConversion, type FileResult } from './useConversion';
 
 const query = new URLSearchParams(window.location.search);
 const initialScenario = query.get('design');
@@ -24,6 +24,17 @@ function initialSettings() {
     settings.audio.target = 'wav';
   }
   return settings;
+}
+
+function ConversionResult({ result }: { result: FileResult }) {
+  const summary = `Converted${result.outputBytes != null ? ` · ${formatBytes(result.outputBytes)}` : ''}`;
+  return <>
+    {result.details ? <details className="file-result file-status">
+      <summary aria-label={`${summary}. Conversion details for ${result.name}`}><span>{summary}</span><ChevronDown size={12} aria-hidden="true" /></summary>
+      <p className="file-result-info">{result.details}</p>
+    </details> : <span className="file-status">{summary}</span>}
+    {result.warnings?.map((warning, index) => <span className="file-status" key={index}>{warning}</span>)}
+  </>;
 }
 
 function ScrollArea({ children, className = '', onScroll }: { children: ReactNode; className?: string; onScroll?: UIEventHandler<HTMLDivElement> }) {
@@ -47,11 +58,14 @@ function FormatSettings({ kind, destination, value, onChange, disabled, animated
   const isImage = kind === 'images';
   const isAudio = kind === 'audio' || destination.category === 'Audio only';
   const isVideo = kind === 'video' && !isAudio;
-  const hasQuality = (isImage && ['webp', 'jpeg', 'avif'].includes(destination.id)) || (isVideo && destination.id === 'mp4');
+  const targetSize = isVideo && destination.id === 'mp4' && value.videoMode === 'Target size';
+  const hasQuality = (isImage && ['webp', 'jpeg', 'avif'].includes(destination.id)) || (isVideo && destination.id === 'mp4' && !targetSize);
   const hasLossless = isImage && ['webp', 'avif'].includes(destination.id);
   const lossyInput = files.some(isLossyAudio);
   const sampleFormatLabel = (label: string) => lossyInput && label === 'Keep source' ? 'Auto' : label;
   return <div className="settings-stack">
+    {isVideo && destination.id === 'mp4' && <SelectSetting label="Mode" value={value.videoMode} options={['Quality', 'Target size']} onChange={videoMode => onChange({ videoMode: videoMode as GroupSettings['videoMode'] })} />}
+    {targetSize && <><SizeSetting value={value.targetSize} onChange={targetSize => onChange({ targetSize })} /><p className="settings-note">Limit applies to each file.</p></>}
     {hasQuality && <QualitySetting value={value.quality} disabled={hasLossless && value.lossless} onChange={(quality) => onChange({ quality })} />}
     {hasLossless && <CheckboxSetting label="Lossless" checked={value.lossless} onChange={(lossless) => onChange({ lossless })} />}
     {isImage && destination.id === 'gif' && <>
@@ -82,11 +96,12 @@ function FormatSettings({ kind, destination, value, onChange, disabled, animated
     {isVideo && destination.id !== 'gif' && <>
       <SelectSetting label="Encoding" value={value.acceleration} options={['Automatic', 'Software']} onChange={(acceleration) => onChange({ acceleration: acceleration as GroupSettings['acceleration'] })} />
       <div className="setting-row"><span>Video codec</span><span className="setting-value">{destination.id === 'webm' ? 'VP9' : 'H.264'}</span></div>
-      <SelectSetting label="Resolution" value={value.resolution} options={['Original', '1080p', '720p', '480p']} onChange={(resolution) => onChange({ resolution })} />
+      <SelectSetting label="Resolution" value={targetSize ? value.sizeResolution : value.resolution} options={[...(targetSize ? ['Auto'] : []), 'Original', '1080p', '720p', '480p']} onChange={(resolution) => onChange(targetSize ? { sizeResolution: resolution } : { resolution })} />
       <SelectSetting label="Frame rate" value={value.frameRate} options={['Original', '24 fps', '30 fps', '60 fps']} onChange={(frameRate) => onChange({ frameRate })} />
       <div className="setting-row"><span>Audio codec</span><span className="setting-value">{destination.id === 'webm' ? 'Opus' : 'AAC'}</span></div>
     </>}
-    {isVideo && destination.id === 'mp4' && <p className="settings-note">Automatic uses available hardware, with software fallback. Quality and file size vary by encoder. Keeps original timing unless a frame rate is selected. Resolution fits without upscaling. AAC audio is kept; other supported audio is encoded to AAC.</p>}
+    {targetSize && <p className="settings-note">Size is checked before saving. Audio may be re-encoded.</p>}
+    {isVideo && destination.id === 'mp4' && !targetSize && <p className="settings-note">Automatic uses available hardware, with software fallback. Quality and file size vary by encoder. Keeps original timing unless a frame rate is selected. Resolution fits without upscaling. AAC audio is kept; other supported audio is encoded to AAC.</p>}
     {isVideo && destination.id === 'gif' && <div className="range-placeholder"><Film size={24} strokeWidth={1.4} /><p>Preview & source range</p><span>To be explored in the next design pass</span></div>}
     {destination.id !== 'gif' && destination.id !== 'bmp' && <CheckboxSetting label="Keep metadata" checked={value.metadata} onChange={(metadata) => onChange({ metadata })} />}
     {isAudio && value.metadata && <p className="settings-note">Keeps supported text tags. Artwork, loudness tags, and production metadata are omitted.</p>}
@@ -161,6 +176,7 @@ export default function App() {
   const unresolvedTarget = activeSettings.target && !selectedFormat;
   const affectedFiles = unresolvedTarget ? activeFiles.filter(file => previewCatalog ? activeKind === 'video' && file.hasAudio !== true : !file.targets?.includes(activeSettings.target!)) : [];
   const activeAudioIssue = activeKind === 'audio' ? activeFiles.map(file => audioSettingIssue(file, activeSettings)).find(Boolean) : null;
+  const videoIssue = files.some(file => file.kind === 'video') ? videoSettingIssue(settings.video) : null;
   const audioSettingsValid = files.filter(file => file.kind === 'audio').every(file => !audioSettingIssue(file, settings.audio));
   const allConfigured = presentKinds.length > 0 && presentKinds.every((kind) => destinationsFor(kind, files.filter((file) => file.kind === kind), previewCatalog).some((format) => format.id === settings[kind].target));
   const folderName = outputFolder?.split(/[\\/]/).filter(Boolean).at(-1) ?? 'Same as source';
@@ -177,7 +193,7 @@ export default function App() {
   const progressTotal = Math.max(job?.files.length ?? files.length, 1);
   const progressValue = completedUnits + (measuredProgress ?? 0);
   const progressPercent = measuredProgress != null ? Math.round(progressValue / progressTotal * 100) : null;
-  const canConvert = audioSettingsValid && conversion.backendReady && !previewCatalog && allConfigured && !inspecting && !busy && files.every(file => file.path);
+  const canConvert = !videoIssue && audioSettingsValid && conversion.backendReady && !previewCatalog && allConfigured && !inspecting && !busy && files.every(file => file.path);
   const jobText = conversion.starting ? 'Preparing conversion…' : job?.status === 'cancelling' ? 'Cancelling…' : busy && job ? `Converting ${Math.min(succeeded.length + failed.length + 1, job.files.length)} of ${job.files.length}` : job ? `${succeeded.length} converted${failed.length ? ` · ${failed.length} failed` : ''}${job.status === 'cancelled' ? ' · Cancelled' : ''}` : '';
 
   useEffect(() => {
@@ -340,8 +356,8 @@ export default function App() {
                 </div>
                 {isExpanded && <ScrollArea className="file-list-scroll"><div className="file-list" id={`files-${kind}`}>{groupFiles.map((file) => {
                   const result = job?.files.find(result => result.id === file.id);
-                  const detail = result?.error ?? (result?.warnings?.length ? [file.kind === 'video' ? result.details : null, ...result.warnings].filter(Boolean).join(' · ') : undefined) ?? file.conversionIssue ?? (settings[kind].target ? file.targetIssues?.[settings[kind].target!] : undefined) ?? (result?.details ?? (result ? ({ pending: 'Waiting', running: result.phase ? `${result.phase} · ${Math.round((result.progress ?? 0) * 100)}%` : 'Converting…', succeeded: 'Converted', failed: 'Failed', cancelled: 'Cancelled' }[result.status]) : file.animated ? 'Animated' : videoDescription(file) || audioDescription(file)));
-                  return <div className="file-row" key={file.id}><div className="file-detail"><span title={file.path || file.name}>{file.name}</span>{detail && <span className="file-status">{detail}</span>}</div><button className="remove-file" disabled={busy} aria-label={`Remove ${file.name}`} onClick={() => { conversion.clear(); setFiles((current) => current.filter((item) => item.id !== file.id)); }}><X size={13} /></button></div>;
+                  const detail = result?.error ?? file.conversionIssue ?? (settings[kind].target ? file.targetIssues?.[settings[kind].target!] : undefined) ?? (result ? ({ pending: 'Waiting', running: result.phase ? `${result.phase} · ${Math.round((result.progress ?? 0) * 100)}%` : 'Converting…', succeeded: 'Converted', failed: 'Failed', cancelled: 'Cancelled' }[result.status]) : file.animated ? 'Animated' : videoDescription(file) || audioDescription(file));
+                  return <div className="file-row" key={file.id}><div className="file-detail"><span title={file.path || file.name}>{file.name}</span>{result?.status === 'succeeded' ? <ConversionResult result={result} /> : detail && <span className="file-status">{detail}</span>}</div><button className="remove-file" disabled={busy} aria-label={`Remove ${file.name}`} onClick={() => { conversion.clear(); setFiles((current) => current.filter((item) => item.id !== file.id)); }}><X size={13} /></button></div>;
                 })}</div></ScrollArea>}
               </section>;
             })}</GroupStack>
@@ -355,6 +371,7 @@ export default function App() {
             <fieldset className="conversion-fields" disabled={busy}>
             {selectedFormat ? <>
               <button className="format-back" onClick={() => updateSettings({ target: null })} aria-label="Change output format"><ArrowLeft size={18} strokeWidth={1.7} /><h2>{selectedFormat.label}</h2></button>
+              {activeKind === 'video' && videoIssue && <p className="compatibility-message" role="status">{videoIssue}</p>}
               {activeAudioIssue && <p className="compatibility-message" role="status">{activeAudioIssue}</p>}
               <FormatSettings kind={activeKind} destination={selectedFormat} value={activeSettings} onChange={updateSettings} disabled={busy} animated={activeFiles.some(file => file.animated)} files={activeFiles} />
             </> : <DestinationBrowser formats={formats} onChoose={(target) => updateSettings({ target })} />}
@@ -377,7 +394,7 @@ export default function App() {
             return <section key={kind} className="output-group" style={{ minHeight: groupSizes[kind] }}>
               <button className="group-header output-select" data-selection-key={kind} aria-label={`${kindLabels[kind]} output`} aria-pressed={activeKind === kind} onClick={() => setSelected(kind)}>
                 <span className={`output-result ${target ? '' : 'pending-output'}`}>{groupFiles.length} {target?.label ?? 'files'}</span>
-                <span className="output-detail">{job ? groupText : kind === 'audio' && !audioSettingsValid ? 'Choose compatible audio settings' : target ? outputFolder ? folderName : 'Same folder as source' : 'Choose an output format'}</span>
+                <span className="output-detail">{job ? groupText : kind === 'video' && videoIssue ? 'Choose a valid size limit' : kind === 'audio' && !audioSettingsValid ? 'Choose compatible audio settings' : target ? outputFolder ? folderName : 'Same folder as source' : 'Choose an output format'}</span>
               </button>
               {groupSucceeded.length > 0 && <div className="output-files" aria-label="Converted files">{groupSucceeded.map(file => <button className="output-file" key={file.id} title={file.outputPath!} aria-label={`Show ${file.outputPath!.split(/[\\/]/).at(-1)} in folder`} onClick={() => void revealOutput(file.outputPath!)}><Check size={13} aria-hidden="true" /><span>{file.outputPath!.split(/[\\/]/).at(-1)}</span><Folder size={13} aria-hidden="true" /></button>)}</div>}
             </section>;
@@ -404,7 +421,7 @@ export default function App() {
         {!busy && failed.some(file => file.canAllowClipping) && <button className="quiet-button" onClick={() => { setSettings(current => ({ ...current, audio: { ...current.audio, allowClipping: true } })); void runConversion(true, true); }}>Allow clipping & retry</button>}
         {!busy && job && retryCount > 0 && <button className="quiet-button" onClick={newBatch}>New batch</button>}
         <div className="folder-choice"><button className="folder-button" disabled={busy} onClick={() => void chooseFolder()} title={outputFolder ?? 'Choose an output folder'}><Folder size={16} strokeWidth={1.6} /><span>{folderName}</span><ChevronDown size={12} /></button>{outputFolder && <button className="icon-button" disabled={busy} aria-label="Use source folders" title="Use source folders" onClick={() => { conversion.clear(); setOutputFolder(null); }}><X size={12} /></button>}</div>
-        {busy ? <button className="primary-button" disabled={conversion.starting || job?.status === 'cancelling'} onClick={() => void conversion.cancel().catch(error => setNotice(String(error)))}>{job?.status === 'cancelling' ? 'Cancelling…' : 'Cancel'}</button> : job ? retryCount > 0 ? <button className="primary-button" onClick={() => void runConversion(true)}>Retry {retryCount} {retryCount === 1 ? 'file' : 'files'}</button> : <button className="primary-button" onClick={newBatch}>New batch</button> : <button className={`primary-button convert-button ${allConfigured ? 'configured' : ''}`} disabled={!canConvert} onClick={() => void runConversion()} title={previewCatalog ? 'Sample files are for design review. Add real images, audio, or video files to convert.' : !allConfigured ? 'Choose a supported output for every group.' : !audioSettingsValid ? 'Choose compatible audio settings.' : undefined}>Convert {files.length} {files.length === 1 ? 'file' : 'files'}</button>}
+        {busy ? <button className="primary-button" disabled={conversion.starting || job?.status === 'cancelling'} onClick={() => void conversion.cancel().catch(error => setNotice(String(error)))}>{job?.status === 'cancelling' ? 'Cancelling…' : 'Cancel'}</button> : job ? retryCount > 0 ? <button className="primary-button" onClick={() => void runConversion(true)}>Retry {retryCount} {retryCount === 1 ? 'file' : 'files'}</button> : <button className="primary-button" onClick={newBatch}>New batch</button> : <button className={`primary-button convert-button ${allConfigured ? 'configured' : ''}`} disabled={!canConvert} onClick={() => void runConversion()} title={previewCatalog ? 'Sample files are for design review. Add real images, audio, or video files to convert.' : !allConfigured ? 'Choose a supported output for every group.' : !audioSettingsValid ? 'Choose compatible audio settings.' : videoIssue ?? undefined}>Convert {files.length} {files.length === 1 ? 'file' : 'files'}</button>}
       </footer>
     </>}
 

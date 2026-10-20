@@ -162,6 +162,9 @@ option { background: var(--mass); color: var(--ink); }
 .range-placeholder { display: flex; flex-direction: column; align-items: center; padding: 22px 12px; border-radius: 10px; background: var(--mass); color: var(--secondary); text-align: center; }
 .range-placeholder p { margin-top: 12px; font-size: 12px; }
 .range-placeholder span { margin-top: 6px; font-size: 11px; }
+.size-control { display: flex; align-items: center; gap: 8px; background: var(--control); border-radius: 9px; padding: 6px 12px; }
+.size-control input { width: 70px; min-width: 0; border: 0; border-radius: 3px; background: transparent; color: var(--ink); text-align: right; font-variant-numeric: tabular-nums; }
+.size-control > span { color: var(--secondary); font-size: 11px; }
 .batch-footer { height: 62px; flex-shrink: 0; display: flex; align-items: center; gap: 18px; padding: 0 6px; }
 .batch-total { font-size: 11px; color: var(--secondary); margin-right: auto; flex: 1; }
 .batch-footer > button { flex-shrink: 0; }
@@ -180,6 +183,12 @@ button:disabled { cursor: default; }
 .file-detail { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; padding: 3px 0; }
 .file-detail > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .file-status { color: var(--secondary); font-size: 11px; overflow-wrap: anywhere; }
+.file-result > summary { display: flex; align-items: center; gap: 6px; width: fit-content; max-width: 100%; padding: 2px 0; border-radius: 3px; list-style: none; cursor: pointer; user-select: none; touch-action: manipulation; }
+.file-result > summary::-webkit-details-marker { display: none; }
+.file-result > summary:hover { color: var(--ink); }
+.file-result > summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.file-result[open] > summary > svg { transform: rotate(180deg); }
+.file-result-info { padding: 5px 0 2px; }
 .output-files { padding: 8px 8px 0; display: grid; gap: 2px; }
 .output-file { display: flex; align-items: center; gap: 7px; min-width: 0; padding: 7px; font-size: 11px; text-align: left; border-radius: 6px; color: var(--secondary); }
 .output-file:hover { color: var(--ink); background: var(--hover); }
