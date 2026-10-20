@@ -58,13 +58,17 @@ function FormatSettings({ kind, destination, value, onChange, disabled, animated
   const isImage = kind === 'images';
   const isAudio = kind === 'audio' || destination.category === 'Audio only';
   const isVideo = kind === 'video' && !isAudio;
-  const targetSize = isVideo && destination.id === 'mp4' && value.videoMode === 'Target size';
-  const hasQuality = (isImage && ['webp', 'jpeg', 'avif'].includes(destination.id)) || (isVideo && destination.id === 'mp4' && !targetSize);
+  const videoOutput = isVideo && ['mp4', 'mkv'].includes(destination.id);
+  const mode = destination.id === 'mkv' ? value.mkvMode : value.videoMode;
+  const targetSize = videoOutput && mode === 'Target size';
+  const copyStreams = videoOutput && mode === 'Keep original';
+  const hasQuality = (isImage && ['webp', 'jpeg', 'avif'].includes(destination.id)) || (videoOutput && mode === 'Quality');
   const hasLossless = isImage && ['webp', 'avif'].includes(destination.id);
   const lossyInput = files.some(isLossyAudio);
   const sampleFormatLabel = (label: string) => lossyInput && label === 'Keep source' ? 'Auto' : label;
   return <div className="settings-stack">
-    {isVideo && destination.id === 'mp4' && <SelectSetting label="Mode" value={value.videoMode} options={['Quality', 'Target size']} onChange={videoMode => onChange({ videoMode: videoMode as GroupSettings['videoMode'] })} />}
+    {videoOutput && <SelectSetting label="Mode" value={mode} options={[...(destination.id === 'mkv' ? ['Keep original'] : []), 'Quality', 'Target size']} onChange={mode => onChange(destination.id === 'mkv' ? { mkvMode: mode as GroupSettings['mkvMode'] } : { videoMode: mode as GroupSettings['videoMode'] })} />}
+    {copyStreams && <p className="settings-note">Copies the original tracks without re-encoding.</p>}
     {targetSize && <><SizeSetting value={value.targetSize} onChange={targetSize => onChange({ targetSize })} /><p className="settings-note">Limit applies to each file.</p></>}
     {hasQuality && <QualitySetting value={value.quality} disabled={hasLossless && value.lossless} onChange={(quality) => onChange({ quality })} />}
     {hasLossless && <CheckboxSetting label="Lossless" checked={value.lossless} onChange={(lossless) => onChange({ lossless })} />}
@@ -93,12 +97,12 @@ function FormatSettings({ kind, destination, value, onChange, disabled, animated
       </>}
       <p className="settings-note">{destination.id === 'opus' ? '48,000 Hz · resamples when needed. Keeps each file’s original channels.' : 'Keeps each file’s original channels. Sample rate is in Hz.'}</p>
     </>}
-    {isVideo && destination.id !== 'gif' && <>
+    {isVideo && destination.id !== 'gif' && !copyStreams && <>
       <SelectSetting label="Encoding" value={value.acceleration} options={['Automatic', 'Software']} onChange={(acceleration) => onChange({ acceleration: acceleration as GroupSettings['acceleration'] })} />
       <div className="setting-row"><span>Video codec</span><span className="setting-value">{destination.id === 'webm' ? 'VP9' : 'H.264'}</span></div>
       <SelectSetting label="Resolution" value={targetSize ? value.sizeResolution : value.resolution} options={[...(targetSize ? ['Auto'] : []), 'Original', '1080p', '720p', '480p']} onChange={(resolution) => onChange(targetSize ? { sizeResolution: resolution } : { resolution })} />
       <SelectSetting label="Frame rate" value={value.frameRate} options={['Original', '24 fps', '30 fps', '60 fps']} onChange={(frameRate) => onChange({ frameRate })} />
-      <div className="setting-row"><span>Audio codec</span><span className="setting-value">{destination.id === 'webm' ? 'Opus' : 'AAC'}</span></div>
+      <div className="setting-row"><span>Audio codec</span><span className="setting-value">{destination.id === 'webm' ? 'Opus' : destination.id === 'mkv' && !targetSize ? 'Keep original' : 'AAC'}</span></div>
     </>}
     {targetSize && <p className="settings-note">Size is checked before saving. Audio may be re-encoded.</p>}
     {isVideo && destination.id === 'mp4' && !targetSize && <p className="settings-note">Automatic uses available hardware, with software fallback. Quality and file size vary by encoder. Keeps original timing unless a frame rate is selected. Resolution fits without upscaling. AAC audio is kept; other supported audio is encoded to AAC.</p>}
@@ -176,7 +180,7 @@ export default function App() {
   const unresolvedTarget = activeSettings.target && !selectedFormat;
   const affectedFiles = unresolvedTarget ? activeFiles.filter(file => previewCatalog ? activeKind === 'video' && file.hasAudio !== true : !file.targets?.includes(activeSettings.target!)) : [];
   const activeAudioIssue = activeKind === 'audio' ? activeFiles.map(file => audioSettingIssue(file, activeSettings)).find(Boolean) : null;
-  const videoIssue = files.some(file => file.kind === 'video') ? videoSettingIssue(settings.video) : null;
+  const videoIssue = files.some(file => file.kind === 'video') ? videoSettingIssue(settings.video, files) : null;
   const audioSettingsValid = files.filter(file => file.kind === 'audio').every(file => !audioSettingIssue(file, settings.audio));
   const allConfigured = presentKinds.length > 0 && presentKinds.every((kind) => destinationsFor(kind, files.filter((file) => file.kind === kind), previewCatalog).some((format) => format.id === settings[kind].target));
   const folderName = outputFolder?.split(/[\\/]/).filter(Boolean).at(-1) ?? 'Same as source';
@@ -394,7 +398,7 @@ export default function App() {
             return <section key={kind} className="output-group" style={{ minHeight: groupSizes[kind] }}>
               <button className="group-header output-select" data-selection-key={kind} aria-label={`${kindLabels[kind]} output`} aria-pressed={activeKind === kind} onClick={() => setSelected(kind)}>
                 <span className={`output-result ${target ? '' : 'pending-output'}`}>{groupFiles.length} {target?.label ?? 'files'}</span>
-                <span className="output-detail">{job ? groupText : kind === 'video' && videoIssue ? 'Choose a valid size limit' : kind === 'audio' && !audioSettingsValid ? 'Choose compatible audio settings' : target ? outputFolder ? folderName : 'Same folder as source' : 'Choose an output format'}</span>
+                <span className="output-detail">{job ? groupText : kind === 'video' && videoIssue ? 'Choose compatible video settings' : kind === 'audio' && !audioSettingsValid ? 'Choose compatible audio settings' : target ? outputFolder ? folderName : 'Same folder as source' : 'Choose an output format'}</span>
               </button>
               {groupSucceeded.length > 0 && <div className="output-files" aria-label="Converted files">{groupSucceeded.map(file => <button className="output-file" key={file.id} title={file.outputPath!} aria-label={`Show ${file.outputPath!.split(/[\\/]/).at(-1)} in folder`} onClick={() => void revealOutput(file.outputPath!)}><Check size={13} aria-hidden="true" /><span>{file.outputPath!.split(/[\\/]/).at(-1)}</span><Folder size={13} aria-hidden="true" /></button>)}</div>}
             </section>;

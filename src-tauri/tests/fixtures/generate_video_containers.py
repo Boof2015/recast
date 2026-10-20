@@ -17,7 +17,8 @@ def run(*args):
 with tempfile.TemporaryDirectory() as temporary:
     subtitle = Path(temporary) / 'captions.srt'
     subtitle.write_text('1\n00:00:00,250 --> 00:00:01,250\nSynthetic caption\n', encoding='utf-8')
-    for name, codec in [('video-captions.mp4', 'mov_text'), ('video-srt.mkv', 'srt')]:
+    for name, codec in [('video-captions.mp4', 'mov_text'), ('video-srt.mkv', 'srt'),
+                        ('video-ass.mkv', 'ass'), ('video-webvtt.mkv', 'webvtt')]:
         run('-i', ROOT / 'apple-h264.mp4', '-i', subtitle, '-map', '0:v', '-map', '1:s',
             '-c:v', 'copy', '-c:s', codec, '-metadata:s:s:0', 'language=eng',
             '-disposition:s:0', 'default', ROOT / name)

@@ -34,7 +34,7 @@ def configuration(system, arch):
         '--enable-gpl', '--enable-libx264', '--enable-libmp3lame', '--enable-libopus', '--enable-libvorbis', '--pkg-config-flags=--static',
         '--enable-parser=flac,mpegaudio,aac,opus,vorbis,h264,hevc,vp8,vp9,mpeg4video,mjpeg',
         '--enable-bsf=setts',
-        '--enable-filter=aresample,aformat,anull,scale,format,fps,transpose,hflip,vflip,setsar',
+        '--enable-filter=aresample,aformat,anull,scale,format,fps,trim,transpose,hflip,vflip,setsar',
     ]
     if system == 'darwin':
         result += ['--enable-videotoolbox', '--enable-encoder=h264_videotoolbox',
@@ -289,6 +289,67 @@ def patch_mp4_audio_priming(source):
     path.write_text(text)
 
 
+
+def patch_aac_discard_padding(source):
+    # Like libopusenc, publish exact trailing samples before muxer time-base
+    # rounding. Matroska needs DiscardPadding; MP4 already uses edit durations.
+    path = source / 'libavcodec/aacenc.c'
+    original = """    ff_af_queue_remove(&s->afq, avctx->frame_size, &avpkt->pts,
+                       &avpkt->duration);
+
+    avpkt->flags |= AV_PKT_FLAG_KEY;"""
+    corrected = """    ff_af_queue_remove(&s->afq, avctx->frame_size, &avpkt->pts,
+                       &avpkt->duration);
+
+    /* Recast: retain exact final AAC length in containers with DiscardPadding. */
+    int discard_padding = avctx->frame_size - ff_samples_from_time_base(avctx, avpkt->duration);
+    if (discard_padding > 0) {
+        uint8_t *side_data = av_packet_new_side_data(avpkt, AV_PKT_DATA_SKIP_SAMPLES, 10);
+        if (!side_data)
+            return AVERROR(ENOMEM);
+        AV_WL32(side_data + 4, discard_padding);
+    }
+
+    avpkt->flags |= AV_PKT_FLAG_KEY;"""
+    text = path.read_text()
+    if corrected in text:
+        return
+    if text.count(original) != 1:
+        raise SystemExit('Pinned AAC discard-padding patch no longer matches; review the upstream source.')
+    path.write_text(text.replace(original, corrected))
+
+
+
+def patch_matroska_playable_duration(source):
+    # CodecDelay shifts block timestamps, not the end of the presentation.
+    # DiscardPadding can trim a full packet or an already shortened duration.
+    path = source / 'libavformat/matroskaenc.c'
+    original = """    mkv->duration   = FFMAX(mkv->duration,   ts + duration);
+    track->duration = FFMAX(track->duration, ts + duration);"""
+    corrected = """    /* Recast: report playable duration, excluding codec delay and padding. */
+    int64_t presentation_duration = duration;
+    if (par->codec_type == AVMEDIA_TYPE_AUDIO) {
+        size_t padding_size;
+        const uint8_t *padding = av_packet_get_side_data(pkt, AV_PKT_DATA_SKIP_SAMPLES, &padding_size);
+        int frame_samples = av_get_audio_frame_duration2(par, pkt->size);
+        if (padding && padding_size >= 10 && frame_samples > 0) {
+            int64_t valid_samples = FFMAX(0, (int64_t)frame_samples - AV_RL32(padding + 4));
+            int64_t valid_duration = av_rescale_q(valid_samples,
+                (AVRational){1, par->sample_rate}, st->time_base);
+            presentation_duration = FFMIN(duration, valid_duration);
+        }
+    }
+    int64_t presentation_end = ts - track->ts_offset + presentation_duration;
+    mkv->duration   = FFMAX(mkv->duration,   presentation_end);
+    track->duration = FFMAX(track->duration, presentation_end);"""
+    text = path.read_text()
+    if corrected in text:
+        return
+    if text.count(original) != 1:
+        raise SystemExit('Pinned Matroska duration patch no longer matches; review the upstream source.')
+    path.write_text(text.replace(original, corrected))
+
+
 def build_vorbis(work, logs, env, system, arch):
     builds = {}
     stage = work / 'install'
@@ -341,6 +402,8 @@ def main():
     patch_mp3_padding(source)
     patch_vorbis_single_page_timing(source)
     patch_mp4_audio_priming(source)
+    patch_aac_discard_padding(source)
+    patch_matroska_playable_duration(source)
     env = os.environ.copy()
     for key in ['CPATH', 'C_INCLUDE_PATH', 'CPLUS_INCLUDE_PATH', 'LIBRARY_PATH', 'SDKROOT',
                 'CFLAGS', 'CXXFLAGS', 'CPPFLAGS', 'LDFLAGS', 'LIBS', 'CC', 'CXX',

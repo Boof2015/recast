@@ -3,6 +3,9 @@ use crate::video_backend::VideoOptions;
 use serde_json::Value;
 use std::io::Write;
 
+#[path = "mkv_tests.rs"]
+mod mkv;
+
 fn video_options() -> VideoOptions {
     VideoOptions {
         target: "mp4".into(),
@@ -13,6 +16,7 @@ fn video_options() -> VideoOptions {
         acceleration: crate::video_backend::Acceleration::Software,
         size_limit: None,
         auto_resolution: false,
+        copy_streams: false,
     }
 }
 fn ffmpeg(args: &[&str]) {

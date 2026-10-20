@@ -286,12 +286,15 @@ pub fn inspect_with_audio(
                 input.kind = "video".into();
                 input.has_audio = Some(video.audio_tracks > 0);
                 input.conversion_issue = video.issue.clone();
-                input.targets = if video.issue.is_none() {
-                    vec!["mp4".into()]
-                } else {
-                    vec![]
-                };
+                input.targets.clear();
                 input.target_issues.clear();
+                for target in ["mp4", "mkv"] {
+                    if let Some(issue) = video.target_issue(target) {
+                        input.target_issues.insert(target.into(), issue);
+                    } else {
+                        input.targets.push(target.into());
+                    }
+                }
                 input.video = Some(video);
                 return Ok(input);
             }
@@ -354,8 +357,8 @@ impl InputFile {
         }
         self.video
             .as_ref()
-            .ok_or("This file is not supported video.")?;
-        Ok(())
+            .ok_or("This file is not supported video.")?
+            .require_options(options)
     }
 
     pub fn require_audio_target(

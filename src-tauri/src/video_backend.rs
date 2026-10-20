@@ -1,10 +1,12 @@
-//! MP4 conversion through the bundled media worker. All publication is no-clobber.
+//! Video conversion through the bundled media worker. All publication is no-clobber.
 use crate::{
     audio_backend::AudioBackend,
     image_backend::{check_cancel, publish, ConversionError, OutputFile},
 };
 #[path = "video_encoder.rs"]
 mod encoder;
+#[path = "video_remux.rs"]
+mod remux;
 #[path = "video_size.rs"]
 mod size;
 pub use encoder::Acceleration;
@@ -36,13 +38,23 @@ pub struct VideoOptions {
     pub size_limit: Option<u64>,
     #[serde(default)]
     pub auto_resolution: bool,
+    #[serde(default)]
+    pub copy_streams: bool,
 }
 impl VideoOptions {
     pub fn validate(&self) -> Result<(), String> {
-        if self.target != "mp4" {
-            return Err("Choose MP4 for this video conversion.".into());
+        if !["mp4", "mkv"].contains(&self.target.as_str()) {
+            return Err("Choose MP4 or MKV for this video conversion.".into());
         }
-        if self.size_limit.is_none() && !(1..=100).contains(&self.quality) {
+        if self.copy_streams
+            && (self.target != "mkv"
+                || self.size_limit.is_some()
+                || self.resolution.is_some()
+                || self.frame_rate.is_some())
+        {
+            return Err("Keep original is available for MKV without size, resolution, or frame-rate changes.".into());
+        }
+        if !self.copy_streams && self.size_limit.is_none() && !(1..=100).contains(&self.quality) {
             return Err("Choose video quality from 1 to 100.".into());
         }
         if self
@@ -97,6 +109,7 @@ pub struct VideoInfo {
     pub audio_tracks: usize,
     pub subtitle_tracks: usize,
     pub issue: Option<String>,
+    pub aac_issue: Option<String>,
     #[serde(skip)]
     probe: Value,
 }
@@ -119,10 +132,20 @@ fn video_stream(probe: &Value) -> Option<&Value> {
 }
 fn video_end(info: &VideoInfo) -> Option<f64> {
     let video = video_stream(&info.probe)?;
-    Some(
-        num(&video["duration"])? + num(&video["start_time"]).unwrap_or(0.0)
-            - num(&info.probe["format"]["start_time"]).unwrap_or(0.0),
-    )
+    let end = num(&video["duration"])
+        .map(|duration| duration + num(&video["start_time"]).unwrap_or(0.0))
+        .or_else(|| {
+            let parts: Vec<_> = video["tags"]["DURATION"].as_str()?.split(':').collect();
+            if parts.len() != 3 {
+                return None;
+            }
+            Some(
+                parts[0].parse::<f64>().ok()? * 3600.0
+                    + parts[1].parse::<f64>().ok()? * 60.0
+                    + parts[2].parse::<f64>().ok()?,
+            )
+        })?;
+    Some(end - num(&info.probe["format"]["start_time"]).unwrap_or(0.0))
 }
 fn rotation(stream: &Value) -> i32 {
     stream["side_data_list"]
@@ -192,7 +215,7 @@ fn parse(probe: Value) -> Result<Option<VideoInfo>, String> {
         reject("Chaptered video is not supported yet. Recast will not silently discard chapters.");
     }
     if !["h264", "hevc", "vp8", "vp9", "mpeg4", "mjpeg", "prores"].contains(&codec.as_str()) {
-        reject("This video codec is not supported in the first MP4 increment yet.");
+        reject("This video codec is not supported yet.");
     }
     if width < 2
         || height < 2
@@ -203,7 +226,7 @@ fn parse(probe: Value) -> Result<Option<VideoInfo>, String> {
         || fps <= 0.0
         || fps > 240.0
     {
-        reject("This MP4 build supports even video dimensions up to 8192 pixels and frame rates up to 240 fps.");
+        reject("This build supports even video dimensions up to 8192 pixels and frame rates up to 240 fps.");
     }
     if (exact_rotation - f64::from(rot)).abs() > 0.0001
         || ![0, 90, -90, 180, -180, 270, -270].contains(&rot)
@@ -219,13 +242,13 @@ fn parse(probe: Value) -> Result<Option<VideoInfo>, String> {
         || video["color_primaries"] == "bt2020"
         || video["side_data_list"].to_string().contains("DOVI")
     {
-        reject("This first MP4 output supports 8-bit SDR video. HDR, higher bit depth, and transparency need a preserving conversion path first.");
+        reject("This output supports 8-bit SDR video. HDR, higher bit depth, and transparency need a preserving conversion path first.");
     }
     if !["progressive", "unknown"].contains(&video["field_order"].as_str().unwrap_or("unknown")) {
         reject("Interlaced video is not supported yet; it needs explicit deinterlacing or preservation.");
     }
     if audios.len() > 8 {
-        reject("This MP4 build supports up to eight audio tracks.");
+        reject("This build supports up to eight audio tracks.");
     }
     for a in &audios {
         let c = a["codec_name"].as_str().unwrap_or("");
@@ -253,40 +276,19 @@ fn parse(probe: Value) -> Result<Option<VideoInfo>, String> {
         if c == "aac" && a["profile"] != "LC" {
             reject("HE-AAC and other AAC profiles need the deferred timing fix before they can be used in video conversion.");
         }
+    }
+    let aac_issue = audios.iter().find_map(|a| {
         let channels = num(&a["channels"]).unwrap_or(0.0) as u32;
-        let layout = a["channel_layout"].as_str().unwrap_or(if channels == 1 {
-            "mono"
-        } else if channels == 2 {
-            "stereo"
-        } else {
-            "unknown"
-        });
-        if ![
-            "mono",
-            "stereo",
-            "3.0",
-            "4.0",
-            "5.0",
-            "5.1",
-            "6.1(back)",
-            "7.1",
-        ]
-        .contains(&layout)
-        {
-            reject("An audio channel layout cannot be retained by AAC. Channel remapping is not part of this conversion.");
+        let layout = a["channel_layout"].as_str().unwrap_or(if channels == 1 { "mono" } else if channels == 2 { "stereo" } else { "unknown" });
+        if !["mono", "stereo", "3.0", "4.0", "5.0", "5.1", "6.1(back)", "7.1"].contains(&layout) {
+            return Some("An audio channel layout cannot be retained by AAC. Choose MKV with Keep original or Quality to retain the source audio.".to_string());
         }
         let rate = num(&a["sample_rate"]).unwrap_or(0.0) as u32;
-        if ![
-            7350, 8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000, 64000, 88200, 96000,
-        ]
-        .contains(&rate)
-        {
-            reject("An audio sample rate cannot be retained by AAC. Convert that source to a compatible rate first.");
+        if ![7350, 8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000, 64000, 88200, 96000].contains(&rate) {
+            return Some("An audio sample rate cannot be retained by AAC. Choose MKV with Keep original or Quality to retain the source audio.".to_string());
         }
-    }
-    if subtitles.iter().any(|s| s["codec_name"] != "mov_text") {
-        reject("This MP4 build can retain existing MP4 text subtitles. Other subtitle formats are not supported yet and will not be silently dropped.");
-    }
+        None
+    });
     Ok(Some(VideoInfo {
         container,
         codec,
@@ -298,8 +300,47 @@ fn parse(probe: Value) -> Result<Option<VideoInfo>, String> {
         audio_tracks: audios.len(),
         subtitle_tracks: subtitles.len(),
         issue,
+        aac_issue,
         probe,
     }))
+}
+
+impl VideoInfo {
+    pub fn target_issue(&self, target: &str) -> Option<String> {
+        if let Some(issue) = &self.issue {
+            return Some(issue.clone());
+        }
+        if target == "mp4" {
+            if let Some(issue) = &self.aac_issue {
+                return Some(issue.clone());
+            }
+            if streams(&self.probe)
+                .any(|s| s["codec_type"] == "subtitle" && s["codec_name"] != "mov_text")
+            {
+                return Some("MP4 can retain existing MP4 text subtitles. Choose MKV for supported SRT, ASS, or WebVTT subtitles.".into());
+            }
+        } else if target == "mkv"
+            && streams(&self.probe).any(|s| {
+                s["codec_type"] == "subtitle"
+                    && !["subrip", "ass", "ssa", "webvtt"]
+                        .contains(&s["codec_name"].as_str().unwrap_or(""))
+            })
+        {
+            return Some("These subtitles cannot be retained in MKV yet. MP4 text subtitles can stay in MP4.".into());
+        }
+        None
+    }
+    pub fn require_options(&self, options: &VideoOptions) -> Result<(), String> {
+        if let Some(issue) = self.target_issue(&options.target) {
+            return Err(issue);
+        }
+        if options.size_limit.is_some() {
+            if let Some(issue) = &self.aac_issue {
+                return Err(issue.clone());
+            }
+        }
+        Ok(())
+    }
 }
 
 impl AudioBackend {
@@ -448,9 +489,7 @@ impl AudioBackend {
         let info = self
             .inspect_video(&staged, cancel)?
             .ok_or_else(|| "This file does not contain a video track.".to_string())?;
-        if let Some(issue) = &info.issue {
-            return Err(issue.clone().into());
-        }
+        info.require_options(options)?;
         progress(0.0, "Checking source");
         let original =
             self.video_fingerprint(&staged, work.path(), "source", cancel, &mut |t| {
@@ -476,7 +515,7 @@ impl AudioBackend {
             .as_ref()
             .map(|p| (p.width, p.height))
             .unwrap_or_else(|| options.dimensions(&info));
-        let chosen = if options.acceleration == Acceleration::Automatic {
+        let chosen = if !options.copy_streams && options.acceleration == Acceleration::Automatic {
             progress(0.2, "Checking hardware");
             self.choose_video_encoder(work.path(), cancel)?
         } else {
@@ -493,12 +532,20 @@ impl AudioBackend {
             video_end,
             size: size.as_ref(),
         };
-        let (mut temporary, used, fallback) = encoder::with_fallback(&chosen, |encoder| {
-            if encoder == &Encoder::Software && chosen != Encoder::Software {
-                progress(0.2, "Retrying with software");
-            }
-            self.encode_video(&job, encoder, cancel, &mut progress)
-        })?;
+        let (mut temporary, used, fallback) = if options.copy_streams {
+            (
+                self.remux_video(&job, cancel, &mut progress)?,
+                Encoder::Software,
+                false,
+            )
+        } else {
+            encoder::with_fallback(&chosen, |encoder| {
+                if encoder == &Encoder::Software && chosen != Encoder::Software {
+                    progress(0.2, "Retrying with software");
+                }
+                self.encode_video(&job, encoder, cancel, &mut progress)
+            })?
+        };
         check_cancel(cancel)?;
         temporary.as_file_mut().flush().map_err(|e| e.to_string())?;
         temporary.as_file().sync_all().map_err(|e| e.to_string())?;
@@ -514,11 +561,15 @@ impl AudioBackend {
             temporary,
             source.file_stem().unwrap_or_default(),
             parent,
-            "mp4",
+            &options.target,
         )?;
         progress(1.0, "Converted");
         let converted_audio = streams(&info.probe)
-            .filter(|s| s["codec_type"] == "audio" && (size.is_some() || s["codec_name"] != "aac"))
+            .filter(|s| {
+                s["codec_type"] == "audio"
+                    && !options.copy_streams
+                    && (size.is_some() || (options.target == "mp4" && s["codec_name"] != "aac"))
+            })
             .count();
         Ok(OutputFile {
             path: path.to_string_lossy().into_owned(),
@@ -532,13 +583,21 @@ impl AudioBackend {
             },
             details: Some(
                 format!(
-                    "{width} × {height} · H.264 · {} · {} audio track(s) · {}",
+                    "{width} × {height} · {} · {} · {} audio track(s) · {}",
+                    if options.copy_streams {
+                        info.codec.to_uppercase()
+                    } else {
+                        "H.264".into()
+                    },
                     options
                         .frame_rate
                         .map(|r| format!("{r} fps"))
                         .unwrap_or("Original timing".into()),
                     info.audio_tracks,
-                    if used == Encoder::Software && options.acceleration == Acceleration::Automatic
+                    if options.copy_streams {
+                        "Copied streams"
+                    } else if used == Encoder::Software
+                        && options.acceleration == Acceleration::Automatic
                     {
                         "Software (hardware unavailable for this clip)"
                     } else {
@@ -588,8 +647,6 @@ impl AudioBackend {
             work,
             options,
             info,
-            original,
-            source_stats,
             video_end,
             ..
         } = job;
@@ -598,7 +655,7 @@ impl AudioBackend {
             .unwrap_or_else(|| options.dimensions(info));
         let temporary = tempfile::Builder::new()
             .prefix(".recast-")
-            .suffix(".mp4")
+            .suffix(&format!(".{}", options.target))
             .tempfile_in(parent)
             .map_err(|_| "The output folder is not writable.".to_string())?;
         let status = work.join("encode.progress");
@@ -657,6 +714,8 @@ impl AudioBackend {
             ];
             if let Some(rate) = options.frame_rate {
                 filters.push(format!("fps={rate}"));
+                // FPS conversion must not expose the trimmed tail of a MOV edit.
+                filters.push(format!("trim=end={video_end:.9}"));
             }
             filters.extend(encoder.filters());
             cmd.args(["-vf", &filters.join(",")]);
@@ -705,7 +764,7 @@ impl AudioBackend {
                 .filter(|s| s["codec_type"] == "audio")
                 .enumerate()
             {
-                if size.is_none() && a["codec_name"] == "aac" {
+                if size.is_none() && (options.target == "mkv" || a["codec_name"] == "aac") {
                     cmd.args([format!("-c:a:{i}"), "copy".into()]);
                 } else {
                     let rate = num(&a["sample_rate"]).unwrap() as u32;
@@ -756,19 +815,29 @@ impl AudioBackend {
                     ]);
                 }
             }
+            if options.target == "mp4" {
+                cmd.args([
+                    "-movflags",
+                    "+faststart",
+                    "-use_editlist",
+                    "1",
+                    "-movie_timescale",
+                    "1000000",
+                    "-video_track_timescale",
+                    "1000000",
+                ]);
+            } else {
+                cmd.args(["-default_mode", "passthrough"]);
+            }
             cmd.args([
-                "-movflags",
-                "+faststart",
-                "-use_editlist",
-                "1",
-                "-movie_timescale",
-                "1000000",
-                "-video_track_timescale",
-                "1000000",
                 "-avoid_negative_ts",
                 "disabled",
                 "-f",
-                "mp4",
+                if options.target == "mkv" {
+                    "matroska"
+                } else {
+                    "mp4"
+                },
                 "-progress",
             ])
             .arg(&status);
@@ -803,7 +872,7 @@ impl AudioBackend {
         }
         let actual = self
             .inspect_video(temporary.path(), cancel)?
-            .ok_or_else(|| "The MP4 has no video track.".to_string())?;
+            .ok_or_else(|| "The output has no video track.".to_string())?;
         if actual.codec != "h264"
             || actual.width != width
             || actual.height != height
@@ -811,18 +880,28 @@ impl AudioBackend {
             || actual.audio_tracks != info.audio_tracks
             || actual.subtitle_tracks != info.subtitle_tracks
         {
-            return Err("The MP4 did not retain the expected dimensions or tracks."
+            return Err(
+                "The output did not retain the expected dimensions or tracks."
+                    .to_string()
+                    .into(),
+            );
+        }
+        let precision = if options.target == "mkv" {
+            0.00101
+        } else {
+            0.00001
+        };
+        let tolerance = options
+            .frame_rate
+            .map(|rate| 1.0 / f64::from(rate) + precision)
+            .unwrap_or(precision);
+        if self::video_end(&actual).is_none_or(|end| (end - video_end).abs() > tolerance) {
+            return Err("The output did not preserve the video's visible duration."
                 .to_string()
                 .into());
         }
-        let tolerance = options
-            .frame_rate
-            .map(|rate| 1.0 / f64::from(rate) + 0.00001)
-            .unwrap_or(0.00001);
-        if self::video_end(&actual).is_none_or(|end| (end - video_end).abs() > tolerance) {
-            return Err("The MP4 did not preserve the video's visible duration."
-                .to_string()
-                .into());
+        if options.target == "mkv" {
+            self.check_retained_tracks(job, &actual, temporary.path(), cancel)?;
         }
         for (before, after) in streams(&info.probe)
             .filter(|s| s["codec_type"] == "audio")
@@ -839,21 +918,17 @@ impl AudioBackend {
                 );
             }
         }
-        progress(0.85, "Checking MP4");
+        let checking = format!("Checking {}", options.target.to_uppercase());
+        progress(0.85, &checking);
         let checked =
             self.video_fingerprint(temporary.path(), work, "output", cancel, &mut |t| {
-                progress(
-                    0.85 + (t / info.duration).clamp(0.0, 1.0) * 0.14,
-                    "Checking MP4",
-                )
+                progress(0.85 + (t / info.duration).clamp(0.0, 1.0) * 0.14, &checking)
             })?;
         validate_timing(
-            original,
+            job,
             &checked,
-            source_stats,
             &frame_stats(&checked, cancel)?,
-            options.frame_rate,
-            info.frame_rate,
+            precision,
             cancel,
         )?;
         Ok(EncodeAttempt::Validated(temporary))
@@ -878,6 +953,7 @@ struct StreamStats {
     start: f64,
     end: f64,
     duration: f64,
+    samples: u64,
 }
 fn frame_rows(
     path: &Path,
@@ -929,6 +1005,7 @@ fn frame_stats(
                 .into());
         }
         entry.count += 1;
+        entry.samples += row[3].parse::<u64>().map_err(|e| e.to_string())?;
         entry.end = pts + duration;
         entry.duration = duration;
     }
@@ -938,17 +1015,19 @@ fn frame_stats(
     Ok(stats)
 }
 fn validate_timing(
-    original: &Path,
+    job: &VideoJob<'_>,
     checked: &Path,
-    before: &BTreeMap<usize, StreamStats>,
     after: &BTreeMap<usize, StreamStats>,
-    fps: Option<u32>,
-    original_fps: f64,
+    precision: f64,
     cancel: &AtomicBool,
 ) -> Result<(), ConversionError> {
+    let before = job.source_stats;
+    let original = job.original;
+    let fps = job.options.frame_rate;
+    let original_fps = job.info.frame_rate;
     let fail = || {
         ConversionError::from(
-            "The MP4 did not preserve complete video/audio timing. No output was published."
+            "The output did not preserve complete video/audio timing. No output was published."
                 .to_string(),
         )
     };
@@ -965,6 +1044,7 @@ fn validate_timing(
         if (a.start - b.start).abs() > tolerance
             || (a.end - b.end).abs() > tolerance
             || (*i == 0 && fps.is_none() && a.count != b.count)
+            || (*i != 0 && a.samples != b.samples)
         {
             #[cfg(test)]
             eprintln!("Stream {i}: before start {} end {} count {}; after start {} end {} count {}; tolerance {tolerance}", a.start, a.end, a.count, b.start, b.end, b.count);
@@ -1002,7 +1082,7 @@ fn validate_timing(
         };
         let a = get_pts(original)?;
         let b = get_pts(checked)?;
-        if a.len() != b.len() || a.iter().zip(b).any(|(a, b)| (a - b).abs() > 0.00001) {
+        if a.len() != b.len() || a.iter().zip(b).any(|(a, b)| (a - b).abs() > precision) {
             return Err(fail());
         }
     }
