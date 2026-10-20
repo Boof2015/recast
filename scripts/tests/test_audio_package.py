@@ -22,8 +22,8 @@ class AudioPackageTests(unittest.TestCase):
         lock = json.loads((ROOT / 'scripts/audio-backend.lock.json').read_text())
         for dependency in lock['dependencies']:
             for name in dependency['licenses']:
-                (self.root / 'licenses' / f'{dependency["name"]}-{name}').write_text('notice')
-        self.manifest = {'source': lock['source'], 'dependencies': lock['dependencies'], 'system': 'linux', 'binaries': {}}
+                (self.root / 'licenses' / f'{dependency["name"]}-{Path(name).name}').write_text('notice')
+        self.manifest = {'source': lock['source'], 'dependencies': [d for d in lock['dependencies'] if 'linux' in d.get('systems', ['linux'])], 'system': 'linux', 'binaries': {}}
         for name in ['ffmpeg', 'ffprobe']:
             content = (name + ' executable fixture').encode()
             (self.root / name).write_bytes(content)
@@ -97,3 +97,18 @@ class AudioPackageTests(unittest.TestCase):
                 with self.assertRaisesRegex(SystemExit, 'notice|license'):
                     CHECK.check_audio_manifest(self.root)
                 path.write_text('notice')
+
+    def test_requires_hardware_header_and_dispatcher_notices(self):
+        for name in ['ffnvcodec-nvEncodeAPI.h', 'drm-xf86drm.c', 'va-COPYING']:
+            with self.subTest(notice=name):
+                path = self.root / 'licenses' / name
+                path.unlink()
+                with self.assertRaisesRegex(SystemExit, 'dependency license'):
+                    CHECK.check_audio_manifest(self.root)
+                path.write_text('notice')
+
+    def test_rejects_dependencies_from_the_wrong_platform(self):
+        self.manifest['system'] = 'darwin'
+        self.save()
+        with self.assertRaisesRegex(SystemExit, 'dependencies'):
+            CHECK.check_audio_manifest(self.root)

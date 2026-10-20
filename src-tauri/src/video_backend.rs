@@ -3,6 +3,10 @@ use crate::{
     audio_backend::AudioBackend,
     image_backend::{check_cancel, publish, ConversionError, OutputFile},
 };
+#[path = "video_encoder.rs"]
+mod encoder;
+pub use encoder::Acceleration;
+use encoder::Encoder;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -23,6 +27,8 @@ pub struct VideoOptions {
     pub resolution: Option<u32>,
     pub frame_rate: Option<u32>,
     pub metadata: bool,
+    #[serde(default)]
+    pub acceleration: Acceleration,
 }
 impl VideoOptions {
     pub fn validate(&self) -> Result<(), String> {
@@ -450,16 +456,104 @@ impl AudioBackend {
             );
         }
         source_video.end = video_end;
-        let mut temporary = tempfile::Builder::new()
+        let chosen = if options.acceleration == Acceleration::Automatic {
+            progress(0.2, "Checking hardware");
+            self.choose_video_encoder(work.path(), cancel)?
+        } else {
+            Encoder::Software
+        };
+        let job = VideoJob {
+            staged: &staged,
+            parent,
+            work: work.path(),
+            options,
+            info: &info,
+            original: &original,
+            source_stats: &source_stats,
+            video_end,
+        };
+        let (mut temporary, used, fallback) = encoder::with_fallback(&chosen, |encoder| {
+            if encoder == &Encoder::Software && chosen != Encoder::Software {
+                progress(0.2, "Retrying with software");
+            }
+            self.encode_video(&job, encoder, cancel, &mut progress)
+        })?;
+        check_cancel(cancel)?;
+        temporary.as_file_mut().flush().map_err(|e| e.to_string())?;
+        temporary.as_file().sync_all().map_err(|e| e.to_string())?;
+        let bytes = temporary
+            .as_file()
+            .metadata()
+            .map_err(|e| e.to_string())?
+            .len();
+        let path = publish(
+            temporary,
+            source.file_stem().unwrap_or_default(),
+            parent,
+            "mp4",
+        )?;
+        progress(1.0, "Converted");
+        let converted_audio = streams(&info.probe)
+            .filter(|s| s["codec_type"] == "audio" && s["codec_name"] != "aac")
+            .count();
+        Ok(OutputFile {
+            path: path.to_string_lossy().into_owned(),
+            bytes,
+            warnings: {
+                let mut warnings = Vec::new();
+                if converted_audio > 0 {
+                    warnings.push(format!("{converted_audio} audio track(s) encoded to AAC; original sample rates and channels retained."));
+                }
+                if fallback {
+                    warnings.push("Hardware encoding could not complete or pass verification. Converted with software instead.".into());
+                }
+                warnings
+            },
+            details: Some(format!(
+                "{width} × {height} · H.264 · {} · {} audio track(s) · {}",
+                options
+                    .frame_rate
+                    .map(|r| format!("{r} fps"))
+                    .unwrap_or("Original timing".into()),
+                info.audio_tracks,
+                if used == Encoder::Software && options.acceleration == Acceleration::Automatic {
+                    "Software (hardware unavailable for this clip)"
+                } else {
+                    used.label()
+                }
+            )),
+        })
+    }
+    fn encode_video(
+        &self,
+        job: &VideoJob<'_>,
+        encoder: &Encoder,
+        cancel: &AtomicBool,
+        progress: &mut impl FnMut(f64, &str),
+    ) -> Result<tempfile::NamedTempFile, ConversionError> {
+        let VideoJob {
+            staged,
+            parent,
+            work,
+            options,
+            info,
+            original,
+            source_stats,
+            video_end,
+        } = job;
+        let (width, height) = options.dimensions(info);
+        let temporary = tempfile::Builder::new()
             .prefix(".recast-")
             .suffix(".mp4")
             .tempfile_in(parent)
             .map_err(|_| "The output folder is not writable.".to_string())?;
-        progress(0.2, "Encoding MP4");
-        let status = work.path().join("encode.progress");
+        let phase = format!("Encoding · {}", encoder.label());
+        progress(0.2, &phase);
+        let status = work.join("encode.progress");
         let mut cmd = self.video_command();
+        encoder.initialize(&mut cmd);
         cmd.args(["-copyts", "-start_at_zero", "-i"])
-            .arg(&staged)
+            .arg(staged)
             .args([
                 "-map",
                 "0:v:0",
@@ -479,22 +573,19 @@ impl AudioBackend {
         if let Some(rate) = options.frame_rate {
             filters.push(format!("fps={rate}"));
         }
-        // 85 maps to CRF 20. Quality is a perceptual target, never a size promise.
-        let crf = 40.0 - f64::from(options.quality) * 24.0 / 100.0;
+        filters.extend(encoder.filters());
+        cmd.args(["-vf", &filters.join(",")]);
+        encoder.configure(
+            &mut cmd,
+            options.quality,
+            width,
+            height,
+            options.frame_rate.map(f64::from).unwrap_or(info.frame_rate),
+        );
         cmd.args([
-            "-vf",
-            &filters.join(","),
-            "-c:v",
-            "libx264",
-            "-preset",
-            "medium",
             // Avoid reordered DTS durations shortening VFR MP4 edit lists.
             "-bf",
             "0",
-            "-crf",
-            &format!("{crf:.2}"),
-            "-pix_fmt",
-            "yuv420p",
             "-threads:v",
             "2",
             "-enc_time_base:v",
@@ -508,12 +599,15 @@ impl AudioBackend {
             "-c:s",
             "copy",
         ]);
-        if options.frame_rate.is_none() {
-            cmd.args([
-                "-bsf:v",
-                &format!("setts=duration=min(DURATION\\,max(1\\,round({video_end:.9}/TB)-PTS))"),
-            ]);
-        }
+        // Hardware encoders may omit packet durations. Presentation timestamps
+        // plus the inspected visible endpoint define them without guessing a
+        // nominal rate for VFR. B-frames are disabled, so next PTS is ordered.
+        let duration = if let Some(rate) = options.frame_rate {
+            format!("round(1/({rate}*TB))")
+        } else {
+            format!("max(1\\,min(if(gt(NEXT_PTS\\,PTS)\\,NEXT_PTS-PTS\\,round({video_end:.9}/TB)-PTS)\\,round({video_end:.9}/TB)-PTS))")
+        };
+        cmd.args(["-bsf:v", &format!("setts=duration={duration}")]);
         for (i, a) in streams(&info.probe)
             .filter(|s| s["codec_type"] == "audio")
             .enumerate()
@@ -586,16 +680,11 @@ impl AudioBackend {
         .arg(temporary.path());
         run(
             &mut cmd,
-            &work.path().join("encode.log"),
+            &work.join("encode.log"),
             Some(&status),
             cancel,
             86400,
-            &mut |t| {
-                progress(
-                    0.2 + (t / info.duration).clamp(0.0, 1.0) * 0.65,
-                    "Encoding MP4",
-                )
-            },
+            &mut |t| progress(0.2 + (t / info.duration).clamp(0.0, 1.0) * 0.65, &phase),
         )?;
         let actual = self
             .inspect_video(temporary.path(), cancel)?
@@ -637,57 +726,34 @@ impl AudioBackend {
         }
         progress(0.85, "Checking MP4");
         let checked =
-            self.video_fingerprint(temporary.path(), work.path(), "output", cancel, &mut |t| {
+            self.video_fingerprint(temporary.path(), work, "output", cancel, &mut |t| {
                 progress(
                     0.85 + (t / info.duration).clamp(0.0, 1.0) * 0.14,
                     "Checking MP4",
                 )
             })?;
         validate_timing(
-            &original,
+            original,
             &checked,
-            &source_stats,
+            source_stats,
             &frame_stats(&checked, cancel)?,
             options.frame_rate,
             info.frame_rate,
             cancel,
         )?;
-        check_cancel(cancel)?;
-        temporary.as_file_mut().flush().map_err(|e| e.to_string())?;
-        temporary.as_file().sync_all().map_err(|e| e.to_string())?;
-        let bytes = temporary
-            .as_file()
-            .metadata()
-            .map_err(|e| e.to_string())?
-            .len();
-        let path = publish(
-            temporary,
-            source.file_stem().unwrap_or_default(),
-            parent,
-            "mp4",
-        )?;
-        progress(1.0, "Converted");
-        let converted_audio = streams(&info.probe)
-            .filter(|s| s["codec_type"] == "audio" && s["codec_name"] != "aac")
-            .count();
-        Ok(OutputFile {
-            path: path.to_string_lossy().into_owned(),
-            bytes,
-            warnings: if converted_audio > 0 {
-                vec![format!("{converted_audio} audio track(s) encoded to AAC; original sample rates and channels retained.")]
-            } else {
-                vec![]
-            },
-            details: Some(format!(
-                "{width} × {height} · H.264 · {} · {} audio track(s)",
-                options
-                    .frame_rate
-                    .map(|r| format!("{r} fps"))
-                    .unwrap_or("Original timing".into()),
-                info.audio_tracks
-            )),
-        })
+        Ok(temporary)
     }
+}
+
+struct VideoJob<'a> {
+    staged: &'a Path,
+    parent: &'a Path,
+    work: &'a Path,
+    options: &'a VideoOptions,
+    info: &'a VideoInfo,
+    original: &'a Path,
+    source_stats: &'a BTreeMap<usize, StreamStats>,
+    video_end: f64,
 }
 
 #[derive(Default)]

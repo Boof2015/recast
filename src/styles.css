@@ -163,7 +163,8 @@ option { background: var(--mass); color: var(--ink); }
 .range-placeholder p { margin-top: 12px; font-size: 12px; }
 .range-placeholder span { margin-top: 6px; font-size: 11px; }
 .batch-footer { height: 62px; flex-shrink: 0; display: flex; align-items: center; gap: 18px; padding: 0 6px; }
-.batch-total { font-size: 11px; color: var(--secondary); margin-right: auto; }
+.batch-total { font-size: 11px; color: var(--secondary); margin-right: auto; flex: 1; }
+.batch-footer > button { flex-shrink: 0; }
 .subtle-dot { color: var(--subtle); }
 .folder-button { display: flex; align-items: center; gap: 6px; color: var(--secondary); font-size: 11px; padding: 7px 0; border-radius: 5px; min-width: 0; max-width: 225px; }
 .folder-button > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -184,12 +185,29 @@ button:disabled { cursor: default; }
 .output-file:hover { color: var(--ink); background: var(--hover); }
 .output-file span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .folder-choice { display: flex; align-items: center; gap: 4px; min-width: 0; }
-.batch-total { display: flex; flex-direction: column; gap: 4px; min-width: 0; max-width: 45%; }
-.batch-total progress { width: 170px; max-width: 100%; height: 4px; appearance: none; border: 0; border-radius: 4px; overflow: hidden; background: var(--control); color: var(--secondary); }
-.batch-total progress::-webkit-progress-bar { background: var(--control); }
-.batch-total progress::-webkit-progress-value { background: var(--secondary); }
-.batch-total progress::-moz-progress-bar { background: var(--secondary); }
-.current-file { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.batch-total { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.batch-status-row, .batch-status { display: flex; align-items: baseline; gap: 12px; min-width: 0; }
+.batch-status-row { width: fit-content; max-width: 100%; }
+.batch-status { flex: 1; }
+.batch-status > span:first-child { white-space: nowrap; }
+.batch-phase { flex: 1; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.batch-percent { min-width: 3ch; text-align: right; font-variant-numeric: tabular-nums; }
+.batch-progress { width: 170px; max-width: 100%; height: 4px; position: relative; isolation: isolate; overflow: hidden; border-radius: 4px; background: var(--control); }
+.progress-activity {
+  position: absolute; inset: 0;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--secondary) 12%, transparent) 25%, color-mix(in srgb, var(--secondary) 45%, transparent) 50%, color-mix(in srgb, var(--secondary) 12%, transparent) 75%, transparent);
+  transform: translate3d(-100%, 0, 0);
+  animation: progress-sweep 2.6s cubic-bezier(.45, 0, .55, 1) infinite;
+}
+.batch-progress progress { position: relative; display: block; width: 100%; height: 100%; appearance: none; border: 0; border-radius: inherit; overflow: hidden; background: transparent; color: var(--secondary); }
+.batch-progress progress::-webkit-progress-bar { background: transparent; }
+.batch-progress progress::-webkit-progress-value { background: var(--secondary); border-radius: 4px; transition: width 200ms linear; }
+.batch-progress progress::-moz-progress-bar { background: var(--secondary); border-radius: 4px; }
+.current-file { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@keyframes progress-sweep {
+  from { transform: translate3d(-100%, 0, 0); }
+  to { transform: translate3d(100%, 0, 0); }
+}
 .empty-state { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 20px 20px 45px; }
 .empty-symbol { width: 84px; height: 79px; position: relative; margin-bottom: 20px; color: var(--muted); }
 .empty-symbol .file-back { position: absolute; top: 3px; left: 7px; transform: rotate(-13deg); color: var(--subtle); }

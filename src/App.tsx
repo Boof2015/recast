@@ -80,12 +80,13 @@ function FormatSettings({ kind, destination, value, onChange, disabled, animated
       <p className="settings-note">{destination.id === 'opus' ? '48,000 Hz · resamples when needed. Keeps each file’s original channels.' : 'Keeps each file’s original channels. Sample rate is in Hz.'}</p>
     </>}
     {isVideo && destination.id !== 'gif' && <>
+      <SelectSetting label="Encoding" value={value.acceleration} options={['Automatic', 'Software']} onChange={(acceleration) => onChange({ acceleration: acceleration as GroupSettings['acceleration'] })} />
       <div className="setting-row"><span>Video codec</span><span className="setting-value">{destination.id === 'webm' ? 'VP9' : 'H.264'}</span></div>
       <SelectSetting label="Resolution" value={value.resolution} options={['Original', '1080p', '720p', '480p']} onChange={(resolution) => onChange({ resolution })} />
       <SelectSetting label="Frame rate" value={value.frameRate} options={['Original', '24 fps', '30 fps', '60 fps']} onChange={(frameRate) => onChange({ frameRate })} />
       <div className="setting-row"><span>Audio codec</span><span className="setting-value">{destination.id === 'webm' ? 'Opus' : 'AAC'}</span></div>
     </>}
-    {isVideo && destination.id === 'mp4' && <p className="settings-note">Keeps original timing unless a frame rate is selected. Resolution fits without upscaling. AAC audio is kept; other supported audio is encoded to AAC.</p>}
+    {isVideo && destination.id === 'mp4' && <p className="settings-note">Automatic uses available hardware, with software fallback. Quality and file size vary by encoder. Keeps original timing unless a frame rate is selected. Resolution fits without upscaling. AAC audio is kept; other supported audio is encoded to AAC.</p>}
     {isVideo && destination.id === 'gif' && <div className="range-placeholder"><Film size={24} strokeWidth={1.4} /><p>Preview & source range</p><span>To be explored in the next design pass</span></div>}
     {destination.id !== 'gif' && destination.id !== 'bmp' && <CheckboxSetting label="Keep metadata" checked={value.metadata} onChange={(metadata) => onChange({ metadata })} />}
     {isAudio && value.metadata && <p className="settings-note">Keeps supported text tags. Artwork, loudness tags, and production metadata are omitted.</p>}
@@ -167,6 +168,15 @@ export default function App() {
   const failed = job?.files.filter(file => file.status === 'failed') ?? [];
   const retryCount = job ? job.files.length - succeeded.length : 0;
   const currentFile = job?.files.find(file => file.status === 'running');
+  const currentInput = files.find(file => file.id === currentFile?.id);
+  const currentTarget = currentInput && settings[currentInput.kind].target;
+  const currentFormat = currentInput && destinationsFor(currentInput.kind, [currentInput], true).find(format => format.id === currentTarget)?.label;
+  const currentPhase = busy && currentFile ? currentFile.phase || (currentFormat ? `Converting to ${currentFormat}` : 'Converting file') : '';
+  const measuredProgress = currentFile?.progress;
+  const completedUnits = succeeded.length + failed.length;
+  const progressTotal = Math.max(job?.files.length ?? files.length, 1);
+  const progressValue = completedUnits + (measuredProgress ?? 0);
+  const progressPercent = measuredProgress != null ? Math.round(progressValue / progressTotal * 100) : null;
   const canConvert = audioSettingsValid && conversion.backendReady && !previewCatalog && allConfigured && !inspecting && !busy && files.every(file => file.path);
   const jobText = conversion.starting ? 'Preparing conversion…' : job?.status === 'cancelling' ? 'Cancelling…' : busy && job ? `Converting ${Math.min(succeeded.length + failed.length + 1, job.files.length)} of ${job.files.length}` : job ? `${succeeded.length} converted${failed.length ? ` · ${failed.length} failed` : ''}${job.status === 'cancelled' ? ' · Cancelled' : ''}` : '';
 
@@ -330,7 +340,7 @@ export default function App() {
                 </div>
                 {isExpanded && <ScrollArea className="file-list-scroll"><div className="file-list" id={`files-${kind}`}>{groupFiles.map((file) => {
                   const result = job?.files.find(result => result.id === file.id);
-                  const detail = result?.error ?? (result?.warnings?.length ? result.warnings.join(' ') : undefined) ?? file.conversionIssue ?? (settings[kind].target ? file.targetIssues?.[settings[kind].target!] : undefined) ?? (result?.details ?? (result ? ({ pending: 'Waiting', running: result.phase ? `${result.phase} · ${Math.round((result.progress ?? 0) * 100)}%` : 'Converting…', succeeded: 'Converted', failed: 'Failed', cancelled: 'Cancelled' }[result.status]) : file.animated ? 'Animated' : videoDescription(file) || audioDescription(file)));
+                  const detail = result?.error ?? (result?.warnings?.length ? [file.kind === 'video' ? result.details : null, ...result.warnings].filter(Boolean).join(' · ') : undefined) ?? file.conversionIssue ?? (settings[kind].target ? file.targetIssues?.[settings[kind].target!] : undefined) ?? (result?.details ?? (result ? ({ pending: 'Waiting', running: result.phase ? `${result.phase} · ${Math.round((result.progress ?? 0) * 100)}%` : 'Converting…', succeeded: 'Converted', failed: 'Failed', cancelled: 'Cancelled' }[result.status]) : file.animated ? 'Animated' : videoDescription(file) || audioDescription(file)));
                   return <div className="file-row" key={file.id}><div className="file-detail"><span title={file.path || file.name}>{file.name}</span>{detail && <span className="file-status">{detail}</span>}</div><button className="remove-file" disabled={busy} aria-label={`Remove ${file.name}`} onClick={() => { conversion.clear(); setFiles((current) => current.filter((item) => item.id !== file.id)); }}><X size={13} /></button></div>;
                 })}</div></ScrollArea>}
               </section>;
@@ -377,7 +387,20 @@ export default function App() {
       </main>
 
       <footer className="batch-footer">
-        <div className="batch-total"><span role="status" aria-live="polite">{job || conversion.starting ? jobText : `${files.length} files`}</span>{busy && job && <progress aria-label="Batch progress" max={job.files.length} value={succeeded.length + failed.length + (currentFile?.progress ?? 0)} />}{currentFile && <span className="current-file" title={currentFile.name}>{currentFile.name}</span>}</div>
+        <div className="batch-total">
+          <div className="batch-status-row">
+            <span className="batch-status" role="status" aria-live="polite" aria-atomic="true">
+              <span>{job || conversion.starting ? jobText : `${files.length} files`}</span>
+              {currentPhase && <span className="batch-phase" title={currentPhase}>{currentPhase}</span>}
+            </span>
+            {busy && progressPercent != null && <span className="batch-percent" aria-hidden="true">{progressPercent}%</span>}
+          </div>
+          {busy && <div className="batch-progress">
+            <span className="progress-activity" aria-hidden="true" />
+            <progress aria-label="Batch progress" aria-valuetext={progressPercent != null ? `${progressPercent}% of batch complete. ${currentPhase}` : `${completedUnits} of ${progressTotal} files complete. ${currentPhase || jobText}`} max={progressTotal} value={progressValue} />
+          </div>}
+          {currentFile && <span className="current-file" title={currentFile.name}>{currentFile.name}</span>}
+        </div>
         {!busy && failed.some(file => file.canAllowClipping) && <button className="quiet-button" onClick={() => { setSettings(current => ({ ...current, audio: { ...current.audio, allowClipping: true } })); void runConversion(true, true); }}>Allow clipping & retry</button>}
         {!busy && job && retryCount > 0 && <button className="quiet-button" onClick={newBatch}>New batch</button>}
         <div className="folder-choice"><button className="folder-button" disabled={busy} onClick={() => void chooseFolder()} title={outputFolder ?? 'Choose an output folder'}><Folder size={16} strokeWidth={1.6} /><span>{folderName}</span><ChevronDown size={12} /></button>{outputFolder && <button className="icon-button" disabled={busy} aria-label="Use source folders" title="Use source folders" onClick={() => { conversion.clear(); setOutputFolder(null); }}><X size={12} /></button>}</div>

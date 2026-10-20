@@ -38,11 +38,12 @@ def check_audio_manifest(resources):
     manifest = json.loads((resources / 'build-manifest.json').read_text())
     if manifest['source'] != lock['source']:
         raise SystemExit('Packaged audio source differs from the source lock.')
-    if manifest.get('dependencies') != lock['dependencies']:
+    dependencies = [d for d in lock['dependencies'] if manifest['system'] in d.get('systems', [manifest['system']])]
+    if manifest.get('dependencies') != dependencies:
         raise SystemExit('Packaged audio dependencies differ from the source lock.')
-    for dependency in lock['dependencies']:
+    for dependency in dependencies:
         for name in dependency['licenses']:
-            if not (resources / 'licenses' / f'{dependency["name"]}-{name}').is_file():
+            if not (resources / 'licenses' / f'{dependency["name"]}-{Path(name).name}').is_file():
                 raise SystemExit(f'Missing audio dependency license notice: {dependency["name"]}/{name}')
     suffix = '.exe' if manifest['system'] == 'windows' else ''
     expected = {name + suffix for name in ['ffmpeg', 'ffprobe']}

@@ -58,6 +58,81 @@
       "licenses": [
         "COPYING"
       ]
+    },
+    {
+      "name": "ffnvcodec",
+      "version": "12.2.72.0",
+      "archive": "nv-codec-headers-12.2.72.0.tar.gz",
+      "url": "https://codeload.github.com/FFmpeg/nv-codec-headers/tar.gz/refs/tags/n12.2.72.0",
+      "sha256": "dbeaec433d93b850714760282f1d0992b1254fc3b5a6cb7d76fc1340a1e47563",
+      "licenses": [
+        "include/ffnvcodec/nvEncodeAPI.h",
+        "include/ffnvcodec/dynlink_cuda.h",
+        "include/ffnvcodec/dynlink_loader.h"
+      ],
+      "systems": [
+        "windows",
+        "linux"
+      ]
+    },
+    {
+      "name": "amf",
+      "version": "1.5.3",
+      "archive": "AMF-headers-v1.5.3.tar.gz",
+      "url": "https://github.com/GPUOpen-LibrariesAndSDKs/AMF/releases/download/v1.5.3/AMF-headers-v1.5.3.tar.gz",
+      "sha256": "0f521ad98041f8001147cded4a660127f18b1c27a801a5cd691bda1fa48381be",
+      "licenses": [
+        "AMF/core/Factory.h",
+        "AMF/components/VideoEncoderVCE.h"
+      ],
+      "systems": [
+        "windows"
+      ]
+    },
+    {
+      "name": "vpl",
+      "version": "2.16.0",
+      "archive": "libvpl-2.16.0.tar.gz",
+      "url": "https://codeload.github.com/intel/libvpl/tar.gz/refs/tags/v2.16.0",
+      "sha256": "d60931937426130ddad9f1975c010543f0da99e67edb1c6070656b7947f633b6",
+      "licenses": [
+        "LICENSE"
+      ],
+      "systems": [
+        "windows"
+      ]
+    },
+    {
+      "name": "drm",
+      "version": "2.4.124",
+      "archive": "libdrm-2.4.124.tar.xz",
+      "url": "https://dri.freedesktop.org/libdrm/libdrm-2.4.124.tar.xz",
+      "sha256": "ac36293f61ca4aafaf4b16a2a7afff312aa4f5c37c9fbd797de9e3c0863ca379",
+      "licenses": [
+        "xf86drm.c",
+        "xf86drmMode.c",
+        "xf86drmHash.c",
+        "xf86drmRandom.c",
+        "xf86drmSL.c",
+        "include/drm/drm.h",
+        "include/drm/drm_mode.h"
+      ],
+      "systems": [
+        "linux"
+      ]
+    },
+    {
+      "name": "va",
+      "version": "2.22.0",
+      "archive": "libva-2.22.0.tar.gz",
+      "url": "https://codeload.github.com/intel/libva/tar.gz/refs/tags/2.22.0",
+      "sha256": "467c418c2640a178c6baad5be2e00d569842123763b80507721ab87eb7af8735",
+      "licenses": [
+        "COPYING"
+      ],
+      "systems": [
+        "linux"
+      ]
     }
   ]
 }

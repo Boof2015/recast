@@ -11,7 +11,7 @@ COPY --from=node /usr/local/lib/node_modules /usr/local/lib/node_modules
 RUN ldconfig && ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && \
     ln -s /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 cmake pkg-config nasm libwebkit2gtk-4.1-dev libxdo-dev \
+    python3 cmake pkg-config nasm meson ninja-build libwebkit2gtk-4.1-dev libxdo-dev \
     libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf \
     xdg-utils file xvfb xauth ca-certificates && \
     rm -rf /var/lib/apt/lists/*

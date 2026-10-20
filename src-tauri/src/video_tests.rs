@@ -10,6 +10,7 @@ fn video_options() -> VideoOptions {
         resolution: None,
         frame_rate: None,
         metadata: true,
+        acceleration: crate::video_backend::Acceleration::Software,
     }
 }
 fn ffmpeg(args: &[&str]) {
@@ -459,26 +460,30 @@ fn video_cancel_during_encode_and_validation_reaps_worker_and_cleans_output() {
         "copy",
         long.to_str().unwrap(),
     ]);
-    for phase in ["Encoding MP4", "Checking MP4"] {
+    for (mode, phase) in [
+        (crate::video_backend::Acceleration::Software, "Encoding ·"),
+        (crate::video_backend::Acceleration::Software, "Checking MP4"),
+        (crate::video_backend::Acceleration::Automatic, "Encoding ·"),
+        (
+            crate::video_backend::Acceleration::Automatic,
+            "Checking MP4",
+        ),
+    ] {
+        let mut options = video_options();
+        options.acceleration = mode;
         let cancelled = AtomicBool::new(false);
         let mut reached = false;
         let result = thread::scope(|scope| {
-            audio_backend().convert_video(
-                &long,
-                None,
-                &video_options(),
-                &cancelled,
-                |_, current| {
-                    if current == phase && !reached {
-                        reached = true;
-                        let signal = &cancelled;
-                        scope.spawn(move || {
-                            thread::sleep(Duration::from_millis(25));
-                            signal.store(true, Ordering::Relaxed);
-                        });
-                    }
-                },
-            )
+            audio_backend().convert_video(&long, None, &options, &cancelled, |_, current| {
+                if current.starts_with(phase) && !reached {
+                    reached = true;
+                    let signal = &cancelled;
+                    scope.spawn(move || {
+                        thread::sleep(Duration::from_millis(25));
+                        signal.store(true, Ordering::Relaxed);
+                    });
+                }
+            })
         });
         assert!(reached, "{phase} was not exercised: {result:?}");
         assert!(
@@ -539,4 +544,89 @@ fn video_webm_opus_transcodes_and_mp4_subtitles_are_retained() {
         .require_video_target(&video_options())
         .unwrap_err()
         .contains("subtitle"));
+}
+
+#[test]
+fn video_automatic_encodes_and_reports_the_actual_engine() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut options = video_options();
+    options.acceleration = crate::video_backend::Acceleration::Automatic;
+    for name in [
+        "apple-h264.mp4",
+        "apple-vfr-rotated.mov",
+        "video-captions.mp4",
+        "video-vp9-opus.webm",
+    ] {
+        let source = copy(name, &dir.path().join(name));
+        let output = convert(&source, &options);
+        let details = output.details.as_deref().unwrap();
+        eprintln!(
+            "Automatic {name}: {details}; warnings: {:?}",
+            output.warnings
+        );
+        if let Some(folder) = std::env::var_os("RECAST_HARDWARE_EVIDENCE") {
+            fs::create_dir_all(&folder).unwrap();
+            fs::copy(
+                &output.path,
+                PathBuf::from(folder).join(format!("{name}.mp4")),
+            )
+            .unwrap();
+        }
+        if let Ok(required) = std::env::var("RECAST_REQUIRE_HARDWARE") {
+            assert!(
+                details.contains(&required),
+                "Expected hardware {required}: {output:?}"
+            );
+        }
+        assert!(
+            details.contains("Software")
+                || ["VideoToolbox", "NVENC", "Quick Sync", "AMF", "VA-API"]
+                    .iter()
+                    .any(|e| details.contains(e))
+        );
+        assert_eq!(
+            probe(Path::new(&output.path))["streams"][0]["codec_name"],
+            "h264"
+        );
+    }
+    no_partials(dir.path());
+}
+
+#[test]
+fn video_automatic_quality_extremes_resize_and_explicit_fps() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = copy("apple-h264.mp4", &dir.path().join("source.mp4"));
+    let mut options = video_options();
+    options.acceleration = crate::video_backend::Acceleration::Automatic;
+    options.resolution = Some(480);
+    options.frame_rate = Some(24);
+    for quality in [1, 100] {
+        options.quality = quality;
+        let output = convert(&source, &options);
+        eprintln!("Automatic quality {quality}: {output:?}");
+        if let Ok(required) = std::env::var("RECAST_REQUIRE_HARDWARE") {
+            assert!(
+                output.details.as_ref().unwrap().contains(&required),
+                "Expected hardware {required}: {output:?}"
+            );
+        }
+    }
+    no_partials(dir.path());
+}
+
+#[test]
+fn video_automatic_cancellation_during_hardware_selection_does_not_retry() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = copy("apple-h264.mp4", &dir.path().join("source.mp4"));
+    let cancelled = AtomicBool::new(false);
+    let mut options = video_options();
+    options.acceleration = crate::video_backend::Acceleration::Automatic;
+    let result = audio_backend().convert_video(&source, None, &options, &cancelled, |_, phase| {
+        if phase == "Checking hardware" {
+            cancelled.store(true, Ordering::Relaxed);
+        }
+    });
+    assert!(matches!(result, Err(ConversionError::Cancelled)));
+    assert!(!dir.path().join("source (1).mp4").exists());
+    no_partials(dir.path());
 }

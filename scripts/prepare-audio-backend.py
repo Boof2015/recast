@@ -37,13 +37,80 @@ def configuration(system, arch):
         '--enable-filter=aresample,aformat,anull,scale,format,fps,transpose,hflip,vflip,setsar',
     ]
     if system == 'darwin':
-        result += ['--cc=clang', f'--arch={"aarch64" if arch == "arm64" else arch}',
+        result += ['--enable-videotoolbox', '--enable-encoder=h264_videotoolbox',
+                   '--cc=clang', f'--arch={"aarch64" if arch == "arm64" else arch}',
                    f'--extra-cflags=-arch {arch} -mmacosx-version-min={LOCK["minimumMacOS"]}',
                    f'--extra-ldflags=-arch {arch} -mmacosx-version-min={LOCK["minimumMacOS"]}']
     elif system == 'windows':
-        result += ['--target-os=mingw32', '--arch=x86_64', '--cc=/ucrt64/bin/gcc',
-                   '--extra-ldflags=-static -static-libgcc']
+        result += ['--enable-ffnvcodec', '--enable-nvenc', '--enable-amf',
+                   '--enable-libvpl', '--enable-d3d11va',
+                   '--enable-encoder=h264_nvenc,h264_amf,h264_qsv',
+                   '--target-os=mingw32', '--arch=x86_64', '--cc=/ucrt64/bin/gcc',
+                   '--extra-ldflags=-static -static-libgcc -static-libstdc++']
+    else:
+        result += ['--enable-ffnvcodec', '--enable-nvenc', '--enable-vaapi', '--enable-libdrm',
+                   '--enable-encoder=h264_nvenc,h264_vaapi', '--enable-filter=hwupload']
     return result
+
+
+def build_hardware(work, logs, env, system, arch):
+    """Build only dispatchers/headers. GPU runtimes come from the OS/driver."""
+    builds = {}
+    stage = work / 'install'
+    for dependency in LOCK['dependencies']:
+        if 'systems' not in dependency or system not in dependency['systems']:
+            continue
+        name = dependency['name']
+        source = COMMON.extract(dependency, work / name)
+        config = []
+        if name == 'ffnvcodec':
+            config = [f'PREFIX={stage}', 'LIBDIR=lib']
+            COMMON.run(['make', 'install', *config], cwd=source, env=env, log=logs / 'ffnvcodec-install.log')
+        elif name == 'amf':
+            shutil.copytree(source / 'AMF', stage / 'include/AMF', dirs_exist_ok=True)
+            config = ['headers-only']
+        elif name == 'vpl':
+            build = work / 'vpl-build'
+            config = COMMON.cmake_arguments(stage, system, arch) + [
+                '-DBUILD_SHARED_LIBS=OFF', '-DBUILD_TESTS=OFF', '-DBUILD_EXAMPLES=OFF',
+                '-DINSTALL_EXAMPLES=OFF', '-DBUILD_EXPERIMENTAL=OFF',
+                # FFmpeg links C code with gcc. oneVPL leaves its pkg-config
+                # C++ runtime field empty unless the static builder supplies it.
+                '-DCXX_LIB=-lstdc++ -lwinpthread',
+            ]
+            COMMON.run(['cmake', '-S', str(source), '-B', str(build), *config], env=env, log=logs / 'vpl-configure.log')
+            COMMON.run(['cmake', '--build', str(build), '--parallel', COMMON.JOBS], env=env, log=logs / 'vpl-build.log')
+            COMMON.run(['cmake', '--install', str(build)], env=env, log=logs / 'vpl-install.log')
+        elif name in ['drm', 'va']:
+            build = work / f'{name}-build'
+            config = [f'--prefix={stage}', '--libdir=lib', '--buildtype=release',
+                      '--default-library=static', '--auto-features=disabled', '-Db_staticpic=true']
+            if name == 'drm':
+                config += ['-Dtests=false', '-Dinstall-test-programs=false', '-Dudev=false']
+            else:
+                # Upstream hardcodes shared_library; honor Meson's static mode.
+                path = source / 'va/meson.build'
+                text = path.read_text()
+                for lib in ['libva', 'libva_drm']:
+                    original = f'{lib} = shared_library('
+                    corrected = f'{lib} = library('
+                    if original in text:
+                        if text.count(original) != 1:
+                            raise SystemExit('Review pinned libva static-library patch.')
+                        text = text.replace(original, corrected)
+                    elif corrected not in text:
+                        raise SystemExit('Review pinned libva static-library patch.')
+                path.write_text(text)
+                triplet = 'aarch64-linux-gnu' if arch == 'arm64' else 'x86_64-linux-gnu'
+                config += ['-Dwith_x11=no', '-Dwith_glx=no', '-Dwith_wayland=no',
+                           '-Dwith_win32=no', '-Denable_docs=false', '-Ddisable_drm=false',
+                           '--sysconfdir=/etc',
+                           f'-Ddriverdir=/usr/lib/{triplet}/dri:/usr/lib64/dri:/usr/lib/dri']
+            COMMON.run(['meson', 'setup', str(build), str(source), *config], env=env, log=logs / f'{name}-configure.log')
+            COMMON.run(['meson', 'compile', '-C', str(build), '-j', COMMON.JOBS], env=env, log=logs / f'{name}-build.log')
+            COMMON.run(['meson', 'install', '-C', str(build)], env=env, log=logs / f'{name}-install.log')
+        builds[name] = (source, config)
+    return builds
 
 
 def build_lame(work, logs, env, system, arch):
@@ -206,6 +273,7 @@ def main():
     env['PKG_CONFIG_LIBDIR'] = str(stage / 'lib/pkgconfig')
     dependency_builds.update(build_vorbis(work, logs, env, system, arch))
     dependency_builds['x264'] = build_x264(work, logs, env, system, arch)
+    dependency_builds.update(build_hardware(work, logs, env, system, arch))
     config = configuration(system, arch)
     config += [f'--extra-cflags=-I{shlex.quote(str(stage / "include"))}',
                f'--extra-ldflags=-L{shlex.quote(str(stage / "lib"))}']
@@ -220,6 +288,12 @@ def main():
         diagnostic = source / 'ffbuild/config.log'
         if diagnostic.exists():
             shutil.copyfile(diagnostic, logs / 'ffmpeg-config.log')
+    required = {'darwin': ['videotoolbox'], 'windows': ['nvenc', 'qsv', 'amf'],
+                'linux': ['nvenc', 'vaapi']}[system]
+    components = (source / 'config_components.h').read_text()
+    for encoder in required:
+        if f'#define CONFIG_H264_{encoder.upper()}_ENCODER 1' not in components:
+            raise SystemExit(f'Required hardware encoder h264_{encoder} was not compiled in.')
     # FFmpeg's Make targets include EXESUF, which is .exe on Windows.
     programs = {name: name + ('.exe' if system == 'windows' else '') for name in ['ffmpeg', 'ffprobe']}
     COMMON.run(['make', '-j', COMMON.JOBS, *programs.values()], cwd=source, env=env, log=logs / 'build.log')
@@ -246,12 +320,13 @@ def main():
         for name in ['COPYING.LGPLv2.1', 'COPYING.GPLv2', 'LICENSE.md']:
             shutil.copyfile(source / name, notices / name)
         dependency_notices = ''
-        for dependency in LOCK['dependencies']:
+        dependencies = [d for d in LOCK['dependencies'] if system in d.get('systems', [system])]
+        for dependency in dependencies:
             name = dependency['name']
             dependency_source, dependency_config = dependency_builds[name]
             for license_name in dependency['licenses']:
-                shutil.copyfile(dependency_source / license_name, notices / f'{name}-{license_name}')
-            dependency_notices += (f'{name} source (unmodified): {dependency["url"]}\n'
+                shutil.copyfile(dependency_source / license_name, notices / f'{name}-{Path(license_name).name}')
+            dependency_notices += (f'{name} source: {dependency["url"]}\n'
                                    f'{name} SHA-256: {dependency["sha256"]}\n'
                                    f'{name} configuration: {shlex.join(dependency_config)}\n')
         (output / 'SOURCE.txt').write_text(
@@ -259,11 +334,12 @@ def main():
             'Source SHA-256: ' + LOCK['source']['sha256'] + '\n'
             'FFmpeg MP3 trailing-padding accumulation corrected by a checked source patch.\n'
             'FFmpeg single-audio-page Ogg Vorbis overlap timestamp corrected by a checked source patch.\n'
+            'On Linux, libva Meson targets honor static-library mode via a checked build-file patch.\n'
             'Rebuild with scripts/prepare-audio-backend.py.\n'
             'Configuration: ' + ' '.join(config) + '\n'
             + dependency_notices)
         manifest = {'system': system, 'architecture': arch, 'source': LOCK['source'],
-                    'dependencies': LOCK['dependencies'],
+                    'dependencies': dependencies,
                     'recipeFingerprint': fingerprint, 'configuration': config, 'binaries': binaries}
         (output / 'build-manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
         backup = OUT.with_name('.audio-backend-previous')

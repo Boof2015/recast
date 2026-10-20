@@ -34,6 +34,7 @@ export interface GroupSettings {
   vorbisQuality: string;
   resolution: string;
   frameRate: string;
+  acceleration: 'Automatic' | 'Software';
   sampleRate: string;
   sampleFormat: string;
   audioDither: boolean;
@@ -98,7 +99,7 @@ export function destinationsFor(kind: MediaKind, files: InputFile[], preview = f
 export function defaultSettings(): Record<MediaKind, GroupSettings> {
   const settings: GroupSettings = {
     target: null, quality: 85, lossless: false, metadata: true, background: '#ffffff',
-    colors: 256, dither: true, resize: 'Original', bitrate: '192 kbps', resolution: 'Original', frameRate: 'Original',
+    colors: 256, dither: true, resize: 'Original', bitrate: '192 kbps', resolution: 'Original', frameRate: 'Original', acceleration: 'Automatic',
     sampleRate: 'Keep source', sampleFormat: 'Keep source', audioDither: true, allowClipping: false,
     mp3Mode: 'vbr', mp3Quality: 'V2 · High', aacBitrate: '192 kbps', opusBitrate: '128 kbps', vorbisQuality: '5 · High',
   };
