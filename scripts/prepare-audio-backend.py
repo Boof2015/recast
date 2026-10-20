@@ -134,6 +134,10 @@ def build_vorbis(work, logs, env, system, arch):
             # Do not discover a Homebrew/MSYS shared Ogg library or headers.
             config += [f'-DOGG_LIBRARY={stage / "lib/libogg.a"}',
                        f'-DOGG_INCLUDE_DIR={stage / "include"}']
+            if system == 'linux':
+                # Vorbis 1.3.7's CMake build leaves VORBIS_LIBS unset, so its
+                # pkg-config file omits libm and FFmpeg's static link probe fails.
+                config += ['-DVORBIS_LIBS=-lm']
         COMMON.run(['cmake', '-S', str(source), '-B', str(build), *config], env=env, log=logs / f'{name}-configure.log')
         COMMON.run(['cmake', '--build', str(build), '--parallel', COMMON.JOBS], env=env, log=logs / f'{name}-build.log')
         COMMON.run(['cmake', '--install', str(build)], env=env, log=logs / f'{name}-install.log')
@@ -184,7 +188,14 @@ def main():
     if arch != host:
         config += ['--enable-cross-compile', '--target-os=darwin']
     print(f'Building FFmpeg {LOCK["source"]["version"]} for {system}/{arch}…', flush=True)
-    COMMON.run(['sh', str(source / 'configure'), *config], cwd=source, env=env, log=logs / 'configure.log')
+    try:
+        COMMON.run(['sh', str(source / 'configure'), *config], cwd=source, env=env, log=logs / 'configure.log')
+    finally:
+        # Keep the compiler/linker diagnostics in CI's uploaded log inventory,
+        # including when configure reports only a generic dependency failure.
+        diagnostic = source / 'ffbuild/config.log'
+        if diagnostic.exists():
+            shutil.copyfile(diagnostic, logs / 'ffmpeg-config.log')
     # FFmpeg's Make targets include EXESUF, which is .exe on Windows.
     programs = {name: name + ('.exe' if system == 'windows' else '') for name in ['ffmpeg', 'ffprobe']}
     COMMON.run(['make', '-j', COMMON.JOBS, *programs.values()], cwd=source, env=env, log=logs / 'build.log')
