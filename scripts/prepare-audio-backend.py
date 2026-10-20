@@ -53,6 +53,21 @@ def configuration(system, arch):
     return result
 
 
+def patch_vpl_mingw_string_functions(source):
+    # oneVPL 2.16 treats an undefined _MSC_VER as old MSVC and replaces
+    # MinGW's secure string functions with statement macros. New Windows
+    # headers use wcscpy_s in an expression, which those macros break.
+    path = source / 'libvpl/src/windows/mfx_dispatcher_defs.h'
+    original = '#if _MSC_VER < 1400'
+    corrected = '#if defined(_MSC_VER) && _MSC_VER < 1400'
+    text = path.read_text()
+    if text.count(corrected) == 1 and original not in text:
+        return
+    if text.count(original) != 1 or corrected in text:
+        raise SystemExit('Pinned oneVPL MinGW patch no longer matches; review the upstream source.')
+    path.write_text(text.replace(original, corrected))
+
+
 def build_hardware(work, logs, env, system, arch):
     """Build only dispatchers/headers. GPU runtimes come from the OS/driver."""
     builds = {}
@@ -70,6 +85,7 @@ def build_hardware(work, logs, env, system, arch):
             shutil.copytree(source / 'AMF', stage / 'include/AMF', dirs_exist_ok=True)
             config = ['headers-only']
         elif name == 'vpl':
+            patch_vpl_mingw_string_functions(source)
             build = work / 'vpl-build'
             config = COMMON.cmake_arguments(stage, system, arch) + [
                 '-DBUILD_SHARED_LIBS=OFF', '-DBUILD_TESTS=OFF', '-DBUILD_EXAMPLES=OFF',
