@@ -5,6 +5,8 @@ use std::io::Write;
 
 #[path = "mkv_tests.rs"]
 mod mkv;
+#[path = "mov_tests.rs"]
+mod mov;
 
 fn video_options() -> VideoOptions {
     VideoOptions {

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Channel, invoke, isTauri } from '@tauri-apps/api/core';
-import { audioSampleFormats, type GroupSettings, type InputFile, type MediaKind } from './model';
+import { videoModeKey, audioSampleFormats, type GroupSettings, type InputFile, type MediaKind } from './model';
 
 export interface FileResult {
   id: string;
@@ -55,7 +55,7 @@ export function useConversion() {
       const settings = groups.images;
       const audio = groups.audio;
       const video = groups.video;
-      const mode = video.target === 'mkv' ? video.mkvMode : video.videoMode;
+      const mode = video[videoModeKey(video.target)];
       const targetSize = mode === 'Target size';
       const copyStreams = mode === 'Keep original';
       const resolution = targetSize ? video.sizeResolution : video.resolution;

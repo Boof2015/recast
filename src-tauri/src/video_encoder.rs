@@ -347,7 +347,7 @@ impl AudioBackend {
                 .into());
         }
         let checked =
-            self.video_fingerprint(&output, work, "hardware-probe", cancel, &mut |_| {})?;
+            self.video_fingerprint(&output, work, "hardware-probe", 0, cancel, &mut |_| {})?;
         if frame_stats(&checked, cancel)?
             .get(&0)
             .is_none_or(|s| s.count != 3)

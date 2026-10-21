@@ -43,16 +43,16 @@ pub struct VideoOptions {
 }
 impl VideoOptions {
     pub fn validate(&self) -> Result<(), String> {
-        if !["mp4", "mkv"].contains(&self.target.as_str()) {
-            return Err("Choose MP4 or MKV for this video conversion.".into());
+        if !["mp4", "mkv", "mov"].contains(&self.target.as_str()) {
+            return Err("Choose MP4, MKV, or MOV for this video conversion.".into());
         }
         if self.copy_streams
-            && (self.target != "mkv"
+            && (!["mkv", "mov"].contains(&self.target.as_str())
                 || self.size_limit.is_some()
                 || self.resolution.is_some()
                 || self.frame_rate.is_some())
         {
-            return Err("Keep original is available for MKV without size, resolution, or frame-rate changes.".into());
+            return Err("Keep original is available for MKV and MOV without size, resolution, or frame-rate changes.".into());
         }
         if !self.copy_streams && self.size_limit.is_none() && !(1..=100).contains(&self.quality) {
             return Err("Choose video quality from 1 to 100.".into());
@@ -74,6 +74,66 @@ impl VideoOptions {
             return Err("Choose a supported resolution and frame rate.".into());
         }
         Ok(())
+    }
+    fn muxer(&self) -> &str {
+        if self.target == "mkv" {
+            "matroska"
+        } else {
+            &self.target
+        }
+    }
+    fn precision(&self) -> f64 {
+        if self.target == "mkv" {
+            0.00101
+        } else {
+            0.00001
+        }
+    }
+    fn configure_muxer(
+        &self,
+        command: &mut Command,
+        info: &VideoInfo,
+    ) -> Result<(), ConversionError> {
+        if self.target == "mkv" {
+            command.args(["-default_mode", "passthrough"]);
+        } else {
+            // A MOV edit expressed in rounded microseconds can expose an extra
+            // sample in AVFoundation. Use an exact common audio clock, with at
+            // least microsecond precision for the video timeline.
+            let mut clock = 1_u64;
+            if self.target == "mov" {
+                for audio in streams(&info.probe).filter(|s| s["codec_type"] == "audio") {
+                    let rate = num(&audio["sample_rate"]).unwrap() as u64;
+                    let (mut a, mut b) = (clock, rate);
+                    while b != 0 {
+                        (a, b) = (b, a % b);
+                    }
+                    clock = (clock / a).checked_mul(rate).filter(|value| *value <= i32::MAX as u64).ok_or_else(|| "These audio sample rates cannot share an exact MOV timeline. Choose MKV to retain them.".to_string())?;
+                }
+            }
+            clock *= 1_000_000_u64.div_ceil(clock);
+            command.args([
+                "-movflags",
+                "+faststart",
+                "-use_editlist",
+                "1",
+                "-movie_timescale",
+                &clock.to_string(),
+                "-video_track_timescale",
+                "1000000",
+                "-write_tmcd",
+                "0",
+            ]);
+        }
+        command.args(["-f", self.muxer()]);
+        Ok(())
+    }
+    fn copies_audio(&self, audio: &Value) -> bool {
+        self.copy_streams
+            || (self.size_limit.is_none()
+                && (self.target == "mkv"
+                    || audio["codec_name"] == "aac"
+                    || (self.target == "mov" && mov_audio_copy(audio))))
     }
     pub fn dimensions(&self, info: &VideoInfo) -> (u32, u32) {
         let (w, h) = if info.rotation.abs() == 90 || info.rotation.abs() == 270 {
@@ -110,6 +170,7 @@ pub struct VideoInfo {
     pub subtitle_tracks: usize,
     pub issue: Option<String>,
     pub aac_issue: Option<String>,
+    pub mov_copy_issue: Option<String>,
     #[serde(skip)]
     probe: Value,
 }
@@ -277,19 +338,8 @@ fn parse(probe: Value) -> Result<Option<VideoInfo>, String> {
             reject("HE-AAC and other AAC profiles need the deferred timing fix before they can be used in video conversion.");
         }
     }
-    let aac_issue = audios.iter().find_map(|a| {
-        let channels = num(&a["channels"]).unwrap_or(0.0) as u32;
-        let layout = a["channel_layout"].as_str().unwrap_or(if channels == 1 { "mono" } else if channels == 2 { "stereo" } else { "unknown" });
-        if !["mono", "stereo", "3.0", "4.0", "5.0", "5.1", "6.1(back)", "7.1"].contains(&layout) {
-            return Some("An audio channel layout cannot be retained by AAC. Choose MKV with Keep original or Quality to retain the source audio.".to_string());
-        }
-        let rate = num(&a["sample_rate"]).unwrap_or(0.0) as u32;
-        if ![7350, 8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000, 64000, 88200, 96000].contains(&rate) {
-            return Some("An audio sample rate cannot be retained by AAC. Choose MKV with Keep original or Quality to retain the source audio.".to_string());
-        }
-        None
-    });
-    Ok(Some(VideoInfo {
+    let aac_issue = audios.iter().find_map(|a| aac_track_issue(a));
+    let mut info = VideoInfo {
         container,
         codec,
         width,
@@ -301,11 +351,78 @@ fn parse(probe: Value) -> Result<Option<VideoInfo>, String> {
         subtitle_tracks: subtitles.len(),
         issue,
         aac_issue,
+        mov_copy_issue: None,
         probe,
-    }))
+    };
+    info.mov_copy_issue = info.copy_issue("mov");
+    Ok(Some(info))
+}
+
+fn aac_track_issue(a: &Value) -> Option<String> {
+    let layout = audio_layout(a);
+    if ![
+        "mono",
+        "stereo",
+        "3.0",
+        "4.0",
+        "5.0",
+        "5.1",
+        "6.1(back)",
+        "7.1",
+    ]
+    .contains(&layout)
+    {
+        return Some("An audio channel layout cannot be retained by AAC. Choose MKV with Keep original or Quality to retain the source audio.".to_string());
+    }
+    let rate = num(&a["sample_rate"]).unwrap_or(0.0) as u32;
+    if ![
+        7350, 8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000, 64000, 88200, 96000,
+    ]
+    .contains(&rate)
+    {
+        return Some("An audio sample rate cannot be retained by AAC. Choose MKV with Keep original or Quality to retain the source audio.".to_string());
+    }
+    None
+}
+
+fn audio_layout(audio: &Value) -> &str {
+    audio["channel_layout"]
+        .as_str()
+        .unwrap_or(match audio["channels"].as_u64() {
+            Some(1) => "mono",
+            Some(2) => "stereo",
+            _ => "unknown",
+        })
+}
+
+fn mov_audio_copy(audio: &Value) -> bool {
+    [
+        "aac",
+        "alac",
+        "pcm_u8",
+        "pcm_s16le",
+        "pcm_s24le",
+        "pcm_s32le",
+        "pcm_f32le",
+        "pcm_f64le",
+    ]
+    .contains(&audio["codec_name"].as_str().unwrap_or(""))
 }
 
 impl VideoInfo {
+    fn copy_issue(&self, target: &str) -> Option<String> {
+        if target != "mov" {
+            return None;
+        }
+        if !["h264", "hevc", "mpeg4", "mjpeg"].contains(&self.codec.as_str()) {
+            return Some("This video codec cannot be copied to MOV. Choose Quality or Target size to encode it to H.264.".into());
+        }
+        if streams(&self.probe).any(|s| s["codec_type"] == "audio" && !mov_audio_copy(s)) {
+            return Some("An audio codec cannot be copied to MOV. Choose Quality or Target size to encode it to AAC.".into());
+        }
+        None
+    }
+
     pub fn target_issue(&self, target: &str) -> Option<String> {
         if let Some(issue) = &self.issue {
             return Some(issue.clone());
@@ -318,6 +435,18 @@ impl VideoInfo {
                 .any(|s| s["codec_type"] == "subtitle" && s["codec_name"] != "mov_text")
             {
                 return Some("MP4 can retain existing MP4 text subtitles. Choose MKV for supported SRT, ASS, or WebVTT subtitles.".into());
+            }
+        } else if target == "mov" {
+            if streams(&self.probe)
+                .any(|s| s["codec_type"] == "subtitle" && s["codec_name"] != "mov_text")
+            {
+                return Some("MOV can retain existing MP4/MOV text subtitles. Choose MKV for supported SRT, ASS, or WebVTT subtitles.".into());
+            }
+            if let Some(issue) = streams(&self.probe)
+                .filter(|s| s["codec_type"] == "audio" && !mov_audio_copy(s))
+                .find_map(aac_track_issue)
+            {
+                return Some(issue);
             }
         } else if target == "mkv"
             && streams(&self.probe).any(|s| {
@@ -333,6 +462,11 @@ impl VideoInfo {
     pub fn require_options(&self, options: &VideoOptions) -> Result<(), String> {
         if let Some(issue) = self.target_issue(&options.target) {
             return Err(issue);
+        }
+        if options.copy_streams {
+            if let Some(issue) = self.copy_issue(&options.target) {
+                return Err(issue);
+            }
         }
         if options.size_limit.is_some() {
             if let Some(issue) = &self.aac_issue {
@@ -358,6 +492,7 @@ impl AudioBackend {
             "-protocol_whitelist",
             "file,pipe",
             "-show_streams",
+            "-show_data",
             "-show_format",
             "-show_chapters",
             "-of",
@@ -417,6 +552,7 @@ impl AudioBackend {
         source: &Path,
         work: &Path,
         name: &str,
+        audio_tracks: usize,
         cancel: &AtomicBool,
         progress: &mut impl FnMut(f64),
     ) -> Result<std::path::PathBuf, ConversionError> {
@@ -446,6 +582,12 @@ impl AudioBackend {
             ])
             .arg(&status)
             .arg(&output);
+        if audio_tracks > 0 {
+            // Hash the continuous PCM stream as well: containers may repacketize
+            // unchanged audio, so per-frame hashes alone are not comparable.
+            cmd.args(["-map", "0:a", "-c:a", "pcm_f64le", "-f", "streamhash"])
+                .arg(work.join(format!("{name}.audio-hashes")));
+        }
         run(
             &mut cmd,
             &work.join(format!("{name}.log")),
@@ -491,10 +633,14 @@ impl AudioBackend {
             .ok_or_else(|| "This file does not contain a video track.".to_string())?;
         info.require_options(options)?;
         progress(0.0, "Checking source");
-        let original =
-            self.video_fingerprint(&staged, work.path(), "source", cancel, &mut |t| {
-                progress((t / info.duration).clamp(0.0, 1.0) * 0.2, "Checking source")
-            })?;
+        let original = self.video_fingerprint(
+            &staged,
+            work.path(),
+            "source",
+            info.audio_tracks,
+            cancel,
+            &mut |t| progress((t / info.duration).clamp(0.0, 1.0) * 0.2, "Checking source"),
+        )?;
         let mut source_stats = frame_stats(&original, cancel)?;
         // MOV edit lists can trim the last displayed frame without changing its
         // decoded duration. Keep that visible endpoint instead of extending it.
@@ -565,11 +711,7 @@ impl AudioBackend {
         )?;
         progress(1.0, "Converted");
         let converted_audio = streams(&info.probe)
-            .filter(|s| {
-                s["codec_type"] == "audio"
-                    && !options.copy_streams
-                    && (size.is_some() || (options.target == "mp4" && s["codec_name"] != "aac"))
-            })
+            .filter(|s| s["codec_type"] == "audio" && !options.copies_audio(s))
             .count();
         Ok(OutputFile {
             path: path.to_string_lossy().into_owned(),
@@ -764,7 +906,7 @@ impl AudioBackend {
                 .filter(|s| s["codec_type"] == "audio")
                 .enumerate()
             {
-                if size.is_none() && (options.target == "mkv" || a["codec_name"] == "aac") {
+                if options.copies_audio(a) {
                     cmd.args([format!("-c:a:{i}"), "copy".into()]);
                 } else {
                     let rate = num(&a["sample_rate"]).unwrap() as u32;
@@ -815,32 +957,10 @@ impl AudioBackend {
                     ]);
                 }
             }
-            if options.target == "mp4" {
-                cmd.args([
-                    "-movflags",
-                    "+faststart",
-                    "-use_editlist",
-                    "1",
-                    "-movie_timescale",
-                    "1000000",
-                    "-video_track_timescale",
-                    "1000000",
-                ]);
-            } else {
-                cmd.args(["-default_mode", "passthrough"]);
-            }
-            cmd.args([
-                "-avoid_negative_ts",
-                "disabled",
-                "-f",
-                if options.target == "mkv" {
-                    "matroska"
-                } else {
-                    "mp4"
-                },
-                "-progress",
-            ])
-            .arg(&status);
+            self.configure_copied_audio_timing(job, &mut cmd)?;
+            options.configure_muxer(&mut cmd, info)?;
+            cmd.args(["-avoid_negative_ts", "disabled", "-progress"])
+                .arg(&status);
             if passes == 2 && pass == 1 {
                 cmd.args(["-an", "-sn", "-f", "null", "-"]);
             } else {
@@ -886,11 +1006,7 @@ impl AudioBackend {
                     .into(),
             );
         }
-        let precision = if options.target == "mkv" {
-            0.00101
-        } else {
-            0.00001
-        };
+        let precision = options.precision();
         let tolerance = options
             .frame_rate
             .map(|rate| 1.0 / f64::from(rate) + precision)
@@ -900,7 +1016,7 @@ impl AudioBackend {
                 .to_string()
                 .into());
         }
-        if options.target == "mkv" {
+        if ["mkv", "mov"].contains(&options.target.as_str()) {
             self.check_retained_tracks(job, &actual, temporary.path(), cancel)?;
         }
         for (before, after) in streams(&info.probe)
@@ -909,7 +1025,7 @@ impl AudioBackend {
         {
             if before["sample_rate"] != after["sample_rate"]
                 || before["channels"] != after["channels"]
-                || before["channel_layout"] != after["channel_layout"]
+                || audio_layout(before) != audio_layout(after)
             {
                 return Err(
                     "An audio track's rate or channel layout changed unexpectedly."
@@ -920,10 +1036,14 @@ impl AudioBackend {
         }
         let checking = format!("Checking {}", options.target.to_uppercase());
         progress(0.85, &checking);
-        let checked =
-            self.video_fingerprint(temporary.path(), work, "output", cancel, &mut |t| {
-                progress(0.85 + (t / info.duration).clamp(0.0, 1.0) * 0.14, &checking)
-            })?;
+        let checked = self.video_fingerprint(
+            temporary.path(),
+            work,
+            "output",
+            info.audio_tracks,
+            cancel,
+            &mut |t| progress(0.85 + (t / info.duration).clamp(0.0, 1.0) * 0.14, &checking),
+        )?;
         validate_timing(
             job,
             &checked,
@@ -931,6 +1051,7 @@ impl AudioBackend {
             precision,
             cancel,
         )?;
+        self.check_copied_audio(job)?;
         Ok(EncodeAttempt::Validated(temporary))
     }
 }
@@ -954,6 +1075,7 @@ struct StreamStats {
     end: f64,
     duration: f64,
     samples: u64,
+    discontinuity: f64,
 }
 fn frame_rows(
     path: &Path,
@@ -1004,6 +1126,9 @@ fn frame_stats(
                 .to_string()
                 .into());
         }
+        entry.discontinuity = entry
+            .discontinuity
+            .max((pts - entry.start - entry.samples as f64 * tb).abs());
         entry.count += 1;
         entry.samples += row[3].parse::<u64>().map_err(|e| e.to_string())?;
         entry.end = pts + duration;

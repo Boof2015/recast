@@ -4,7 +4,7 @@ import { invoke, isTauri } from '@tauri-apps/api/core';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { open } from '@tauri-apps/plugin-dialog';
-import { formatBytes, videoSettingIssue, vorbisQualities, opusBitrateChoices, aacBitrateChoices, aacRates, isLossyAudio, audioDescription, videoDescription, audioSampleFormats, audioSettingIssue, audioWillDither, defaultSettings, destinationsFor, formatCounts, kindLabels, kinds, unitLabels, mp3BitrateChoices, mp3Qualities, mp3Rates, type Appearance, type Destination, type GroupSettings, type InputFile, type MediaKind } from './model';
+import { videoModeKey, formatBytes, videoSettingIssue, vorbisQualities, opusBitrateChoices, aacBitrateChoices, aacRates, isLossyAudio, audioDescription, videoDescription, audioSampleFormats, audioSettingIssue, audioWillDither, defaultSettings, destinationsFor, formatCounts, kindLabels, kinds, unitLabels, mp3BitrateChoices, mp3Qualities, mp3Rates, type Appearance, type Destination, type GroupSettings, type InputFile, type MediaKind } from './model';
 import { sampleFiles, type Scenario } from './fixtures';
 import { CheckboxSetting, QualitySetting, SelectSetting, SizeSetting } from './controls';
 import { ColorSetting } from './ColorSetting';
@@ -58,8 +58,9 @@ function FormatSettings({ kind, destination, value, onChange, disabled, animated
   const isImage = kind === 'images';
   const isAudio = kind === 'audio' || destination.category === 'Audio only';
   const isVideo = kind === 'video' && !isAudio;
-  const videoOutput = isVideo && ['mp4', 'mkv'].includes(destination.id);
-  const mode = destination.id === 'mkv' ? value.mkvMode : value.videoMode;
+  const videoOutput = isVideo && ['mp4', 'mkv', 'mov'].includes(destination.id);
+  const modeKey = videoModeKey(destination.id);
+  const mode = value[modeKey];
   const targetSize = videoOutput && mode === 'Target size';
   const copyStreams = videoOutput && mode === 'Keep original';
   const hasQuality = (isImage && ['webp', 'jpeg', 'avif'].includes(destination.id)) || (videoOutput && mode === 'Quality');
@@ -67,7 +68,7 @@ function FormatSettings({ kind, destination, value, onChange, disabled, animated
   const lossyInput = files.some(isLossyAudio);
   const sampleFormatLabel = (label: string) => lossyInput && label === 'Keep source' ? 'Auto' : label;
   return <div className="settings-stack">
-    {videoOutput && <SelectSetting label="Mode" value={mode} options={[...(destination.id === 'mkv' ? ['Keep original'] : []), 'Quality', 'Target size']} onChange={mode => onChange(destination.id === 'mkv' ? { mkvMode: mode as GroupSettings['mkvMode'] } : { videoMode: mode as GroupSettings['videoMode'] })} />}
+    {videoOutput && <SelectSetting label="Mode" value={mode} options={[...(['mkv', 'mov'].includes(destination.id) ? ['Keep original'] : []), 'Quality', 'Target size']} onChange={mode => onChange({ [modeKey]: mode })} />}
     {copyStreams && <p className="settings-note">Copies the original tracks without re-encoding.</p>}
     {targetSize && <><SizeSetting value={value.targetSize} onChange={targetSize => onChange({ targetSize })} /><p className="settings-note">Limit applies to each file.</p></>}
     {hasQuality && <QualitySetting value={value.quality} disabled={hasLossless && value.lossless} onChange={(quality) => onChange({ quality })} />}
@@ -102,7 +103,7 @@ function FormatSettings({ kind, destination, value, onChange, disabled, animated
       <div className="setting-row"><span>Video codec</span><span className="setting-value">{destination.id === 'webm' ? 'VP9' : 'H.264'}</span></div>
       <SelectSetting label="Resolution" value={targetSize ? value.sizeResolution : value.resolution} options={[...(targetSize ? ['Auto'] : []), 'Original', '1080p', '720p', '480p']} onChange={(resolution) => onChange(targetSize ? { sizeResolution: resolution } : { resolution })} />
       <SelectSetting label="Frame rate" value={value.frameRate} options={['Original', '24 fps', '30 fps', '60 fps']} onChange={(frameRate) => onChange({ frameRate })} />
-      <div className="setting-row"><span>Audio codec</span><span className="setting-value">{destination.id === 'webm' ? 'Opus' : destination.id === 'mkv' && !targetSize ? 'Keep original' : 'AAC'}</span></div>
+      <div className="setting-row"><span>Audio codec</span><span className="setting-value">{destination.id === 'webm' ? 'Opus' : destination.id === 'mkv' && !targetSize ? 'Keep original' : destination.id === 'mov' && !targetSize ? 'Original / AAC' : 'AAC'}</span></div>
     </>}
     {targetSize && <p className="settings-note">Size is checked before saving. Audio may be re-encoded.</p>}
     {isVideo && destination.id === 'mp4' && !targetSize && <p className="settings-note">Automatic uses available hardware, with software fallback. Quality and file size vary by encoder. Keeps original timing unless a frame rate is selected. Resolution fits without upscaling. AAC audio is kept; other supported audio is encoded to AAC.</p>}

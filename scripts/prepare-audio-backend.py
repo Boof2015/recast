@@ -28,12 +28,12 @@ def configuration(system, arch):
         '--disable-avdevice', '--enable-swscale', '--disable-ffplay', '--disable-x86asm',
         '--enable-ffmpeg', '--enable-ffprobe', '--enable-protocol=file,pipe',
         '--enable-demuxer=wav,flac,mov,matroska,avi,rawvideo,mp3,aac,ogg,pcm_f64le',
-        '--enable-muxer=wav,flac,ipod,mp4,mov,matroska,rawvideo,framehash,mp3,opus,ogg,pcm_f64le,pcm_s32le,null',
+        '--enable-muxer=wav,flac,ipod,mp4,mov,matroska,rawvideo,framehash,streamhash,mp3,opus,ogg,pcm_f64le,pcm_s32le,null',
         f'--enable-decoder={pcm},flac,alac,mp3float,aac,opus,vorbis,h264,hevc,vp8,vp9,mpeg4,mjpeg,prores,rawvideo,mov_text',
         f'--enable-encoder={pcm},flac,alac,libmp3lame,aac,libopus,libvorbis,libx264,rawvideo,wrapped_avframe',
         '--enable-gpl', '--enable-libx264', '--enable-libmp3lame', '--enable-libopus', '--enable-libvorbis', '--pkg-config-flags=--static',
         '--enable-parser=flac,mpegaudio,aac,opus,vorbis,h264,hevc,vp8,vp9,mpeg4video,mjpeg',
-        '--enable-bsf=setts',
+        '--enable-bsf=setts,pcm_rechunk',
         '--enable-filter=aresample,aformat,anull,scale,format,fps,trim,transpose,hflip,vflip,setsar',
     ]
     if system == 'darwin':
@@ -277,6 +277,14 @@ def patch_mp4_audio_priming(source):
             duration = 0;
         } else
             duration = FFMIN(duration, (uint64_t)end - pkt->pts);''',
+        ),
+        (
+            '''                ffstream(st)->index_entries[sc->current_sample].timestamp : st->duration;''',
+            '''                ffstream(st)->index_entries[sc->current_sample].timestamp :
+                /* Recast: the final PCM packet also ends on the presentation clock. */
+                av_sat_add64(st->duration,
+                    st->codecpar->codec_type == AVMEDIA_TYPE_AUDIO && st->start_time != AV_NOPTS_VALUE
+                        ? st->start_time : 0);''',
         ),
     ]
     text = path.read_text()

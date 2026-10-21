@@ -288,7 +288,7 @@ pub fn inspect_with_audio(
                 input.conversion_issue = video.issue.clone();
                 input.targets.clear();
                 input.target_issues.clear();
-                for target in ["mp4", "mkv"] {
+                for target in ["mp4", "mkv", "mov"] {
                     if let Some(issue) = video.target_issue(target) {
                         input.target_issues.insert(target.into(), issue);
                     } else {
