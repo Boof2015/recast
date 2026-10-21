@@ -1,4 +1,5 @@
 use crate::audio_backend::{AudioBackend, AudioOptions};
+use crate::audio_extract::VideoAudioOptions;
 use crate::image_backend::{ConversionError, ImageBackend, ImageOptions};
 use crate::video_backend::VideoOptions;
 use serde::{Deserialize, Serialize};
@@ -20,6 +21,7 @@ pub struct ConversionRequest {
     pub image_options: Option<ImageOptions>,
     pub audio_options: Option<AudioOptions>,
     pub video_options: Option<VideoOptions>,
+    pub video_audio_options: Option<VideoAudioOptions>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -189,6 +191,15 @@ impl JobManager {
                     options.allow_clipping = true;
                 }
             }
+            if request
+                .video_audio_options
+                .as_ref()
+                .is_some_and(|options| options.audio.allow_clipping)
+            {
+                if let Some(options) = &mut saved.video_audio_options {
+                    options.audio.allow_clipping = true;
+                }
+            }
             (saved, files)
         } else {
             if let Some(options) = &request.image_options {
@@ -200,9 +211,16 @@ impl JobManager {
             if let Some(options) = &request.video_options {
                 options.validate()?;
             }
+            if let Some(options) = &request.video_audio_options {
+                options.audio.validate()?;
+                if request.video_options.is_some() {
+                    return Err("Choose one output for the video group.".into());
+                }
+            }
             if request.image_options.is_none()
                 && request.audio_options.is_none()
                 && request.video_options.is_none()
+                && request.video_audio_options.is_none()
             {
                 return Err("Choose an output format before converting.".into());
             }
@@ -300,6 +318,16 @@ pub fn run_job(
                         .ok_or_else(|| "Choose an audio output format.".to_string())?,
                     &job.cancel,
                 ),
+                "video" if job.request.video_audio_options.is_some() => {
+                    let options = job.request.video_audio_options.as_ref().unwrap();
+                    audio.extract_audio(
+                        Path::new(&source),
+                        folder,
+                        &options.audio,
+                        options.tracks.get(&source).copied(),
+                        &job.cancel,
+                    )
+                }
                 "video" => audio.convert_video(
                     Path::new(&source),
                     folder,
@@ -410,7 +438,10 @@ pub async fn start_conversion(
         if preflight.image_options.is_some() {
             check.verify()?;
         }
-        if preflight.audio_options.is_some() || preflight.video_options.is_some() {
+        if preflight.audio_options.is_some()
+            || preflight.video_options.is_some()
+            || preflight.video_audio_options.is_some()
+        {
             audio_check.verify()?;
         }
         for path in &preflight.paths {
@@ -435,6 +466,8 @@ pub async fn start_conversion(
                         .as_ref()
                         .ok_or("Choose an audio output format.")?,
                 ),
+                "video" if preflight.video_audio_options.is_some() => input
+                    .require_video_audio_target(preflight.video_audio_options.as_ref().unwrap()),
                 "video" => input.require_video_target(
                     preflight
                         .video_options
@@ -480,6 +513,9 @@ pub fn retry_conversion(
     if allow_clipping == Some(true) {
         if let Some(options) = &mut request.audio_options {
             options.allow_clipping = true;
+        }
+        if let Some(options) = &mut request.video_audio_options {
+            options.audio.allow_clipping = true;
         }
     }
     let job = manager.prepare(window.label(), request, true)?;

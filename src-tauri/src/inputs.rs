@@ -21,6 +21,8 @@ pub struct InputFile {
     conversion_issue: Option<String>,
     animated: bool,
     pub audio: Option<crate::audio_backend::AudioInfo>,
+    pub audio_tracks: Vec<crate::audio_extract::AudioTrack>,
+    pub selected_audio_track: Option<u32>,
     pub video: Option<crate::video_backend::VideoInfo>,
     target_issues: std::collections::HashMap<String, String>,
     #[serde(skip)]
@@ -139,6 +141,8 @@ pub fn inspect(path: &Path) -> Result<InputFile, String> {
         bytes: metadata.len(),
         has_audio: None,
         audio: None,
+        audio_tracks: Vec::new(),
+        selected_audio_track: None,
         video: None,
         targets,
         conversion_issue,
@@ -281,24 +285,50 @@ pub fn inspect_with_audio(
         "MP4" | "MOV" | "M4V" | "M4A" | "3GP" | "MKV" | "WEBM"
     );
     if input.kind == "video" || shared_container {
-        match backend.inspect_video(path, cancel) {
-            Ok(Some(video)) => {
+        match backend.probe_media(path, cancel) {
+            Ok(probe) if crate::audio_extract::has_video(&probe) => {
                 input.kind = "video".into();
-                input.has_audio = Some(video.audio_tracks > 0);
-                input.conversion_issue = video.issue.clone();
+                input.audio_tracks = crate::audio_extract::tracks(&probe);
+                input.has_audio = Some(!input.audio_tracks.is_empty());
+                let video = crate::video_backend::parse(probe.clone());
                 input.targets.clear();
                 input.target_issues.clear();
                 for target in ["mp4", "mkv", "mov", "webm"] {
-                    if let Some(issue) = video.target_issue(target) {
+                    let issue = match &video {
+                        Ok(Some(video)) => video.target_issue(target),
+                        Err(issue) => Some(issue.clone()),
+                        _ => Some("This video is not supported yet.".into()),
+                    };
+                    if let Some(issue) = issue {
                         input.target_issues.insert(target.into(), issue);
                     } else {
                         input.targets.push(target.into());
                     }
                 }
-                input.video = Some(video);
+                match crate::audio_extract::selected_track(&probe, None) {
+                    Ok(track) => {
+                        input.selected_audio_track = Some(track.index);
+                        input.audio = track.audio;
+                        input.targets.extend(track.targets);
+                        input.target_issues.extend(track.target_issues);
+                    }
+                    Err(issue) => {
+                        for target in crate::audio_extract::TARGETS {
+                            input.target_issues.insert(target.into(), issue.clone());
+                        }
+                    }
+                }
+                // A video-encoding restriction must not hide a valid audio
+                // destination (HDR, chapters, or unsupported pixels, for example).
+                input.conversion_issue = if input.targets.is_empty() {
+                    input.target_issues.get("mp4").cloned()
+                } else {
+                    None
+                };
+                input.video = video.ok().flatten();
                 return Ok(input);
             }
-            Ok(None) => (),
+            Ok(_) => (),
             Err(crate::image_backend::ConversionError::Failed(message)) => {
                 input.conversion_issue = Some(message);
                 return Ok(input);
@@ -347,6 +377,23 @@ pub fn inspect_with_audio(
 }
 
 impl InputFile {
+    pub fn require_video_audio_target(
+        &self,
+        options: &crate::audio_extract::VideoAudioOptions,
+    ) -> Result<(), String> {
+        let selected = options
+            .tracks
+            .get(&self.path)
+            .copied()
+            .or(self.selected_audio_track);
+        let track = self.audio_tracks.iter().find(|t| Some(t.index) == selected)
+            .ok_or_else(|| if self.audio_tracks.is_empty() {
+                "This video has no audio track. Remove it to convert the rest to audio, or choose a video format.".to_string()
+            } else { "The selected audio track is no longer available. Add this video again to choose a track.".to_string() })?;
+        options.audio.resolve(track.supported()?)?;
+        Ok(())
+    }
+
     pub fn require_video_target(
         &self,
         options: &crate::video_backend::VideoOptions,

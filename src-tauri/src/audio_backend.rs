@@ -424,6 +424,17 @@ impl AudioBackend {
         options: &AudioOptions,
         cancel: &AtomicBool,
     ) -> Result<OutputFile, ConversionError> {
+        self.convert_stream(source, folder, options, None, cancel)
+    }
+
+    pub(crate) fn convert_stream(
+        &self,
+        source: &Path,
+        folder: Option<&Path>,
+        options: &AudioOptions,
+        video_track: Option<u32>,
+        cancel: &AtomicBool,
+    ) -> Result<OutputFile, ConversionError> {
         check_cancel(cancel)?;
         options.validate()?;
         let source = source
@@ -459,7 +470,15 @@ impl AudioBackend {
                 .map_err(|_| "The audio could not be prepared. Check disk space.".to_string())?;
         }
         drop(copy);
-        let info = self.inspect(&staged, cancel)?;
+        let info = if let Some(index) = video_track {
+            let probe = self.probe_media(&staged, cancel)?;
+            crate::audio_extract::selected_track(&probe, Some(index))?
+                .supported()?
+                .clone()
+        } else {
+            self.inspect(&staged, cancel)?
+        };
+        let source_map = video_track.map_or_else(|| "0:a:0".into(), |index| format!("0:{index}"));
         let (rate, sample_format) = options.resolve(&info)?;
         let bits = format_bits(&sample_format).unwrap();
         let mp3_output = options.target == "mp3";
@@ -535,7 +554,11 @@ impl AudioBackend {
                 command
                     .args([
                         "-map",
-                        "0:a:0",
+                        if info.container == "ogg" {
+                            "0:a:0"
+                        } else {
+                            &source_map
+                        },
                         "-af",
                         &format!("aresample={rate}:osf=dbl:tsf=dblp:filter_size=64:cutoff=0.97"),
                         "-c:a",
@@ -593,7 +616,7 @@ impl AudioBackend {
         }
         command.args([
             "-map",
-            "0:a:0",
+            if processed { "0:a:0" } else { &source_map },
             "-map_metadata",
             "-1",
             "-map_chapters",
@@ -913,6 +936,15 @@ fn parse_probe(probe: &serde_json::Value) -> Result<AudioInfo, String> {
     if container == "mp3" && codec != "mp3" {
         return Err("This build accepts MPEG Layer III (MP3), not Layer I or II audio.".into());
     }
+    parse_audio_stream(probe, stream, container)
+}
+
+pub(crate) fn parse_audio_stream(
+    probe: &serde_json::Value,
+    stream: &serde_json::Value,
+    container: &str,
+) -> Result<AudioInfo, String> {
+    let codec = stream["codec_name"].as_str().unwrap_or("");
     if codec == "aac" && stream["profile"].as_str() != Some("LC") {
         return Err("This build supports AAC-LC. HE-AAC/HE-AACv2 are not enabled because the bundled decoder does not yet preserve their timing reliably; other AAC profiles are also unsupported.".into());
     }
@@ -929,9 +961,7 @@ fn parse_probe(probe: &serde_json::Value) -> Result<AudioInfo, String> {
         .ok_or("This build accepts audio with one to eight channels.")? as u16;
     let sample_format =
         match codec {
-            "mp3" if container == "mp3" => "lossy",
-            "opus" | "vorbis" if container == "ogg" => "lossy",
-            "aac" if ["aac", "mov"].contains(&container) => "lossy",
+            "mp3" | "opus" | "vorbis" | "aac" => "lossy",
             "pcm_u8" => "u8",
             "pcm_s16le" => "s16",
             "pcm_s24le" => "s24",
@@ -960,7 +990,7 @@ fn parse_probe(probe: &serde_json::Value) -> Result<AudioInfo, String> {
                 }
             },
             _ => return Err(
-                "This WAV uses an unsupported encoding. Choose integer PCM or floating-point WAV."
+                "This audio encoding is not supported yet."
                     .into(),
             ),
         }

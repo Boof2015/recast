@@ -4,7 +4,7 @@ import { invoke, isTauri } from '@tauri-apps/api/core';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { open } from '@tauri-apps/plugin-dialog';
-import { videoModeKey, formatBytes, videoSettingIssue, vorbisQualities, opusBitrateChoices, aacBitrateChoices, aacRates, isLossyAudio, audioDescription, videoDescription, audioSampleFormats, audioSettingIssue, audioWillDither, defaultSettings, destinationsFor, formatCounts, kindLabels, kinds, unitLabels, mp3BitrateChoices, mp3Qualities, mp3Rates, type Appearance, type Destination, type GroupSettings, type InputFile, type MediaKind } from './model';
+import { isAudioTarget, selectAudioTrack, videoModeKey, formatBytes, videoSettingIssue, vorbisQualities, opusBitrateChoices, aacBitrateChoices, aacRates, isLossyAudio, audioDescription, videoDescription, audioSampleFormats, audioSettingIssue, audioWillDither, defaultSettings, destinationsFor, formatCounts, kindLabels, kinds, unitLabels, mp3BitrateChoices, mp3Qualities, mp3Rates, type Appearance, type Destination, type GroupSettings, type InputFile, type MediaKind } from './model';
 import { sampleFiles, type Scenario } from './fixtures';
 import { CheckboxSetting, QualitySetting, SelectSetting, SizeSetting } from './controls';
 import { ColorSetting } from './ColorSetting';
@@ -181,9 +181,9 @@ export default function App() {
   const activeFormatLabel = destinationsFor(activeKind, activeFiles, true).find(format => format.id === activeSettings.target)?.label ?? activeSettings.target?.toUpperCase();
   const unresolvedTarget = activeSettings.target && !selectedFormat;
   const affectedFiles = unresolvedTarget ? activeFiles.filter(file => previewCatalog ? activeKind === 'video' && file.hasAudio !== true : !file.targets?.includes(activeSettings.target!)) : [];
-  const activeAudioIssue = activeKind === 'audio' ? activeFiles.map(file => audioSettingIssue(file, activeSettings)).find(Boolean) : null;
+  const activeAudioIssue = isAudioTarget(activeSettings.target) ? activeFiles.map(file => audioSettingIssue(file, activeSettings)).find(Boolean) : null;
   const videoIssue = files.some(file => file.kind === 'video') ? videoSettingIssue(settings.video, files) : null;
-  const audioSettingsValid = files.filter(file => file.kind === 'audio').every(file => !audioSettingIssue(file, settings.audio));
+  const audioSettingsValid = files.filter(file => isAudioTarget(settings[file.kind].target)).every(file => !audioSettingIssue(file, settings[file.kind]));
   const allConfigured = presentKinds.length > 0 && presentKinds.every((kind) => destinationsFor(kind, files.filter((file) => file.kind === kind), previewCatalog).some((format) => format.id === settings[kind].target));
   const folderName = outputFolder?.split(/[\\/]/).filter(Boolean).at(-1) ?? 'Same as source';
   const succeeded = job?.files.filter(file => file.status === 'succeeded') ?? [];
@@ -300,6 +300,9 @@ export default function App() {
     if (conversion.busyRef.current) return;
     if (Object.entries(change).every(([key, value]) => activeSettings[key as keyof GroupSettings] === value)) return;
     conversion.clear();
+    if (activeKind === 'video' && change.target && isAudioTarget(change.target) && activeFiles.some(file => (file.audioTracks?.length ?? 0) > 1)) {
+      setExpanded(current => current.includes('video') ? current : [...current, 'video']);
+    }
     setSettings((current) => ({ ...current, [activeKind]: { ...current[activeKind], ...change } }));
   }
 
@@ -362,8 +365,18 @@ export default function App() {
                 </div>
                 {isExpanded && <ScrollArea className="file-list-scroll"><div className="file-list" id={`files-${kind}`}>{groupFiles.map((file) => {
                   const result = job?.files.find(result => result.id === file.id);
-                  const detail = result?.error ?? file.conversionIssue ?? (settings[kind].target ? file.targetIssues?.[settings[kind].target!] : undefined) ?? (result ? ({ pending: 'Waiting', running: result.phase ? `${result.phase} · ${Math.round((result.progress ?? 0) * 100)}%` : 'Converting…', succeeded: 'Converted', failed: 'Failed', cancelled: 'Cancelled' }[result.status]) : file.animated ? 'Animated' : videoDescription(file) || audioDescription(file));
-                  return <div className="file-row" key={file.id}><div className="file-detail"><span title={file.path || file.name}>{file.name}</span>{result?.status === 'succeeded' ? <ConversionResult result={result} /> : detail && <span className="file-status">{detail}</span>}</div><button className="remove-file" disabled={busy} aria-label={`Remove ${file.name}`} onClick={() => { conversion.clear(); setFiles((current) => current.filter((item) => item.id !== file.id)); }}><X size={13} /></button></div>;
+                  const detail = result?.error ?? (settings[kind].target ? file.targetIssues?.[settings[kind].target!] : undefined) ?? file.conversionIssue ?? (result ? ({ pending: 'Waiting', running: result.phase ? `${result.phase} · ${Math.round((result.progress ?? 0) * 100)}%` : 'Converting…', succeeded: 'Converted', failed: 'Failed', cancelled: 'Cancelled' }[result.status]) : file.animated ? 'Animated' : videoDescription(file) || audioDescription(file));
+                  return <div className="file-row" key={file.id}><div className="file-detail"><span title={file.path || file.name}>{file.name}</span>{result?.status === 'succeeded' ? <ConversionResult result={result} /> : detail && <span className="file-status">{detail}</span>}
+                    {kind === 'video' && (!settings.video.target || isAudioTarget(settings.video.target)) && (file.audioTracks?.length ?? 0) > 1 && <fieldset className="track-choice" disabled={busy}>
+                      <SelectSetting label="Extract track" value={file.audioTracks!.find(track => track.index === file.selectedAudioTrack)?.label ?? ''} options={file.audioTracks!.map(track => track.label)} onChange={label => {
+                        if (conversion.busyRef.current) return;
+                        const track = file.audioTracks!.find(track => track.label === label);
+                        if (!track || track.index === file.selectedAudioTrack) return;
+                        conversion.clear();
+                        setFiles(current => current.map(input => input.id === file.id ? selectAudioTrack(input, track.index) : input));
+                      }} />
+                    </fieldset>}
+                  </div><button className="remove-file" disabled={busy} aria-label={`Remove ${file.name}`} onClick={() => { conversion.clear(); setFiles((current) => current.filter((item) => item.id !== file.id)); }}><X size={13} /></button></div>;
                 })}</div></ScrollArea>}
               </section>;
             })}</GroupStack>
@@ -382,6 +395,7 @@ export default function App() {
               <FormatSettings kind={activeKind} destination={selectedFormat} value={activeSettings} onChange={updateSettings} disabled={busy} animated={activeFiles.some(file => file.animated)} files={activeFiles} />
             </> : <DestinationBrowser formats={formats} onChoose={(target) => updateSettings({ target })} />}
             </fieldset>
+            {activeKind === 'video' && !selectedFormat && !expanded.includes('video') && activeFiles.some(file => (file.audioTracks?.length ?? 0) > 1) && <button className="text-button" onClick={() => setExpanded(current => [...current, 'video'])}>Audio tracks<ChevronRight size={13} /></button>}
             {!unresolvedTarget && !formats.length && !previewCatalog && <button className="text-button" onClick={() => setExpanded(current => current.includes(activeKind) ? current : [...current, activeKind])}>Show files<ChevronRight size={13} /></button>}
           </div></ScrollArea>
         </section>
@@ -400,7 +414,7 @@ export default function App() {
             return <section key={kind} className="output-group" style={{ minHeight: groupSizes[kind] }}>
               <button className="group-header output-select" data-selection-key={kind} aria-label={`${kindLabels[kind]} output`} aria-pressed={activeKind === kind} onClick={() => setSelected(kind)}>
                 <span className={`output-result ${target ? '' : 'pending-output'}`}>{groupFiles.length} {target?.label ?? 'files'}</span>
-                <span className="output-detail">{job ? groupText : kind === 'video' && videoIssue ? 'Choose compatible video settings' : kind === 'audio' && !audioSettingsValid ? 'Choose compatible audio settings' : target ? outputFolder ? folderName : 'Same folder as source' : 'Choose an output format'}</span>
+                <span className="output-detail">{job ? groupText : kind === 'video' && videoIssue ? 'Choose compatible video settings' : isAudioTarget(settings[kind].target) && groupFiles.some(file => audioSettingIssue(file, settings[kind])) ? 'Choose compatible audio settings' : target ? outputFolder ? folderName : 'Same folder as source' : 'Choose an output format'}</span>
               </button>
               {groupSucceeded.length > 0 && <div className="output-files" aria-label="Converted files">{groupSucceeded.map(file => <button className="output-file" key={file.id} title={file.outputPath!} aria-label={`Show ${file.outputPath!.split(/[\\/]/).at(-1)} in folder`} onClick={() => void revealOutput(file.outputPath!)}><Check size={13} aria-hidden="true" /><span>{file.outputPath!.split(/[\\/]/).at(-1)}</span><Folder size={13} aria-hidden="true" /></button>)}</div>}
             </section>;
@@ -424,7 +438,7 @@ export default function App() {
           </div>}
           {currentFile && <span className="current-file" title={currentFile.name}>{currentFile.name}</span>}
         </div>
-        {!busy && failed.some(file => file.canAllowClipping) && <button className="quiet-button" onClick={() => { setSettings(current => ({ ...current, audio: { ...current.audio, allowClipping: true } })); void runConversion(true, true); }}>Allow clipping & retry</button>}
+        {!busy && failed.some(file => file.canAllowClipping) && <button className="quiet-button" onClick={() => { setSettings(current => ({ ...current, audio: { ...current.audio, allowClipping: true }, video: { ...current.video, allowClipping: true } })); void runConversion(true, true); }}>Allow clipping & retry</button>}
         {!busy && job && retryCount > 0 && <button className="quiet-button" onClick={newBatch}>New batch</button>}
         <div className="folder-choice"><button className="folder-button" disabled={busy} onClick={() => void chooseFolder()} title={outputFolder ?? 'Choose an output folder'}><Folder size={16} strokeWidth={1.6} /><span>{folderName}</span><ChevronDown size={12} /></button>{outputFolder && <button className="icon-button" disabled={busy} aria-label="Use source folders" title="Use source folders" onClick={() => { conversion.clear(); setOutputFolder(null); }}><X size={12} /></button>}</div>
         {busy ? <button className="primary-button" disabled={conversion.starting || job?.status === 'cancelling'} onClick={() => void conversion.cancel().catch(error => setNotice(String(error)))}>{job?.status === 'cancelling' ? 'Cancelling…' : 'Cancel'}</button> : job ? retryCount > 0 ? <button className="primary-button" onClick={() => void runConversion(true)}>Retry {retryCount} {retryCount === 1 ? 'file' : 'files'}</button> : <button className="primary-button" onClick={newBatch}>New batch</button> : <button className={`primary-button convert-button ${allConfigured ? 'configured' : ''}`} disabled={!canConvert} onClick={() => void runConversion()} title={previewCatalog ? 'Sample files are for design review. Add real images, audio, or video files to convert.' : !allConfigured ? 'Choose a supported output for every group.' : !audioSettingsValid ? 'Choose compatible audio settings.' : videoIssue ?? undefined}>Convert {files.length} {files.length === 1 ? 'file' : 'files'}</button>}

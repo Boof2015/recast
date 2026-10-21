@@ -1,6 +1,7 @@
 mod aac;
 mod animation;
 mod audio_backend;
+mod audio_extract;
 mod avif;
 mod desktop;
 mod image_backend;

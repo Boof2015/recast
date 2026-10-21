@@ -5,6 +5,8 @@ use std::io::Write;
 
 #[path = "av1_tests.rs"]
 mod av1;
+#[path = "audio_extract_tests.rs"]
+mod extraction;
 #[path = "mkv_tests.rs"]
 mod mkv;
 #[path = "mov_tests.rs"]

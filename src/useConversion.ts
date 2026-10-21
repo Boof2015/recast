@@ -1,6 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { Channel, invoke, isTauri } from '@tauri-apps/api/core';
-import { videoModeKey, audioSampleFormats, type GroupSettings, type InputFile, type MediaKind } from './model';
+import { isAudioTarget, videoModeKey, audioSampleFormats, type GroupSettings, type InputFile, type MediaKind } from './model';
+
+function audioOptions(audio: GroupSettings) {
+  return { target: audio.target, sampleRate: audio.sampleRate === 'Keep source' ? null : Number(audio.sampleRate), sampleFormat: audioSampleFormats[audio.sampleFormat], dither: audio.audioDither, metadata: audio.metadata, allowClipping: audio.allowClipping, mp3: { mode: audio.mp3Mode, quality: Number.parseInt(audio.mp3Quality.slice(1)), bitrate: Number.parseInt(audio.bitrate) }, aac: { bitrate: Number.parseInt(audio.aacBitrate) }, opus: { bitrate: Number.parseInt(audio.opusBitrate) }, vorbis: { quality: Number.parseInt(audio.vorbisQuality) } };
+}
 
 export interface FileResult {
   id: string;
@@ -59,14 +63,17 @@ export function useConversion() {
       const targetSize = mode === 'Target size';
       const copyStreams = mode === 'Keep original';
       const resolution = targetSize ? video.sizeResolution : video.resolution;
+      const videoFiles = files.filter(file => file.kind === 'video');
+      const videoAudio = isAudioTarget(video.target);
       const snapshot = await invoke<BatchSnapshot>(retry ? 'retry_conversion' : 'start_conversion', {
         onProgress: channel,
         ...(retry ? { allowClipping } : {}),
         ...(!retry ? { request: {
           paths: files.map(file => file.path), outputFolder,
           imageOptions: files.some(file => file.kind === 'images') ? { target: settings.target, quality: settings.quality, lossless: settings.lossless, resize: settings.resize === 'Original' ? 100 : Number.parseInt(settings.resize, 10), metadata: settings.metadata, background: settings.background, colors: settings.colors, dither: settings.dither } : null,
-          videoOptions: files.some(file => file.kind === 'video') ? { target: video.target, quality: video.quality, resolution: copyStreams || ['Auto', 'Original'].includes(resolution) ? null : Number.parseInt(resolution), sizeLimit: targetSize ? Math.floor(Number(video.targetSize) * 1_000_000) : null, autoResolution: targetSize && resolution === 'Auto', copyStreams, acceleration: video.acceleration.toLowerCase(), frameRate: copyStreams || video.frameRate === 'Original' ? null : Number.parseInt(video.frameRate), metadata: video.metadata } : null,
-          audioOptions: files.some(file => file.kind === 'audio') ? { target: audio.target, sampleRate: audio.sampleRate === 'Keep source' ? null : Number(audio.sampleRate), sampleFormat: audioSampleFormats[audio.sampleFormat], dither: audio.audioDither, metadata: audio.metadata, allowClipping: audio.allowClipping, mp3: { mode: audio.mp3Mode, quality: Number.parseInt(audio.mp3Quality.slice(1)), bitrate: Number.parseInt(audio.bitrate) }, aac: { bitrate: Number.parseInt(audio.aacBitrate) }, opus: { bitrate: Number.parseInt(audio.opusBitrate) }, vorbis: { quality: Number.parseInt(audio.vorbisQuality) } } : null,
+          videoOptions: videoFiles.length && !videoAudio ? { target: video.target, quality: video.quality, resolution: copyStreams || ['Auto', 'Original'].includes(resolution) ? null : Number.parseInt(resolution), sizeLimit: targetSize ? Math.floor(Number(video.targetSize) * 1_000_000) : null, autoResolution: targetSize && resolution === 'Auto', copyStreams, acceleration: video.acceleration.toLowerCase(), frameRate: copyStreams || video.frameRate === 'Original' ? null : Number.parseInt(video.frameRate), metadata: video.metadata } : null,
+          audioOptions: files.some(file => file.kind === 'audio') ? audioOptions(audio) : null,
+          videoAudioOptions: videoFiles.length && videoAudio ? { audio: audioOptions(video), tracks: Object.fromEntries(videoFiles.filter(file => file.selectedAudioTrack != null).map(file => [file.path, file.selectedAudioTrack])) } : null,
         } } : {}),
       });
       if (token === generation.current) accept(snapshot);

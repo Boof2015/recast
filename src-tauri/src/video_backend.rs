@@ -227,7 +227,7 @@ fn rotation(stream: &Value) -> i32 {
         .unwrap_or(0.0)
         .round() as i32
 }
-fn parse(probe: Value) -> Result<Option<VideoInfo>, String> {
+pub(crate) fn parse(probe: Value) -> Result<Option<VideoInfo>, String> {
     let Some(video) = video_stream(&probe) else {
         return Ok(None);
     };
@@ -554,6 +554,14 @@ impl AudioBackend {
         path: &Path,
         cancel: &AtomicBool,
     ) -> Result<Option<VideoInfo>, ConversionError> {
+        parse(self.probe_media(path, cancel)?).map_err(Into::into)
+    }
+
+    pub(crate) fn probe_media(
+        &self,
+        path: &Path,
+        cancel: &AtomicBool,
+    ) -> Result<Value, ConversionError> {
         let work = tempfile::tempdir().map_err(|e| e.to_string())?;
         let output = work.path().join("probe.json");
         let mut cmd = self.command("ffprobe");
@@ -590,11 +598,8 @@ impl AudioBackend {
                 .to_string()
                 .into());
         }
-        parse(
-            serde_json::from_slice(&data)
-                .map_err(|_| "Video inspection returned invalid data.".to_string())?,
-        )
-        .map_err(Into::into)
+        serde_json::from_slice(&data)
+            .map_err(|_| "Media inspection returned invalid data.".to_string().into())
     }
     fn video_command(&self) -> Command {
         let mut c = self.command("ffmpeg");

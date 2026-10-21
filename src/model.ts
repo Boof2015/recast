@@ -15,6 +15,8 @@ export interface InputFile {
   targetIssues?: Record<string, string>;
   video?: { codec: string; width: number; height: number; rotation: number; duration: number; frameRate: number; audioTracks: number; subtitleTracks: number; aacIssue?: string | null; movCopyIssue?: string | null; webmCopyIssue?: string | null; opusIssue?: string | null } | null;
   audio?: { container: string; codec: string; sampleRate: number; sampleFormat: string; channels: number; channelLayout: string | null; duration: number | null } | null;
+  audioTracks?: { index: number; label: string; default: boolean; audio: InputFile['audio']; issue: string | null; targets: string[]; targetIssues: Record<string, string> }[];
+  selectedAudioTrack?: number | null;
 }
 
 export interface GroupSettings {
@@ -84,12 +86,25 @@ const videoDestinations: Destination[] = [
   { id: 'gif', label: 'GIF', description: 'A short animation', category: 'Animation' },
 ];
 
+export function isAudioTarget(target: string | null): boolean {
+  return audioDestinations.some(format => format.id === target);
+}
+
+export function selectAudioTrack(file: InputFile, index: number): InputFile {
+  const track = file.audioTracks?.find(track => track.index === index);
+  if (!track) return file;
+  return { ...file, selectedAudioTrack: index, audio: track.audio, conversionIssue: track.targets.length ? null : file.conversionIssue,
+    targets: [...(file.targets ?? []).filter(target => !isAudioTarget(target)), ...track.targets],
+    targetIssues: { ...Object.fromEntries(Object.entries(file.targetIssues ?? {}).filter(([target]) => !isAudioTarget(target))), ...track.targetIssues },
+  };
+}
+
 // Preview fixtures use the full planned catalog. Real file targets are inspected
 // by Rust and intersected here: every file must support the whole-group target.
 export function destinationsFor(kind: MediaKind, files: InputFile[], preview = false): Destination[] {
   if (!preview) {
     if (!files.length) return [];
-    const catalog = kind === 'images' ? imageDestinations : kind === 'audio' ? audioDestinations : videoDestinations;
+    const catalog = kind === 'images' ? imageDestinations : kind === 'audio' ? audioDestinations : [...videoDestinations, ...audioDestinations.map(format => ({ ...format, category: 'Audio only' }))];
     return catalog.filter(format => files.every(file => file.targets?.includes(format.id)));
   }
   if (kind === 'images') return imageDestinations;

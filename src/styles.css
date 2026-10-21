@@ -182,6 +182,10 @@ button:disabled { cursor: default; }
 .quiet-button:disabled, .remove-file:disabled, .folder-button:disabled { opacity: .4; }
 .file-detail { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; padding: 3px 0; }
 .file-detail > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.track-choice { border: 0; padding: 0; margin: 3px 0 0; min-width: 0; }
+.track-choice .setting-row { margin: 0; min-height: 28px; gap: 8px; font-size: 11px; }
+.track-choice .setting-row > span { flex-shrink: 0; white-space: nowrap; }
+.track-choice .select-trigger { font-size: 11px; min-height: 28px; min-width: 0; max-width: 72%; padding: 4px 7px; }
 .file-status { color: var(--secondary); font-size: 11px; overflow-wrap: anywhere; }
 .file-result > summary { display: flex; align-items: center; gap: 6px; width: fit-content; max-width: 100%; padding: 2px 0; border-radius: 3px; list-style: none; cursor: pointer; user-select: none; touch-action: manipulation; }
 .file-result > summary::-webkit-details-marker { display: none; }

@@ -24,10 +24,11 @@ fn av1_cfr_vfr_and_opus_convert_to_every_video_destination() {
         assert_eq!(input.kind, "video");
         let input = serde_json::to_value(input).unwrap();
         assert!(input["conversionIssue"].is_null());
-        assert_eq!(
-            input["targets"],
-            serde_json::json!(["mp4", "mkv", "mov", "webm"])
-        );
+        let mut targets = vec!["mp4", "mkv", "mov", "webm"];
+        if input["hasAudio"] == true {
+            targets.extend(crate::audio_extract::TARGETS);
+        }
+        assert_eq!(input["targets"], serde_json::json!(targets));
         let info = audio_backend()
             .inspect_video(&source, &AtomicBool::new(false))
             .unwrap()

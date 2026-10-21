@@ -58,6 +58,7 @@ fn request(paths: &[PathBuf], folder: &Path) -> ConversionRequest {
         image_options: Some(options()),
         audio_options: None,
         video_options: None,
+        video_audio_options: None,
     }
 }
 fn identify(path: &Path, format: &str) -> String {
