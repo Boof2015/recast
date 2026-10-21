@@ -74,7 +74,7 @@ Batches preserve originals and existing outputs, produce one output per successf
 
 The macOS app and bundled workers target macOS 13+ using source-built codecs. The Apple Silicon build is checked on macOS 26; macOS 13 itself remains unverified.
 
-Build prerequisites are Node.js 24+, Rust (CI pins 1.98.1), Python 3.12+, CMake, Make, Meson, Ninja, a C/C++ compiler, pkg-config, and the [Tauri system prerequisites](https://v2.tauri.app/start/prerequisites/). NASM enables x86 optimizations in the image codecs, x264, libvpx, and dav1d. On macOS, install Xcode command-line tools and ensure the modern Python is on PATH as `python3`. On Windows, build both converters in MSYS2 UCRT64 with `/usr/bin/python`, then use MSVC Rust for the app; the [platform workflow](.github/workflows/platform-checks.yml) lists the build packages.
+Build prerequisites are Node.js 24+, Rust (CI pins 1.98.1), Python 3.12+, CMake, Make, Perl, Meson, Ninja, a C/C++ compiler, pkg-config, and the [Tauri system prerequisites](https://v2.tauri.app/start/prerequisites/). NASM enables x86 optimizations in the image codecs, x264, libvpx, and dav1d. On macOS, install Xcode command-line tools and ensure the modern Python is on PATH as `python3`. On Windows, build both converters in MSYS2 UCRT64 with `/usr/bin/python`, then use MSVC Rust for the app; the [platform workflow](.github/workflows/platform-checks.yml) lists the build packages.
 
 ```sh
 npm ci

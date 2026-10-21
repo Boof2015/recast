@@ -103,7 +103,7 @@ jobs:
           msystem: UCRT64
           update: true
           install: >-
-            python make diffutils meson ninja
+            python make diffutils perl meson ninja
             mingw-w64-ucrt-x86_64-gcc
             mingw-w64-ucrt-x86_64-cmake
             mingw-w64-ucrt-x86_64-pkgconf
