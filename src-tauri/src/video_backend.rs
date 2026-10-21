@@ -201,7 +201,7 @@ fn streams(probe: &Value) -> impl Iterator<Item = &Value> {
 fn video_stream(probe: &Value) -> Option<&Value> {
     streams(probe).find(|s| s["codec_type"] == "video" && s["disposition"]["attached_pic"] != 1)
 }
-fn video_end(info: &VideoInfo) -> Option<f64> {
+pub(crate) fn video_end(info: &VideoInfo) -> Option<f64> {
     let video = video_stream(&info.probe)?;
     let end = num(&video["duration"])
         .map(|duration| duration + num(&video["start_time"]).unwrap_or(0.0))
@@ -1348,7 +1348,7 @@ fn validate_timing(
     }
     Ok(())
 }
-fn run(
+pub(crate) fn run(
     command: &mut Command,
     log: &Path,
     progress_path: Option<&Path>,

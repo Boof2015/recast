@@ -24,6 +24,7 @@ pub struct InputFile {
     pub audio_tracks: Vec<crate::audio_extract::AudioTrack>,
     pub selected_audio_track: Option<u32>,
     pub video: Option<crate::video_backend::VideoInfo>,
+    pub animation: Option<crate::video_animation::AnimationInfo>,
     target_issues: std::collections::HashMap<String, String>,
     #[serde(skip)]
     pub sequence: Option<crate::animation::Sequence>,
@@ -144,6 +145,7 @@ pub fn inspect(path: &Path) -> Result<InputFile, String> {
         audio_tracks: Vec::new(),
         selected_audio_track: None,
         video: None,
+        animation: None,
         targets,
         conversion_issue,
         animated: sequence.as_ref().is_some_and(|s| s.animated()),
@@ -293,6 +295,15 @@ pub fn inspect_with_audio(
                 let video = crate::video_backend::parse(probe.clone());
                 input.targets.clear();
                 input.target_issues.clear();
+                match crate::video_animation::inspect(&probe) {
+                    Ok(info) => {
+                        input.animation = Some(info);
+                        input.targets.push("gif".into());
+                    }
+                    Err(issue) => {
+                        input.target_issues.insert("gif".into(), issue);
+                    }
+                }
                 for target in ["mp4", "mkv", "mov", "webm"] {
                     let issue = match &video {
                         Ok(Some(video)) => video.target_issue(target),
@@ -377,6 +388,23 @@ pub fn inspect_with_audio(
 }
 
 impl InputFile {
+    pub fn require_animation_target(
+        &self,
+        options: &crate::video_animation::AnimationOptions,
+    ) -> Result<(), String> {
+        let info = self.animation.as_ref().ok_or_else(|| {
+            self.target_issues
+                .get("gif")
+                .cloned()
+                .unwrap_or_else(|| "This video cannot be converted to GIF yet.".into())
+        })?;
+        let range = options
+            .ranges
+            .get(&self.path)
+            .ok_or("Choose a range for this video.")?;
+        options.resolve(info, *range)?;
+        Ok(())
+    }
     pub fn require_video_audio_target(
         &self,
         options: &crate::audio_extract::VideoAudioOptions,

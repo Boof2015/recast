@@ -1,5 +1,6 @@
 export type MediaKind = 'images' | 'audio' | 'video';
 export type Appearance = 'system' | 'light' | 'dark';
+export interface SourceRange { start: number; end: number }
 
 export interface InputFile {
   id: string;
@@ -17,6 +18,8 @@ export interface InputFile {
   audio?: { container: string; codec: string; sampleRate: number; sampleFormat: string; channels: number; channelLayout: string | null; duration: number | null } | null;
   audioTracks?: { index: number; label: string; default: boolean; audio: InputFile['audio']; issue: string | null; targets: string[]; targetIssues: Record<string, string> }[];
   selectedAudioTrack?: number | null;
+  animation?: { duration: number; width: number; height: number } | null;
+  sourceRange?: SourceRange;
 }
 
 export interface GroupSettings {
@@ -47,6 +50,8 @@ export interface GroupSettings {
   sampleFormat: string;
   audioDither: boolean;
   allowClipping: boolean;
+  gifSize: string;
+  gifFrameRate: string;
 }
 
 export interface Destination {
@@ -124,6 +129,7 @@ export function defaultSettings(): Record<MediaKind, GroupSettings> {
     sampleRate: 'Keep source', sampleFormat: 'Keep source', audioDither: true, allowClipping: false,
     mp3Mode: 'vbr', mp3Quality: 'V2 · High', aacBitrate: '192 kbps', opusBitrate: '128 kbps', vorbisQuality: '5 · High',
     videoMode: 'Quality', mkvMode: 'Keep original', movMode: 'Quality', webmMode: 'Quality', targetSize: '10', sizeResolution: 'Auto',
+    gifSize: '480 px', gifFrameRate: '15 fps',
   };
   return { images: { ...settings }, audio: { ...settings }, video: { ...settings } };
 }
@@ -133,6 +139,18 @@ export function videoModeKey(target: string | null): 'mkvMode' | 'movMode' | 'we
 }
 
 export function videoSettingIssue(settings: GroupSettings, files: InputFile[] = []): string | null {
+  if (settings.target === 'gif') {
+    for (const file of files.filter(file => file.kind === 'video')) {
+      if (!file.animation) continue;
+      const { start, end } = sourceRange(file);
+      if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end - start < 0.01 - 1e-8 || end > file.animation.duration + 0.001) return `${file.name}: choose a valid range.`;
+      const factor = Math.min(1, Number.parseInt(settings.gifSize) / Math.max(file.animation.width, file.animation.height));
+      const frames = Math.ceil((end - start) * Number.parseInt(settings.gifFrameRate) - 1e-8);
+      const pixels = Math.round(file.animation.width * factor) * Math.round(file.animation.height * factor) * frames;
+      if (frames > 1000 || pixels > 100_000_000) return `${file.name}: shorten the range, or lower size or frame rate.`;
+    }
+    return null;
+  }
   const mode = settings[videoModeKey(settings.target)];
   if (settings.target === 'mov' && mode === 'Keep original') return files.find(file => file.kind === 'video' && file.video?.movCopyIssue)?.video?.movCopyIssue ?? null;
   if (settings.target === 'webm' && mode === 'Keep original') return files.find(file => file.kind === 'video' && file.video?.webmCopyIssue)?.video?.webmCopyIssue ?? null;
@@ -143,6 +161,10 @@ export function videoSettingIssue(settings: GroupSettings, files: InputFile[] = 
   const size = Number(settings.targetSize);
   return !/^\d+(\.\d*)?$/.test(settings.targetSize) || !Number.isFinite(size) || size < 0.1 || size > 10000
     ? 'Enter a maximum size from 0.1 to 10,000 MB.' : null;
+}
+
+export function sourceRange(file: InputFile): SourceRange {
+  return file.sourceRange ?? { start: 0, end: Math.min(5, file.animation?.duration ?? file.video?.duration ?? 5) };
 }
 
 export const audioSampleFormats: Record<string, string> = {

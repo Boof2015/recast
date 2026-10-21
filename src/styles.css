@@ -159,9 +159,6 @@ option { background: var(--mass); color: var(--ink); }
 .compatibility-message > span { color: var(--secondary); }
 .text-button { padding: 0; margin-top: 10px; display: flex; align-items: center; gap: 5px; color: var(--secondary); font-size: 12px; }
 .text-button:hover { color: var(--ink); }
-.range-placeholder { display: flex; flex-direction: column; align-items: center; padding: 22px 12px; border-radius: 10px; background: var(--mass); color: var(--secondary); text-align: center; }
-.range-placeholder p { margin-top: 12px; font-size: 12px; }
-.range-placeholder span { margin-top: 6px; font-size: 11px; }
 .size-control { display: flex; align-items: center; gap: 8px; background: var(--control); border-radius: 9px; padding: 6px 12px; }
 .size-control input { width: 70px; min-width: 0; border: 0; border-radius: 3px; background: transparent; color: var(--ink); text-align: right; font-variant-numeric: tabular-nums; }
 .size-control > span { color: var(--secondary); font-size: 11px; }
@@ -249,3 +246,47 @@ button:disabled { cursor: default; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 }
+
+.video-range { margin: -8px 0 22px; }
+.range-source, .range-source > div { display: flex; align-items: center; gap: 5px; }
+.range-source { min-height: 28px; justify-content: space-between; gap: 8px; margin-bottom: 6px; font-size: 11px; color: var(--secondary); }
+.range-source > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.range-source > div { flex-shrink: 0; }
+.range-source .icon-button { width: 22px; height: 24px; }
+.range-picture { position: relative; aspect-ratio: 16 / 9; max-height: 195px; width: 100%; border-radius: 10px; overflow: hidden; background: #111; display: grid; place-items: center; }
+.range-picture img { width: 100%; height: 100%; object-fit: contain; position: absolute; user-select: none; }
+.preview-loading { position: absolute; right: 8px; bottom: 8px; border-radius: 5px; padding: 3px 6px; font-size: 10px; color: #eee; background: #111c; }
+.preview-error { padding: 16px; color: #ddd; font-size: 11px; text-align: center; }
+.preview-error .quiet-button { color: #ddd; margin: 4px auto 0; }
+.range-transport { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 6px -5px 2px; font-size: 10px; font-variant-numeric: tabular-nums; }
+.range-transport .quiet-button { font-size: 11px; }
+.range-total { color: var(--secondary); }
+.range-overview-row { display: flex; align-items: center; gap: 10px; margin-top: 2px; color: var(--secondary); font-size: 10px; }
+.range-overview-row > span { flex-shrink: 0; }
+.range-overview { position: relative; height: 24px; flex: 1; min-width: 0; padding: 0; cursor: ew-resize; touch-action: none; }
+.overview-track { position: absolute; inset: 10px 0; border-radius: 2px; background: var(--control); }
+.overview-window { position: absolute; top: 4px; height: 16px; min-width: 4px; border-radius: 4px; background: var(--selected); opacity: .65; }
+.overview-selection { position: absolute; top: 8px; height: 8px; min-width: 2px; border-radius: 2px; background: var(--ink); pointer-events: none; }
+.range-scale { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin: 0 2px 3px; color: var(--secondary); font-size: 10px; font-variant-numeric: tabular-nums; }
+.range-scale > div { display: flex; gap: 1px; }
+.range-scale .icon-button { width: 24px; height: 22px; }
+.range-timeline { position: relative; height: 38px; margin: 3px 10px 6px; cursor: pointer; touch-action: none; }
+.range-track, .range-selection { position: absolute; top: 8px; height: 20px; border-radius: 4px; }
+.range-track { width: 100%; background: var(--control); }
+.range-selection { background: var(--selected); padding: 0; cursor: grab; touch-action: none; overflow: hidden; }
+.range-selection:active { cursor: grabbing; }
+.range-selection > span { display: inline-block; width: 5px; height: 8px; border-left: 1px solid var(--secondary); border-right: 1px solid var(--secondary); opacity: .6; pointer-events: none; }
+.range-handle { position: absolute; z-index: 2; top: 2px; height: 32px; width: 20px; padding: 0; transform: translateX(-50%); background: transparent; touch-action: none; display: grid; place-items: center; cursor: ew-resize; }
+.range-handle::before { content: ''; position: absolute; inset: 2px 4px; border-radius: 4px; background: var(--ink); }
+.range-handle > span { z-index: 1; height: 11px; width: 2px; border-radius: 1px; background: var(--canvas); opacity: .7; pointer-events: none; }
+.range-handle[data-outside="true"]::before { opacity: .35; }
+.range-playhead { position: absolute; top: -5px; height: 41px; width: 14px; padding: 0; transform: translateX(-50%); touch-action: none; cursor: ew-resize; }
+.range-playhead > span { position: absolute; top: 0; left: 6px; height: 40px; width: 2px; background: var(--secondary); border-radius: 2px; pointer-events: none; }
+.range-playhead > span::before { content: ''; position: absolute; top: -1px; left: -3px; width: 8px; height: 5px; border-radius: 2px; background: var(--secondary); }
+.range-times { display: flex; gap: 12px; align-items: end; justify-content: space-between; font-size: 11px; }
+.range-time { min-width: 0; flex: 1; color: var(--secondary); }
+.range-time > span { display: block; margin-bottom: 4px; }
+.range-time > div { display: flex; align-items: baseline; gap: 4px; border-radius: 7px; padding: 5px 7px; background: var(--control); }
+.range-time input { min-width: 0; width: 100%; background: transparent; border: 0; color: var(--ink); font-variant-numeric: tabular-nums; }
+.range-time input:focus-visible { outline-offset: 1px; }
+.range-times output { white-space: nowrap; padding-bottom: 5px; color: var(--secondary); font-variant-numeric: tabular-nums; }

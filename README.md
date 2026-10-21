@@ -2,7 +2,7 @@
 
 A local file converter, built with Tauri 2, React, TypeScript, and Rust.
 
-Recast converts **still PNG, JPEG, WebP, BMP, TIFF, AVIF, and GIF**, **animated GIF ↔ animated WebP**, and **PCM WAV, FLAC, ALAC, MP3, AAC-LC, Opus, and Ogg Vorbis**, including same-format conversion. Video supports **H.264 MP4/MKV/MOV and VP9 WebM output**, plus **MKV/MOV/WebM stream copying** and **video-to-audio conversion**. Images, audio, and video can share a batch with independent group settings. Everything runs locally through bundled converters.
+Recast converts **still PNG, JPEG, WebP, BMP, TIFF, AVIF, and GIF**, **animated GIF ↔ animated WebP**, and **PCM WAV, FLAC, ALAC, MP3, AAC-LC, Opus, and Ogg Vorbis**, including same-format conversion. Video supports **H.264 MP4/MKV/MOV and VP9 WebM output**, plus **MKV/MOV/WebM stream copying** **video-to-audio conversion**, and **selected video ranges to GIF**. Images, audio, and video can share a batch with independent group settings. Everything runs locally through bundled converters.
 
 ## Images
 
@@ -10,7 +10,7 @@ Settings follow the output: JPEG has quality, WebP and AVIF have quality/lossles
 
 TIFF accepts classic TIFF and BigTIFF, either byte order, with unsigned samples up to 16 bits. Output is ordinary single-page TIFF with Deflate compression and preserved transparency. Resize and Keep metadata are its only settings; XMP/IPTC, color profiles, and common TIFF tags can be retained, but camera EXIF is not fully carried over. Multipage/layered TIFF, raw camera containers, floating-point samples, and unsupported compression receive an explicit explanation.
 
-Animated GIF/WebP inputs only offer destinations that retain animation. Animated PNG/AVIF, multi-image BMPs, and BMP wrappers containing embedded PNG/JPEG are rejected. Explicit frame selection and video-to-animation are later work.
+Animated GIF/WebP inputs only offer destinations that retain animation. Animated PNG/AVIF, multi-image BMPs, and BMP wrappers containing embedded PNG/JPEG are rejected. Still-frame extraction from animations remains planned.
 
 ## Audio
 
@@ -66,7 +66,11 @@ Quality is mapped separately for each encoder; equal slider values do not promis
 
 **Audio only** offers WAV, FLAC, ALAC, MP3, AAC/M4A, Opus, and Ogg Vorbis for video groups. Each video produces one audio file from its marked default track (otherwise the first); videos with multiple tracks have an **Extract track** selector in the expanded input list. Audio uses the same settings and channel-preservation rules as ordinary audio conversion. Every selected track must support the destination; silent videos block audio output.
 
-Extraction accepts supported PCM, FLAC, ALAC, MP3, AAC-LC, Opus, and Vorbis tracks in MP4/MOV, MKV/WebM, and AVI containers. Video pixel restrictions do not block supported audio extraction. It converts the full selected soundtrack from its first decoded sample, without adding silence for its offset in the video or cutting it to the video’s length. Other tracks, video, subtitles, and chapters are omitted. Range/frame selection is planned.
+Extraction accepts supported PCM, FLAC, ALAC, MP3, AAC-LC, Opus, and Vorbis tracks in MP4/MOV, MKV/WebM, and AVI containers. Video pixel restrictions do not block supported audio extraction. It converts the full selected soundtrack from its first decoded sample, without adding silence for its offset in the video or cutting it to the video’s length. Other tracks, video, subtitles, and chapters are omitted. Audio extraction currently uses the full selected track.
+
+**Video → GIF** includes a preview and adjustable start/end range for each video. It starts with the first five seconds, or the whole video if shorter. The timeline opens around the selection. Use the Whole video overview to move the clip to another moment while keeping its length, then drag either edge to trim. You can also drag the selection itself, zoom in/out, fit the selection, or enter seconds. Play range previews it without sound. Each video keeps its own range, while GIF settings apply to the group.
+
+GIF defaults to a 480-pixel long edge, 15 fps, 256 colors, and dithering. Size choices are 320–960 pixels without upscaling; frame rates are 10–30 fps. Output loops continuously and omits audio, subtitles, chapters, and metadata. Timing is rounded to GIF’s centiseconds. Ranges are limited to 1,000 frames and 100 million total pixels; shorten the range or lower size/frame rate when needed. Preview and export use bundled decoding, including AV1. Motion previews use a smaller image for responsiveness. Still-frame extraction remains planned.
 
 ## Batches
 

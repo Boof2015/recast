@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode, type UIEventHandler } from 'react';
-import { ArrowDownToLine, ArrowLeft, ArrowRight, Check, ChevronDown, ChevronRight, File, Film, Folder, Monitor, Moon, Plus, Sun, X } from 'lucide-react';
+import { ArrowDownToLine, ArrowLeft, ArrowRight, Check, ChevronDown, ChevronRight, File, Folder, Monitor, Moon, Plus, Sun, X } from 'lucide-react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -7,6 +7,7 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { isAudioTarget, selectAudioTrack, videoModeKey, formatBytes, videoSettingIssue, vorbisQualities, opusBitrateChoices, aacBitrateChoices, aacRates, isLossyAudio, audioDescription, videoDescription, audioSampleFormats, audioSettingIssue, audioWillDither, defaultSettings, destinationsFor, formatCounts, kindLabels, kinds, unitLabels, mp3BitrateChoices, mp3Qualities, mp3Rates, type Appearance, type Destination, type GroupSettings, type InputFile, type MediaKind } from './model';
 import { sampleFiles, type Scenario } from './fixtures';
 import { CheckboxSetting, QualitySetting, SelectSetting, SizeSetting } from './controls';
+import { VideoRange } from './VideoRange';
 import { ColorSetting } from './ColorSetting';
 import { GroupStack } from './GroupStack';
 import { useConversion, type FileResult } from './useConversion';
@@ -108,7 +109,13 @@ function FormatSettings({ kind, destination, value, onChange, disabled, animated
     {videoOutput && destination.id === 'webm' && !copyStreams && files.some(file => file.hasAudio) && <p className="settings-note">Opus encodes at 48,000 Hz · resamples when needed.</p>}
     {targetSize && <p className="settings-note">Size is checked before saving. Audio may be re-encoded.</p>}
     {isVideo && destination.id === 'mp4' && !targetSize && <p className="settings-note">Automatic uses available hardware, with software fallback. Quality and file size vary by encoder. Keeps original timing unless a frame rate is selected. Resolution fits without upscaling. AAC audio is kept; other supported audio is encoded to AAC.</p>}
-    {isVideo && destination.id === 'gif' && <div className="range-placeholder"><Film size={24} strokeWidth={1.4} /><p>Preview & source range</p><span>To be explored in the next design pass</span></div>}
+    {isVideo && destination.id === 'gif' && <>
+      <SelectSetting label="Size" value={value.gifSize} options={['320 px', '480 px', '720 px', '960 px']} onChange={gifSize => onChange({ gifSize })} />
+      <SelectSetting label="Frame rate" value={value.gifFrameRate} options={['10 fps', '15 fps', '20 fps', '25 fps', '30 fps']} onChange={gifFrameRate => onChange({ gifFrameRate })} />
+      <SelectSetting label="Colors" value={String(value.colors)} options={['256', '128', '64', '32']} onChange={colors => onChange({ colors: Number(colors) })} />
+      <CheckboxSetting label="Dithering" checked={value.dither} onChange={dither => onChange({ dither })} />
+      <p className="settings-note">Loops continuously · No audio</p>
+    </>}
     {destination.id !== 'gif' && destination.id !== 'bmp' && <CheckboxSetting label="Keep metadata" checked={value.metadata} onChange={(metadata) => onChange({ metadata })} />}
     {isAudio && value.metadata && <p className="settings-note">Keeps supported text tags. Artwork, loudness tags, and production metadata are omitted.</p>}
     {isAudio && destination.id === 'alac' && <p className="settings-note">Apple Lossless audio in an .m4a file.</p>}
@@ -392,6 +399,11 @@ export default function App() {
               <button className="format-back" onClick={() => updateSettings({ target: null })} aria-label="Change output format"><ArrowLeft size={18} strokeWidth={1.7} /><h2>{selectedFormat.label}</h2></button>
               {activeKind === 'video' && videoIssue && <p className="compatibility-message" role="status">{videoIssue}</p>}
               {activeAudioIssue && <p className="compatibility-message" role="status">{activeAudioIssue}</p>}
+              {activeKind === 'video' && selectedFormat.id === 'gif' && <VideoRange files={activeFiles} settings={activeSettings} disabled={busy} onChange={(id, sourceRange) => {
+                if (conversion.busyRef.current) return;
+                conversion.clear();
+                setFiles(current => current.map(file => file.id === id ? { ...file, sourceRange } : file));
+              }} />}
               <FormatSettings kind={activeKind} destination={selectedFormat} value={activeSettings} onChange={updateSettings} disabled={busy} animated={activeFiles.some(file => file.animated)} files={activeFiles} />
             </> : <DestinationBrowser formats={formats} onChoose={(target) => updateSettings({ target })} />}
             </fieldset>

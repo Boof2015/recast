@@ -7,6 +7,8 @@ use std::io::Write;
 mod av1;
 #[path = "audio_extract_tests.rs"]
 mod extraction;
+#[path = "video_animation_tests.rs"]
+mod gif;
 #[path = "mkv_tests.rs"]
 mod mkv;
 #[path = "mov_tests.rs"]

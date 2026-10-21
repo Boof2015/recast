@@ -17,6 +17,21 @@ pub struct Sequence {
 }
 
 impl Sequence {
+    pub fn write_gif_delays(&self, file: &mut File, delays: &[u32]) -> Result<(), String> {
+        if delays.len() != self.delay_offsets.len()
+            || delays
+                .iter()
+                .any(|ms| *ms < 10 || *ms > 655350 || ms % 10 != 0)
+        {
+            return Err("The GIF frame timing could not be represented.".into());
+        }
+        for (offset, ms) in self.delay_offsets.iter().zip(delays) {
+            file.seek(SeekFrom::Start(*offset))
+                .and_then(|_| file.write_all(&((*ms / 10) as u16).to_le_bytes()))
+                .map_err(|_| "The GIF timing could not be saved.".to_string())?;
+        }
+        Ok(())
+    }
     pub fn animated(&self) -> bool {
         self.delays.len() > 1
     }
