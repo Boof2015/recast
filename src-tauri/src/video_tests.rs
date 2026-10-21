@@ -3,10 +3,14 @@ use crate::video_backend::VideoOptions;
 use serde_json::Value;
 use std::io::Write;
 
+#[path = "av1_tests.rs"]
+mod av1;
 #[path = "mkv_tests.rs"]
 mod mkv;
 #[path = "mov_tests.rs"]
 mod mov;
+#[path = "webm_tests.rs"]
+mod webm;
 
 fn video_options() -> VideoOptions {
     VideoOptions {

@@ -1,4 +1,4 @@
-//! Per-file budgets are estimates; only the measured, validated MP4 may be published.
+//! Per-file budgets are estimates; only the measured, validated file may be published.
 use super::{num, streams, StreamStats, VideoInfo, VideoOptions};
 use crate::image_backend::{check_cancel, ConversionError};
 use std::collections::BTreeMap;
@@ -34,12 +34,20 @@ impl SizePlan {
             .filter(|s| s["codec_type"] == "audio")
             .collect();
         let channels: f64 = audio.iter().map(|a| num(&a["channels"]).unwrap()).sum();
-        // Reserve MP4 sample tables, audio packets, tags, and a 6% rate-control margin.
+        // Reserve sample tables/blocks, audio packets, tags, and a 6% rate-control margin.
         let overhead = 16_384.0
             + frames * 24.0
             + audio
                 .iter()
-                .map(|a| duration * num(&a["sample_rate"]).unwrap() / 1024.0 * 24.0)
+                .map(|a| {
+                    duration
+                        * if options.target == "webm" {
+                            50.0
+                        } else {
+                            num(&a["sample_rate"]).unwrap() / 1024.0
+                        }
+                        * 24.0
+                })
                 .sum::<f64>()
             + if options.metadata {
                 info.probe.to_string().len() as f64 * 2.0
@@ -51,7 +59,7 @@ impl SizePlan {
             .iter()
             .map(|a| {
                 let count = num(&a["channels"]).unwrap();
-                let rate = num(&a["sample_rate"]).unwrap();
+                let rate = f64::from(options.audio_rate(a));
                 ((total_rate as f64 * 0.2 / channels)
                     .clamp(16_000.0, 64_000.0)
                     .min(rate * 6.0)

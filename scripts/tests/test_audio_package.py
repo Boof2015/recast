@@ -90,7 +90,7 @@ class AudioPackageTests(unittest.TestCase):
                 path.write_text('notice')
 
     def test_requires_x264_and_ffmpeg_gpl_notices(self):
-        for name in ['x264-COPYING', 'COPYING.GPLv2']:
+        for name in ['x264-COPYING', 'COPYING.GPLv2', 'vpx-LICENSE', 'vpx-PATENTS', 'dav1d-COPYING']:
             with self.subTest(notice=name):
                 path = self.root / 'licenses' / name
                 path.unlink()

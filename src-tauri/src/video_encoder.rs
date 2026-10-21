@@ -22,6 +22,9 @@ pub enum Acceleration {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Encoder {
     Software,
+    Vp9Software,
+    Vp9Qsv,
+    Vp9Vaapi(PathBuf),
     VideoToolbox,
     Nvenc,
     Qsv,
@@ -29,32 +32,45 @@ pub(super) enum Encoder {
     Vaapi(PathBuf),
 }
 impl Encoder {
+    pub(super) fn software(&self) -> Self {
+        if self.is_vp9() {
+            Self::Vp9Software
+        } else {
+            Self::Software
+        }
+    }
+    pub(super) fn is_software(&self) -> bool {
+        matches!(self, Self::Software | Self::Vp9Software)
+    }
+    pub(super) fn is_vp9(&self) -> bool {
+        matches!(self, Self::Vp9Software | Self::Vp9Qsv | Self::Vp9Vaapi(_))
+    }
     pub(super) fn label(&self) -> &'static str {
         match self {
-            Self::Software => "Software",
+            Self::Software | Self::Vp9Software => "Software",
             Self::VideoToolbox => "Apple VideoToolbox",
             Self::Nvenc => "NVIDIA NVENC",
-            Self::Qsv => "Intel Quick Sync",
+            Self::Qsv | Self::Vp9Qsv => "Intel Quick Sync",
             Self::Amf => "AMD AMF",
-            Self::Vaapi(_) => "VA-API",
+            Self::Vaapi(_) | Self::Vp9Vaapi(_) => "VA-API",
         }
     }
     pub(super) fn initialize(&self, command: &mut Command) {
         match self {
-            Self::Qsv => {
+            Self::Qsv | Self::Vp9Qsv => {
                 command.args([
                     "-init_hw_device",
                     "qsv=recast:hw_any,child_device_type=d3d11va",
                 ]);
             }
-            Self::Vaapi(path) => {
+            Self::Vaapi(path) | Self::Vp9Vaapi(path) => {
                 command.arg("-vaapi_device").arg(path);
             }
             _ => (),
         }
     }
     pub(super) fn filters(&self) -> Vec<String> {
-        if matches!(self, Self::Vaapi(_)) {
+        if matches!(self, Self::Vaapi(_) | Self::Vp9Vaapi(_)) {
             vec!["format=nv12".into(), "hwupload".into()]
         } else {
             vec![]
@@ -68,6 +84,10 @@ impl Encoder {
         height: u32,
         fps: f64,
     ) {
+        if self.is_vp9() {
+            self.configure_vp9(command, quality, None);
+            return;
+        }
         // Each API has its own quality model. These are useful ranges, not claims
         // that the same slider position produces equivalent pictures/file sizes.
         let quantizer = 40.0 - f64::from(quality) * 24.0 / 100.0;
@@ -156,9 +176,14 @@ impl Encoder {
             Self::Vaapi(_) => {
                 command.args(["-c:v", "h264_vaapi", "-rc_mode", "CQP", "-qp", &q]);
             }
+            Self::Vp9Software | Self::Vp9Qsv | Self::Vp9Vaapi(_) => unreachable!(),
         }
     }
     pub(super) fn configure_bitrate(&self, command: &mut Command, bitrate: u64) {
+        if self.is_vp9() {
+            self.configure_vp9(command, 85, Some(bitrate));
+            return;
+        }
         match self {
             Self::Software => {
                 command.args([
@@ -216,6 +241,7 @@ impl Encoder {
             Self::Vaapi(_) => {
                 command.args(["-c:v", "h264_vaapi", "-rc_mode", "VBR"]);
             }
+            Self::Vp9Software | Self::Vp9Qsv | Self::Vp9Vaapi(_) => unreachable!(),
         }
         command.args(["-b:v", &bitrate.to_string()]);
         if !matches!(self, Self::VideoToolbox | Self::Software) {
@@ -224,6 +250,63 @@ impl Encoder {
                 &(bitrate * 2).to_string(),
                 "-bufsize",
                 &(bitrate * 2).to_string(),
+            ]);
+        }
+    }
+    fn configure_vp9(&self, command: &mut Command, quality: u8, bitrate: Option<u64>) {
+        // Software uses VP9's 0–63 quantizer; VA-API uses 0–255 and QSV ICQ 1–51.
+        let q = 52.0 - f64::from(quality) * 34.0 / 100.0;
+        match self {
+            Self::Vp9Software => {
+                command.args([
+                    "-c:v",
+                    "libvpx-vp9",
+                    "-deadline",
+                    "good",
+                    "-cpu-used",
+                    "3",
+                    "-row-mt",
+                    "1",
+                    "-lag-in-frames",
+                    "0",
+                    "-auto-alt-ref",
+                    "0",
+                    "-pix_fmt",
+                    "yuv420p",
+                ]);
+                if bitrate.is_none() {
+                    command.args(["-crf", &format!("{q:.0}")]);
+                }
+            }
+            Self::Vp9Qsv => {
+                command.args(["-c:v", "vp9_qsv", "-preset", "medium", "-pix_fmt", "nv12"]);
+                if bitrate.is_none() {
+                    command.args([
+                        "-global_quality",
+                        &format!("{:.0}", 45.0 - f64::from(quality) * 29.0 / 100.0),
+                    ]);
+                }
+            }
+            Self::Vp9Vaapi(_) => {
+                command.args([
+                    "-c:v",
+                    "vp9_vaapi",
+                    "-rc_mode",
+                    if bitrate.is_some() { "VBR" } else { "CQP" },
+                ]);
+                if bitrate.is_none() {
+                    command.args(["-qp", &format!("{:.0}", q * 4.0)]);
+                }
+            }
+            _ => unreachable!(),
+        }
+        command.args(["-b:v", &bitrate.unwrap_or(0).to_string()]);
+        if let Some(rate) = bitrate.filter(|_| !self.is_software()) {
+            command.args([
+                "-maxrate",
+                &(rate * 2).to_string(),
+                "-bufsize",
+                &(rate * 2).to_string(),
             ]);
         }
     }
@@ -248,11 +331,12 @@ pub(super) fn with_fallback<T>(
 ) -> Result<(T, Encoder, bool), ConversionError> {
     match attempt(chosen) {
         Ok(value) => Ok((value, chosen.clone(), false)),
-        Err(ConversionError::Failed(reason)) if *chosen != Encoder::Software => {
+        Err(ConversionError::Failed(reason)) if !chosen.is_software() => {
             #[cfg(test)]
             eprintln!("{} fallback: {reason}", chosen.label());
             let _ = reason;
-            attempt(&Encoder::Software).map(|value| (value, Encoder::Software, true))
+            let software = chosen.software();
+            attempt(&software).map(|value| (value, software, true))
         }
         Err(error) => Err(error),
     }
@@ -261,6 +345,7 @@ pub(super) fn with_fallback<T>(
 impl AudioBackend {
     pub(super) fn choose_video_encoder(
         &self,
+        webm: bool,
         work: &Path,
         cancel: &AtomicBool,
     ) -> Result<Encoder, ConversionError> {
@@ -282,7 +367,16 @@ impl AudioBackend {
         };
         nodes.sort();
         let started = Instant::now();
-        for encoder in candidates(std::env::consts::OS, nodes) {
+        let choices = if webm {
+            match std::env::consts::OS {
+                "windows" => vec![Encoder::Vp9Qsv],
+                "linux" => nodes.into_iter().take(8).map(Encoder::Vp9Vaapi).collect(),
+                _ => vec![],
+            }
+        } else {
+            candidates(std::env::consts::OS, nodes)
+        };
+        for encoder in choices {
             check_cancel(cancel)?;
             if started.elapsed().as_secs() >= 20 {
                 break;
@@ -293,7 +387,11 @@ impl AudioBackend {
                 Err(_) => (),
             }
         }
-        Ok(Encoder::Software)
+        Ok(if webm {
+            Encoder::Vp9Software
+        } else {
+            Encoder::Software
+        })
     }
     fn probe_video_encoder(
         &self,
@@ -308,7 +406,8 @@ impl AudioBackend {
             *p = ((i * 13 + i / (320 * 192 * 3) * 41) % 256) as u8;
         }
         fs::write(&raw, pixels).map_err(|e| e.to_string())?;
-        let output = work.join("hardware-probe.mp4");
+        let format = if encoder.is_vp9() { "webm" } else { "mp4" };
+        let output = work.join(format!("hardware-probe.{format}"));
         let mut cmd = self.video_command();
         encoder.initialize(&mut cmd);
         cmd.args([
@@ -328,8 +427,17 @@ impl AudioBackend {
             cmd.args(["-vf", &filters.join(",")]);
         }
         encoder.configure(&mut cmd, 85, 320, 192, 30.0);
-        cmd.args(["-bf", "0", "-threads:v", "2", "-frames:v", "3", "-f", "mp4"])
-            .arg(&output);
+        cmd.args([
+            "-bf",
+            "0",
+            "-threads:v",
+            "2",
+            "-frames:v",
+            "3",
+            "-f",
+            format,
+        ])
+        .arg(&output);
         run(
             &mut cmd,
             &work.join("hardware-probe.log"),
@@ -341,7 +449,10 @@ impl AudioBackend {
         let info = self
             .inspect_video(&output, cancel)?
             .ok_or_else(|| "No hardware probe video.".to_string())?;
-        if info.width != 320 || info.height != 192 || info.codec != "h264" {
+        if info.width != 320
+            || info.height != 192
+            || info.codec != if encoder.is_vp9() { "vp9" } else { "h264" }
+        {
             return Err("The hardware probe changed the expected picture."
                 .to_string()
                 .into());
@@ -365,6 +476,24 @@ mod tests {
     use super::*;
     #[test]
     fn failure_retries_software_once_and_cancellation_never_retries() {
+        for hardware in [
+            Encoder::Vp9Qsv,
+            Encoder::Vp9Vaapi("/dev/dri/renderD128".into()),
+        ] {
+            let mut attempts = vec![];
+            let (_, used, fallback) = with_fallback(&hardware, |encoder| {
+                attempts.push(encoder.clone());
+                if encoder.is_software() {
+                    Ok(())
+                } else {
+                    Err("Device unavailable".to_string().into())
+                }
+            })
+            .unwrap();
+            assert_eq!(attempts, vec![hardware, Encoder::Vp9Software]);
+            assert_eq!(used, Encoder::Vp9Software);
+            assert!(fallback);
+        }
         let mut attempts = vec![];
         let (value, used, fallback) = with_fallback(&Encoder::Nvenc, |encoder| {
             attempts.push(encoder.clone());

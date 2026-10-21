@@ -28,11 +28,11 @@ def configuration(system, arch):
         '--disable-avdevice', '--enable-swscale', '--disable-ffplay', '--disable-x86asm',
         '--enable-ffmpeg', '--enable-ffprobe', '--enable-protocol=file,pipe',
         '--enable-demuxer=wav,flac,mov,matroska,avi,rawvideo,mp3,aac,ogg,pcm_f64le',
-        '--enable-muxer=wav,flac,ipod,mp4,mov,matroska,rawvideo,framehash,streamhash,mp3,opus,ogg,pcm_f64le,pcm_s32le,null',
-        f'--enable-decoder={pcm},flac,alac,mp3float,aac,opus,vorbis,h264,hevc,vp8,vp9,mpeg4,mjpeg,prores,rawvideo,mov_text',
-        f'--enable-encoder={pcm},flac,alac,libmp3lame,aac,libopus,libvorbis,libx264,rawvideo,wrapped_avframe',
-        '--enable-gpl', '--enable-libx264', '--enable-libmp3lame', '--enable-libopus', '--enable-libvorbis', '--pkg-config-flags=--static',
-        '--enable-parser=flac,mpegaudio,aac,opus,vorbis,h264,hevc,vp8,vp9,mpeg4video,mjpeg',
+        '--enable-muxer=wav,flac,ipod,mp4,mov,matroska,webm,rawvideo,framehash,streamhash,mp3,opus,ogg,pcm_f64le,pcm_s32le,null',
+        f'--enable-decoder={pcm},flac,alac,mp3float,aac,opus,vorbis,h264,hevc,vp8,vp9,libdav1d,mpeg4,mjpeg,prores,rawvideo,mov_text',
+        f'--enable-encoder={pcm},flac,alac,libmp3lame,aac,libopus,libvorbis,libx264,libvpx_vp9,rawvideo,wrapped_avframe',
+        '--enable-gpl', '--enable-libx264', '--enable-libvpx', '--enable-libdav1d', '--enable-libmp3lame', '--enable-libopus', '--enable-libvorbis', '--pkg-config-flags=--static',
+        '--enable-parser=flac,mpegaudio,aac,opus,vorbis,h264,hevc,vp8,vp9,av1,mpeg4video,mjpeg',
         '--enable-bsf=setts,pcm_rechunk',
         '--enable-filter=aresample,aformat,anull,scale,format,fps,trim,transpose,hflip,vflip,setsar',
     ]
@@ -44,12 +44,12 @@ def configuration(system, arch):
     elif system == 'windows':
         result += ['--enable-ffnvcodec', '--enable-nvenc', '--enable-amf',
                    '--enable-libvpl', '--enable-d3d11va',
-                   '--enable-encoder=h264_nvenc,h264_amf,h264_qsv',
+                   '--enable-encoder=h264_nvenc,h264_amf,h264_qsv,vp9_qsv',
                    '--target-os=mingw32', '--arch=x86_64', '--cc=/ucrt64/bin/gcc',
                    '--extra-ldflags=-static -static-libgcc -static-libstdc++']
     else:
         result += ['--enable-ffnvcodec', '--enable-nvenc', '--enable-vaapi', '--enable-libdrm',
-                   '--enable-encoder=h264_nvenc,h264_vaapi', '--enable-filter=hwupload']
+                   '--enable-encoder=h264_nvenc,h264_vaapi,vp9_vaapi', '--enable-filter=hwupload']
     return result
 
 
@@ -183,6 +183,59 @@ def build_x264(work, logs, env, system, arch):
     COMMON.run(['sh', str(source / 'configure'), *config], cwd=source, env=build_env, log=logs / 'x264-configure.log')
     COMMON.run(['make', '-j', COMMON.JOBS], cwd=source, env=build_env, log=logs / 'x264-build.log')
     COMMON.run(['make', 'install-lib-static'], cwd=source, env=build_env, log=logs / 'x264-install.log')
+    return source, config
+
+
+def build_vpx(work, logs, env, system, arch):
+    dependency = next(item for item in LOCK['dependencies'] if item['name'] == 'vpx')
+    source = COMMON.extract(dependency, work / 'vpx')
+    target_os = {'darwin': 'darwin23', 'windows': 'win64', 'linux': 'linux'}[system]
+    cc = '/ucrt64/bin/gcc' if system == 'windows' else 'clang' if system == 'darwin' else 'gcc'
+    flags = '-O2 -fPIC'
+    if system == 'darwin':
+        flags += f' -arch {arch} -mmacosx-version-min={LOCK["minimumMacOS"]}'
+    config = [f'--prefix={work / "install"}', f'--target={arch}-{target_os}-gcc',
+              '--disable-shared', '--enable-static', '--enable-pic',
+              '--disable-examples', '--disable-tools', '--disable-docs',
+              '--disable-unit-tests', '--disable-vp8', '--disable-vp9-decoder',
+              '--disable-vp9-highbitdepth', '--enable-vp9-encoder']
+    if arch == 'x86_64':
+        config += ['--as=nasm']
+    build_env = env | {'CC': cc, 'CFLAGS': flags, 'CXXFLAGS': flags, 'LDFLAGS': flags}
+    COMMON.run(['sh', str(source / 'configure'), *config], cwd=source, env=build_env, log=logs / 'vpx-configure.log')
+    COMMON.run(['make', '-j', COMMON.JOBS], cwd=source, env=build_env, log=logs / 'vpx-build.log')
+    COMMON.run(['make', 'install'], cwd=source, env=build_env, log=logs / 'vpx-install.log')
+    return source, config
+
+
+def build_dav1d(work, logs, env, system, arch):
+    dependency = next(item for item in LOCK['dependencies'] if item['name'] == 'dav1d')
+    source = COMMON.extract(dependency, work / 'dav1d')
+    stage = work / 'install'
+    build = work / 'dav1d-build'
+    cc = '/ucrt64/bin/gcc' if system == 'windows' else 'clang' if system == 'darwin' else 'gcc'
+    flags = '-O2 -fPIC'
+    if system == 'darwin':
+        flags += f' -arch {arch} -mmacosx-version-min={LOCK["minimumMacOS"]}'
+    config = [f'--prefix={stage}', '--libdir=lib', '--buildtype=release',
+              '--default-library=static', '--auto-features=disabled', '-Db_staticpic=true',
+              '-Denable_tools=false', '-Denable_tests=false', '-Denable_examples=false',
+              '-Denable_docs=false', '-Dbitdepths=8,16', '--wrap-mode=nodownload']
+    if system in ['darwin', 'windows']:
+        # MSYS Python is a build host, not the target Windows runtime. An explicit
+        # machine file also makes Intel Mac cross-builds select the right assembly.
+        machine = work / 'dav1d-machine.ini'
+        cpu = 'aarch64' if arch == 'arm64' else arch
+        binaries = {'c': cc, 'ar': '/ucrt64/bin/ar' if system == 'windows' else 'ar'}
+        if system == 'windows':
+            binaries['windres'] = '/ucrt64/bin/windres'
+        machine.write_text('[binaries]\n' + ''.join(f'{key} = {value!r}\n' for key, value in binaries.items())
+                           + f"[host_machine]\nsystem = '{system}'\ncpu_family = '{cpu}'\ncpu = '{cpu}'\nendian = 'little'\n")
+        config += ['--cross-file', str(machine)]
+    build_env = env | {'CC': cc, 'CFLAGS': flags, 'LDFLAGS': flags}
+    COMMON.run(['meson', 'setup', str(build), str(source), *config], env=build_env, log=logs / 'dav1d-configure.log')
+    COMMON.run(['meson', 'compile', '-C', str(build), '-j', COMMON.JOBS], env=build_env, log=logs / 'dav1d-build.log')
+    COMMON.run(['meson', 'install', '-C', str(build)], env=build_env, log=logs / 'dav1d-install.log')
     return source, config
 
 
@@ -328,6 +381,31 @@ def patch_aac_discard_padding(source):
 
 
 
+def patch_demux_skip_padding(source):
+    # A short Opus track can have both CodecDelay and DiscardPadding in its
+    # only packet. Generic demux startup must not replace the container's
+    # existing end trim when it injects the initial skip count.
+    path = source / 'libavformat/demux.c'
+    original = '''            uint8_t *p = av_packet_new_side_data(pkt, AV_PKT_DATA_SKIP_SAMPLES, 10);
+            if (p) {
+                AV_WL32(p, sti->skip_samples);
+                AV_WL32(p + 4, discard_padding);'''
+    corrected = '''            /* Recast: merge initial skip with existing container end padding. */
+            size_t skip_size;
+            uint8_t *p = av_packet_get_side_data(pkt, AV_PKT_DATA_SKIP_SAMPLES, &skip_size);
+            if (!p || skip_size < 10)
+                p = av_packet_new_side_data(pkt, AV_PKT_DATA_SKIP_SAMPLES, 10);
+            if (p) {
+                AV_WL32(p, FFMAX(AV_RL32(p), sti->skip_samples));
+                AV_WL32(p + 4, FFMAX(AV_RL32(p + 4), discard_padding));'''
+    text = path.read_text()
+    if corrected in text:
+        return
+    if text.count(original) != 1:
+        raise SystemExit('Pinned demux skip/padding patch no longer matches; review the upstream source.')
+    path.write_text(text.replace(original, corrected))
+
+
 def patch_matroska_playable_duration(source):
     # CodecDelay shifts block timestamps, not the end of the presentation.
     # DiscardPadding can trim a full packet or an already shortened duration.
@@ -412,6 +490,7 @@ def main():
     patch_mp4_audio_priming(source)
     patch_aac_discard_padding(source)
     patch_matroska_playable_duration(source)
+    patch_demux_skip_padding(source)
     env = os.environ.copy()
     for key in ['CPATH', 'C_INCLUDE_PATH', 'CPLUS_INCLUDE_PATH', 'LIBRARY_PATH', 'SDKROOT',
                 'CFLAGS', 'CXXFLAGS', 'CPPFLAGS', 'LDFLAGS', 'LIBS', 'CC', 'CXX',
@@ -427,6 +506,8 @@ def main():
     env['PKG_CONFIG_LIBDIR'] = str(stage / 'lib/pkgconfig')
     dependency_builds.update(build_vorbis(work, logs, env, system, arch))
     dependency_builds['x264'] = build_x264(work, logs, env, system, arch)
+    dependency_builds['vpx'] = build_vpx(work, logs, env, system, arch)
+    dependency_builds['dav1d'] = build_dav1d(work, logs, env, system, arch)
     dependency_builds.update(build_hardware(work, logs, env, system, arch))
     config = configuration(system, arch)
     config += [f'--extra-cflags=-I{shlex.quote(str(stage / "include"))}',
@@ -445,9 +526,15 @@ def main():
     required = {'darwin': ['videotoolbox'], 'windows': ['nvenc', 'qsv', 'amf'],
                 'linux': ['nvenc', 'vaapi']}[system]
     components = (source / 'config_components.h').read_text()
+    if '#define CONFIG_LIBDAV1D_DECODER 1' not in components:
+        raise SystemExit('Required AV1 decoder libdav1d was not compiled in.')
     for encoder in required:
         if f'#define CONFIG_H264_{encoder.upper()}_ENCODER 1' not in components:
             raise SystemExit(f'Required hardware encoder h264_{encoder} was not compiled in.')
+    vp9 = ['LIBVPX_VP9'] + {'darwin': [], 'windows': ['VP9_QSV'], 'linux': ['VP9_VAAPI']}[system]
+    for encoder in vp9:
+        if f'#define CONFIG_{encoder}_ENCODER 1' not in components:
+            raise SystemExit(f'Required WebM encoder {encoder.lower()} was not compiled in.')
     # FFmpeg's Make targets include EXESUF, which is .exe on Windows.
     programs = {name: name + ('.exe' if system == 'windows' else '') for name in ['ffmpeg', 'ffprobe']}
     COMMON.run(['make', '-j', COMMON.JOBS, *programs.values()], cwd=source, env=env, log=logs / 'build.log')

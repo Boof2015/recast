@@ -43,16 +43,16 @@ pub struct VideoOptions {
 }
 impl VideoOptions {
     pub fn validate(&self) -> Result<(), String> {
-        if !["mp4", "mkv", "mov"].contains(&self.target.as_str()) {
-            return Err("Choose MP4, MKV, or MOV for this video conversion.".into());
+        if !["mp4", "mkv", "mov", "webm"].contains(&self.target.as_str()) {
+            return Err("Choose MP4, MKV, MOV, or WebM for this video conversion.".into());
         }
         if self.copy_streams
-            && (!["mkv", "mov"].contains(&self.target.as_str())
+            && (!["mkv", "mov", "webm"].contains(&self.target.as_str())
                 || self.size_limit.is_some()
                 || self.resolution.is_some()
                 || self.frame_rate.is_some())
         {
-            return Err("Keep original is available for MKV and MOV without size, resolution, or frame-rate changes.".into());
+            return Err("Keep original is available for MKV, MOV, and WebM without size, resolution, or frame-rate changes.".into());
         }
         if !self.copy_streams && self.size_limit.is_none() && !(1..=100).contains(&self.quality) {
             return Err("Choose video quality from 1 to 100.".into());
@@ -83,7 +83,7 @@ impl VideoOptions {
         }
     }
     fn precision(&self) -> f64 {
-        if self.target == "mkv" {
+        if ["mkv", "webm"].contains(&self.target.as_str()) {
             0.00101
         } else {
             0.00001
@@ -94,7 +94,7 @@ impl VideoOptions {
         command: &mut Command,
         info: &VideoInfo,
     ) -> Result<(), ConversionError> {
-        if self.target == "mkv" {
+        if ["mkv", "webm"].contains(&self.target.as_str()) {
             command.args(["-default_mode", "passthrough"]);
         } else {
             // A MOV edit expressed in rounded microseconds can expose an extra
@@ -132,8 +132,16 @@ impl VideoOptions {
         self.copy_streams
             || (self.size_limit.is_none()
                 && (self.target == "mkv"
-                    || audio["codec_name"] == "aac"
+                    || (self.target != "webm" && audio["codec_name"] == "aac")
+                    || (self.target == "webm" && webm_audio_copy(audio))
                     || (self.target == "mov" && mov_audio_copy(audio))))
+    }
+    fn audio_rate(&self, audio: &Value) -> u32 {
+        if self.target == "webm" && !self.copies_audio(audio) {
+            48000
+        } else {
+            num(&audio["sample_rate"]).unwrap_or(0.0) as u32
+        }
     }
     pub fn dimensions(&self, info: &VideoInfo) -> (u32, u32) {
         let (w, h) = if info.rotation.abs() == 90 || info.rotation.abs() == 270 {
@@ -171,6 +179,8 @@ pub struct VideoInfo {
     pub issue: Option<String>,
     pub aac_issue: Option<String>,
     pub mov_copy_issue: Option<String>,
+    pub webm_copy_issue: Option<String>,
+    pub opus_issue: Option<String>,
     #[serde(skip)]
     probe: Value,
 }
@@ -275,8 +285,15 @@ fn parse(probe: Value) -> Result<Option<VideoInfo>, String> {
     {
         reject("Chaptered video is not supported yet. Recast will not silently discard chapters.");
     }
-    if !["h264", "hevc", "vp8", "vp9", "mpeg4", "mjpeg", "prores"].contains(&codec.as_str()) {
-        reject("This video codec is not supported yet.");
+    if ![
+        "h264", "hevc", "vp8", "vp9", "av1", "mpeg4", "mjpeg", "prores",
+    ]
+    .contains(&codec.as_str())
+    {
+        reject(&format!(
+            "{} video is not supported yet.",
+            codec.to_uppercase()
+        ));
     }
     if width < 2
         || height < 2
@@ -301,6 +318,11 @@ fn parse(probe: Value) -> Result<Option<VideoInfo>, String> {
     .contains(&video["pix_fmt"].as_str().unwrap_or(""))
         || ["smpte2084", "arib-std-b67"].contains(&video["color_transfer"].as_str().unwrap_or(""))
         || video["color_primaries"] == "bt2020"
+        || video["tags"].as_object().is_some_and(|tags| {
+            tags.iter().any(|(key, value)| {
+                key.eq_ignore_ascii_case("alpha_mode") && num(value).is_some_and(|mode| mode != 0.0)
+            })
+        })
         || video["side_data_list"].to_string().contains("DOVI")
     {
         reject("This output supports 8-bit SDR video. HDR, higher bit depth, and transparency need a preserving conversion path first.");
@@ -329,7 +351,10 @@ fn parse(probe: Value) -> Result<Option<VideoInfo>, String> {
         ]
         .contains(&c)
         {
-            reject("An audio track uses an unsupported codec. Recast will not silently drop it.");
+            reject(&format!(
+                "An audio track uses unsupported {} audio. Recast will not silently drop it.",
+                c.to_uppercase()
+            ));
         }
         if c == "alac" && ![Some(16.0), Some(24.0)].contains(&num(&a["bits_per_raw_sample"])) {
             reject("This build supports 16-bit and 24-bit ALAC tracks; other ALAC depths cannot be decoded reliably yet.");
@@ -352,9 +377,12 @@ fn parse(probe: Value) -> Result<Option<VideoInfo>, String> {
         issue,
         aac_issue,
         mov_copy_issue: None,
+        webm_copy_issue: None,
+        opus_issue: audios.iter().find_map(|a| opus_track_issue(a)),
         probe,
     };
     info.mov_copy_issue = info.copy_issue("mov");
+    info.webm_copy_issue = info.copy_issue("webm");
     Ok(Some(info))
 }
 
@@ -409,8 +437,35 @@ fn mov_audio_copy(audio: &Value) -> bool {
     .contains(&audio["codec_name"].as_str().unwrap_or(""))
 }
 
+fn webm_audio_copy(audio: &Value) -> bool {
+    ["opus", "vorbis"].contains(&audio["codec_name"].as_str().unwrap_or(""))
+}
+
+fn opus_track_issue(audio: &Value) -> Option<String> {
+    if !["mono", "stereo", "3.0", "quad", "5.0", "5.1", "6.1", "7.1"].contains(&audio_layout(audio))
+    {
+        return Some("An audio channel layout cannot be retained by Opus. Choose MKV with Keep original or Quality to retain the source audio.".into());
+    }
+    let rate = num(&audio["sample_rate"]).unwrap_or(0.0);
+    if !(7350.0..=192000.0).contains(&rate) {
+        return Some(
+            "An audio sample rate is outside the supported resampling range for WebM.".into(),
+        );
+    }
+    None
+}
+
 impl VideoInfo {
     fn copy_issue(&self, target: &str) -> Option<String> {
+        if target == "webm" {
+            if !["vp8", "vp9", "av1"].contains(&self.codec.as_str()) {
+                return Some("This video codec cannot be copied to WebM. Choose Quality or Target size to encode it to VP9.".into());
+            }
+            if streams(&self.probe).any(|s| s["codec_type"] == "audio" && !webm_audio_copy(s)) {
+                return Some("An audio codec cannot be copied to WebM. Choose Quality or Target size to encode it to Opus.".into());
+            }
+            return None;
+        }
         if target != "mov" {
             return None;
         }
@@ -448,6 +503,18 @@ impl VideoInfo {
             {
                 return Some(issue);
             }
+        } else if target == "webm" {
+            if streams(&self.probe)
+                .any(|s| s["codec_type"] == "subtitle" && s["codec_name"] != "webvtt")
+            {
+                return Some("WebM can retain WebVTT subtitles. Choose MKV for SRT/ASS, or MP4/MOV for existing MP4 text subtitles.".into());
+            }
+            if let Some(issue) = streams(&self.probe)
+                .filter(|s| s["codec_type"] == "audio" && !webm_audio_copy(s))
+                .find_map(opus_track_issue)
+            {
+                return Some(issue);
+            }
         } else if target == "mkv"
             && streams(&self.probe).any(|s| {
                 s["codec_type"] == "subtitle"
@@ -469,7 +536,11 @@ impl VideoInfo {
             }
         }
         if options.size_limit.is_some() {
-            if let Some(issue) = &self.aac_issue {
+            if let Some(issue) = if options.target == "webm" {
+                &self.opus_issue
+            } else {
+                &self.aac_issue
+            } {
                 return Err(issue.clone());
             }
         }
@@ -646,8 +717,16 @@ impl AudioBackend {
         // decoded duration. Keep that visible endpoint instead of extending it.
         let source_video = source_stats.get_mut(&0).unwrap();
         let video_end = video_end(&info).unwrap_or(source_video.end);
-        if video_end < source_video.end - source_video.duration - 0.00001
-            || video_end > source_video.end + 0.00001
+        // Matroska rounds packet timestamps/durations to milliseconds. For
+        // example, a 24 fps frame can decode as 41 ms while its declared end
+        // rounds up by 1 ms. Retain that end without accepting missing frames.
+        let source_precision = if info.container == "matroska,webm" {
+            0.00101
+        } else {
+            0.00001
+        };
+        if video_end < source_video.end - source_video.duration - source_precision
+            || video_end > source_video.end + source_precision
         {
             return Err(
                 "This video's declared duration disagrees with its decoded frames."
@@ -663,7 +742,9 @@ impl AudioBackend {
             .unwrap_or_else(|| options.dimensions(&info));
         let chosen = if !options.copy_streams && options.acceleration == Acceleration::Automatic {
             progress(0.2, "Checking hardware");
-            self.choose_video_encoder(work.path(), cancel)?
+            self.choose_video_encoder(options.target == "webm", work.path(), cancel)?
+        } else if options.target == "webm" {
+            Encoder::Vp9Software
         } else {
             Encoder::Software
         };
@@ -686,7 +767,7 @@ impl AudioBackend {
             )
         } else {
             encoder::with_fallback(&chosen, |encoder| {
-                if encoder == &Encoder::Software && chosen != Encoder::Software {
+                if encoder.is_software() && !chosen.is_software() {
                     progress(0.2, "Retrying with software");
                 }
                 self.encode_video(&job, encoder, cancel, &mut progress)
@@ -728,6 +809,8 @@ impl AudioBackend {
                     "{width} × {height} · {} · {} · {} audio track(s) · {}",
                     if options.copy_streams {
                         info.codec.to_uppercase()
+                    } else if options.target == "webm" {
+                        "VP9".into()
                     } else {
                         "H.264".into()
                     },
@@ -738,8 +821,7 @@ impl AudioBackend {
                     info.audio_tracks,
                     if options.copy_streams {
                         "Copied streams"
-                    } else if used == Encoder::Software
-                        && options.acceleration == Acceleration::Automatic
+                    } else if used.is_software() && options.acceleration == Acceleration::Automatic
                     {
                         "Software (hardware unavailable for this clip)"
                     } else {
@@ -756,7 +838,11 @@ impl AudioBackend {
                     })
                     .unwrap_or_default()
                     + &if converted_audio > 0 {
-                        format!(" · {converted_audio} audio track(s) encoded to AAC; original sample rates and channels retained.")
+                        if options.target == "webm" {
+                            format!(" · {converted_audio} audio track(s) encoded to Opus at 48,000 Hz; original channels retained.")
+                        } else {
+                            format!(" · {converted_audio} audio track(s) encoded to AAC; original sample rates and channels retained.")
+                        }
                     } else {
                         String::new()
                     },
@@ -801,7 +887,7 @@ impl AudioBackend {
             .tempfile_in(parent)
             .map_err(|_| "The output folder is not writable.".to_string())?;
         let status = work.join("encode.progress");
-        let passes = if size.is_some() && *encoder == Encoder::Software {
+        let passes = if size.is_some() && encoder.is_software() {
             2
         } else {
             1
@@ -909,19 +995,42 @@ impl AudioBackend {
                 if options.copies_audio(a) {
                     cmd.args([format!("-c:a:{i}"), "copy".into()]);
                 } else {
-                    let rate = num(&a["sample_rate"]).unwrap() as u32;
+                    let rate = options.audio_rate(a);
                     let channels = num(&a["channels"]).unwrap() as u32;
                     let bitrate = size.map(|p| p.audio_rates[i]).unwrap_or_else(|| {
-                        u64::from((96000 * channels).min(rate * channels * 6).max(16000))
+                        u64::from(
+                            ((if options.target == "webm" {
+                                64000
+                            } else {
+                                96000
+                            }) * channels)
+                                .min(rate * channels * 6)
+                                .max(16000),
+                        )
                     });
-                    cmd.args([
-                        format!("-c:a:{i}"),
-                        "aac".into(),
-                        format!("-profile:a:{i}"),
-                        "aac_low".into(),
-                        format!("-b:a:{i}"),
-                        bitrate.to_string(),
-                    ]);
+                    if options.target == "webm" {
+                        cmd.args([
+                            format!("-c:a:{i}"),
+                            "libopus".into(),
+                            format!("-ar:a:{i}"),
+                            "48000".into(),
+                            format!("-filter:a:{i}"),
+                            "aresample=48000:filter_size=64:cutoff=0.97".into(),
+                            format!("-mapping_family:a:{i}"),
+                            if channels <= 2 { "0" } else { "1" }.into(),
+                            format!("-b:a:{i}"),
+                            bitrate.to_string(),
+                        ]);
+                    } else {
+                        cmd.args([
+                            format!("-c:a:{i}"),
+                            "aac".into(),
+                            format!("-profile:a:{i}"),
+                            "aac_low".into(),
+                            format!("-b:a:{i}"),
+                            bitrate.to_string(),
+                        ]);
+                    }
                 }
             }
             if !options.metadata {
@@ -993,7 +1102,12 @@ impl AudioBackend {
         let actual = self
             .inspect_video(temporary.path(), cancel)?
             .ok_or_else(|| "The output has no video track.".to_string())?;
-        if actual.codec != "h264"
+        if actual.codec
+            != if options.target == "webm" {
+                "vp9"
+            } else {
+                "h264"
+            }
             || actual.width != width
             || actual.height != height
             || actual.rotation != 0
@@ -1016,14 +1130,14 @@ impl AudioBackend {
                 .to_string()
                 .into());
         }
-        if ["mkv", "mov"].contains(&options.target.as_str()) {
+        if ["mkv", "mov", "webm"].contains(&options.target.as_str()) {
             self.check_retained_tracks(job, &actual, temporary.path(), cancel)?;
         }
         for (before, after) in streams(&info.probe)
             .filter(|s| s["codec_type"] == "audio")
             .zip(streams(&actual.probe).filter(|s| s["codec_type"] == "audio"))
         {
-            if before["sample_rate"] != after["sample_rate"]
+            if f64::from(options.audio_rate(before)) != num(&after["sample_rate"]).unwrap_or(0.0)
                 || before["channels"] != after["channels"]
                 || audio_layout(before) != audio_layout(after)
             {
@@ -1164,12 +1278,28 @@ fn validate_timing(
         let tolerance = if *i == 0 {
             1.0 / f64::from(fps.unwrap_or(original_fps.ceil() as u32)).max(1.0) + 0.00001
         } else {
-            0.001
+            precision.max(0.00101)
+        };
+        let (minimum_samples, maximum_samples) = if *i == 0 {
+            (a.samples, a.samples)
+        } else {
+            let audio = streams(&job.info.probe)
+                .filter(|s| s["codec_type"] == "audio")
+                .nth(i - 1)
+                .ok_or_else(fail)?;
+            let source_rate = num(&audio["sample_rate"]).ok_or_else(fail)? as u64;
+            let scaled = a
+                .samples
+                .checked_mul(u64::from(job.options.audio_rate(audio)))
+                .ok_or_else(fail)?;
+            // A changed rate can place the endpoint between samples. SWR may
+            // round either way; unchanged rates still require an exact count.
+            (scaled / source_rate, scaled.div_ceil(source_rate))
         };
         if (a.start - b.start).abs() > tolerance
             || (a.end - b.end).abs() > tolerance
             || (*i == 0 && fps.is_none() && a.count != b.count)
-            || (*i != 0 && a.samples != b.samples)
+            || (*i != 0 && !(minimum_samples..=maximum_samples).contains(&b.samples))
         {
             #[cfg(test)]
             eprintln!("Stream {i}: before start {} end {} count {}; after start {} end {} count {}; tolerance {tolerance}", a.start, a.end, a.count, b.start, b.end, b.count);

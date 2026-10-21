@@ -9,6 +9,22 @@
   },
   "dependencies": [
     {
+      "name": "dav1d",
+      "version": "1.5.3",
+      "archive": "dav1d-1.5.3.tar.gz",
+      "url": "https://codeload.github.com/videolan/dav1d/tar.gz/refs/tags/1.5.3",
+      "sha256": "cbe212b02faf8c6eed5b6d55ef8a6e363aaab83f15112e960701a9c3df813686",
+      "licenses": ["COPYING"]
+    },
+    {
+      "name": "vpx",
+      "version": "1.17.0",
+      "archive": "libvpx-1.17.0.tar.gz",
+      "url": "https://codeload.github.com/webmproject/libvpx/tar.gz/refs/tags/v1.17.0",
+      "sha256": "1020f184046187baa2985dbde38e0691f49c44088bca7a1842b0236c6081dc0a",
+      "licenses": ["LICENSE", "PATENTS"]
+    },
+    {
       "name": "lame",
       "version": "4.0",
       "archive": "lame-4.0.tar.gz",

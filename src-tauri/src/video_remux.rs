@@ -246,7 +246,8 @@ impl AudioBackend {
                         != after["tags"]["language"].as_str().unwrap_or("und")
                     || disposition != after["disposition"]
                     || (before["codec_type"] == "audio"
-                        && (before["sample_rate"] != after["sample_rate"]
+                        && (f64::from(job.options.audio_rate(before))
+                            != num(&after["sample_rate"]).unwrap_or(0.0)
                             || before["channels"] != after["channels"]
                             || audio_layout(before) != audio_layout(after)))
                 {

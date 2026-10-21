@@ -48,7 +48,7 @@ jobs:
         run: rustup toolchain install 1.98.1 --profile minimal --component rustfmt,clippy && rustup default 1.98.1
       - name: macOS build dependencies
         if: runner.os == 'macOS'
-        run: brew install cmake pkg-config nasm
+        run: brew install cmake pkg-config nasm meson ninja
       - name: Linux build dependencies
         if: runner.os == 'Linux'
         run: |
@@ -103,7 +103,7 @@ jobs:
           msystem: UCRT64
           update: true
           install: >-
-            python make diffutils
+            python make diffutils meson ninja
             mingw-w64-ucrt-x86_64-gcc
             mingw-w64-ucrt-x86_64-cmake
             mingw-w64-ucrt-x86_64-pkgconf
