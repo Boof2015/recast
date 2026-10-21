@@ -208,6 +208,40 @@ def build_vpx(work, logs, env, system, arch):
     return source, config
 
 
+def meson_path(path, system):
+    # Native Windows Python cannot resolve MSYS mount paths embedded in files.
+    # Convert explicitly, including prefixes and paths containing spaces.
+    if system == 'windows':
+        return subprocess.check_output(['cygpath', '-am', str(path)], text=True).strip()
+    return str(path)
+
+
+def meson_toolchain(work, env, system, arch):
+    command, config, build_env = ['meson'], [], env.copy()
+    if system in ['darwin', 'windows']:
+        machine = work / 'meson-machine.ini'
+        if system == 'windows':
+            # Keep the orchestrator on MSYS Python, but run Meson on its native
+            # UCRT Python. MSYS Meson deliberately rejects a MinGW environment.
+            command = ['/ucrt64/bin/python.exe', '-m', 'mesonbuild.mesonmain']
+            binaries = {name: meson_path(f'/ucrt64/bin/{tool}.exe', system) for name, tool in {
+                'c': 'gcc', 'ar': 'ar', 'windres': 'windres',
+                'pkg-config': 'pkg-config', 'nasm': 'nasm',
+            }.items()}
+            if 'PKG_CONFIG_LIBDIR' in build_env:
+                build_env['PKG_CONFIG_LIBDIR'] = meson_path(build_env['PKG_CONFIG_LIBDIR'], system)
+        else:
+            binaries = {'c': 'clang', 'ar': 'ar'}
+        contents = '[binaries]\n' + ''.join(f'{key} = {value!r}\n' for key, value in binaries.items())
+        if system == 'darwin':
+            # Select the requested assembly when cross-building an Intel Mac.
+            cpu = 'aarch64' if arch == 'arm64' else arch
+            contents += f"[host_machine]\nsystem = 'darwin'\ncpu_family = '{cpu}'\ncpu = '{cpu}'\nendian = 'little'\n"
+        machine.write_text(contents)
+        config += ['--native-file' if system == 'windows' else '--cross-file', meson_path(machine, system)]
+    return command, config, build_env
+
+
 def build_dav1d(work, logs, env, system, arch):
     dependency = next(item for item in LOCK['dependencies'] if item['name'] == 'dav1d')
     source = COMMON.extract(dependency, work / 'dav1d')
@@ -217,25 +251,15 @@ def build_dav1d(work, logs, env, system, arch):
     flags = '-O2 -fPIC'
     if system == 'darwin':
         flags += f' -arch {arch} -mmacosx-version-min={LOCK["minimumMacOS"]}'
-    config = [f'--prefix={stage}', '--libdir=lib', '--buildtype=release',
+    command, machine_config, build_env = meson_toolchain(work, env, system, arch)
+    config = [f'--prefix={meson_path(stage, system)}', '--libdir=lib', '--buildtype=release',
               '--default-library=static', '--auto-features=disabled', '-Db_staticpic=true',
               '-Denable_tools=false', '-Denable_tests=false', '-Denable_examples=false',
-              '-Denable_docs=false', '-Dbitdepths=8,16', '--wrap-mode=nodownload']
-    if system in ['darwin', 'windows']:
-        # MSYS Python is a build host, not the target Windows runtime. An explicit
-        # machine file also makes Intel Mac cross-builds select the right assembly.
-        machine = work / 'dav1d-machine.ini'
-        cpu = 'aarch64' if arch == 'arm64' else arch
-        binaries = {'c': cc, 'ar': '/ucrt64/bin/ar' if system == 'windows' else 'ar'}
-        if system == 'windows':
-            binaries['windres'] = '/ucrt64/bin/windres'
-        machine.write_text('[binaries]\n' + ''.join(f'{key} = {value!r}\n' for key, value in binaries.items())
-                           + f"[host_machine]\nsystem = '{system}'\ncpu_family = '{cpu}'\ncpu = '{cpu}'\nendian = 'little'\n")
-        config += ['--cross-file', str(machine)]
-    build_env = env | {'CC': cc, 'CFLAGS': flags, 'LDFLAGS': flags}
-    COMMON.run(['meson', 'setup', str(build), str(source), *config], env=build_env, log=logs / 'dav1d-configure.log')
-    COMMON.run(['meson', 'compile', '-C', str(build), '-j', COMMON.JOBS], env=build_env, log=logs / 'dav1d-build.log')
-    COMMON.run(['meson', 'install', '-C', str(build)], env=build_env, log=logs / 'dav1d-install.log')
+              '-Denable_docs=false', '-Dbitdepths=8,16', '--wrap-mode=nodownload', *machine_config]
+    build_env.update(CC=meson_path(cc, system) if system == 'windows' else cc, CFLAGS=flags, LDFLAGS=flags)
+    COMMON.run([*command, 'setup', meson_path(build, system), meson_path(source, system), *config], env=build_env, log=logs / 'dav1d-configure.log')
+    COMMON.run([*command, 'compile', '-C', meson_path(build, system), '-j', COMMON.JOBS], env=build_env, log=logs / 'dav1d-build.log')
+    COMMON.run([*command, 'install', '-C', meson_path(build, system)], env=build_env, log=logs / 'dav1d-install.log')
     return source, config
 
 

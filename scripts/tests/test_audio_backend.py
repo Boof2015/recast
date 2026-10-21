@@ -2,6 +2,8 @@
 import importlib.util
 import os
 from pathlib import Path
+import platform
+import shlex
 import subprocess
 import tempfile
 import unittest
@@ -11,6 +13,55 @@ SPEC = importlib.util.spec_from_file_location(
 )
 builder = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(builder)
+
+
+class MesonToolchainTests(unittest.TestCase):
+    def test_native_static_library_build_install_and_execution_with_spaced_paths(self):
+        # Runs before the long codec builds in CI. On Windows this exercises the
+        # actual MSYS orchestrator -> UCRT Python/Meson/Ninja/compiler boundary.
+        system = 'windows' if os.environ.get('MSYSTEM') else platform.system().lower()
+        arch = {'amd64': 'x86_64', 'aarch64': 'arm64'}.get(platform.machine().lower(), platform.machine().lower())
+        with tempfile.TemporaryDirectory(prefix='recast meson test ') as temporary:
+            work = Path(temporary)
+            source, build, stage = (work / name for name in ['source dir', 'build dir', 'install dir'])
+            source.mkdir()
+            (source / 'meson.build').write_text(f'''project('recast-meson-check', 'c')
+assert(host_machine.system() == '{system}', 'Incorrect target OS')
+lib = library('recast_probe', 'probe.c', install: true)
+import('pkgconfig').generate(lib, name: 'recast-probe', filebase: 'recast-probe',
+  description: 'Recast build toolchain check', version: '1.0')
+install_headers('probe.h')
+executable('recast_probe_check', 'main.c', link_with: lib, install: true)
+''')
+            (source / 'probe.h').write_text('int recast_probe(void);\n')
+            (source / 'probe.c').write_text('#include "probe.h"\nint recast_probe(void) { return 42; }\n')
+            (source / 'main.c').write_text('#include "probe.h"\nint main(void) { return recast_probe() != 42; }\n')
+            env = os.environ | {'PKG_CONFIG_LIBDIR': str(stage / 'lib/pkgconfig')}
+            command, machine_config, env = builder.meson_toolchain(work, env, system, arch)
+            args = [*command, 'setup', builder.meson_path(build, system), builder.meson_path(source, system),
+                    f'--prefix={builder.meson_path(stage, system)}', '--libdir=lib',
+                    '--default-library=static', '--wrap-mode=nodownload', *machine_config]
+            for step in [args,
+                         [*command, 'compile', '-C', builder.meson_path(build, system), '-j', '2'],
+                         [*command, 'install', '-C', builder.meson_path(build, system)]]:
+                result = subprocess.run(step, env=env, capture_output=True, text=True, timeout=90)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertTrue((stage / 'lib/librecast_probe.a').is_file())
+            self.assertTrue((stage / 'include/probe.h').is_file())
+            executable = stage / 'bin' / ('recast_probe_check.exe' if system == 'windows' else 'recast_probe_check')
+            subprocess.run([str(executable)], check=True, timeout=10)
+
+            # The surrounding FFmpeg build consumes the native Meson install
+            # from MSYS. Check that the .pc paths link correctly across it too.
+            flags = subprocess.check_output(['pkg-config', '--static', '--cflags', '--libs', 'recast-probe'],
+                                            env=env, text=True, timeout=10)
+            compiler = '/ucrt64/bin/gcc' if system == 'windows' else 'cc'
+            linked = work / ('linked.exe' if system == 'windows' else 'linked')
+            result = subprocess.run([compiler, str(source / 'main.c'), *shlex.split(flags), '-o', str(linked)],
+                                    capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            subprocess.run([str(linked)], check=True, timeout=10)
+
 
 # Compatibility block from oneVPL 2.16.0's mfx_dispatcher_defs.h.
 LEGACY_STRINGS = r'''#if _MSC_VER < 1400
