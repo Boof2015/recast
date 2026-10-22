@@ -2535,6 +2535,7 @@ name = "recast"
 version = "0.1.0"
 dependencies = [
  "infer 0.19.0",
+ "libc",
  "reqwest",
  "semver",
  "serde",
@@ -2545,6 +2546,7 @@ dependencies = [
  "tauri-plugin-dialog",
  "tempfile",
  "uuid",
+ "windows-sys 0.61.2",
  "zip",
 ]
 

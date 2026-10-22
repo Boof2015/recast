@@ -13,6 +13,7 @@ mod jobs;
 mod mp3;
 mod ogg;
 mod opus;
+mod providers;
 mod tiff;
 mod video_animation;
 mod video_backend;
@@ -84,6 +85,7 @@ pub fn run() {
             jobs::start_conversion,
             jobs::retry_conversion,
             jobs::cancel_conversion,
+            jobs::clear_conversion,
             jobs::backend_status,
             jobs::reveal_output,
             video_preview::preview_video,

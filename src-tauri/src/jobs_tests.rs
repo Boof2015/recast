@@ -62,6 +62,8 @@ fn request(paths: &[PathBuf], folder: &Path) -> ConversionRequest {
         video_audio_options: None,
         animation_options: None,
         video_frame_options: None,
+        extension_options: HashMap::new(),
+        providers: Vec::new(),
     }
 }
 fn identify(path: &Path, format: &str) -> String {

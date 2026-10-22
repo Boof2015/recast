@@ -74,6 +74,14 @@ Both animation outputs default to a 480-pixel long edge and 15 fps. GIF offers p
 
 **Video → still image** exports one selected frame per video to PNG, JPEG, WebP, AVIF, TIFF, or BMP. Scrub the zoomable timeline, enter seconds, or step through actual frames with the previous/next buttons or arrow keys. Each video remembers its own selection; unvisited videos use their first frame. Image settings apply to the whole group. The preview uses the same source frame as export, at a smaller size; Original exports its full displayed dimensions, including rotation. Audio, subtitles, chapters, and video metadata are omitted.
 
+## Documents and extensions
+
+Install **Text & Markdown** from **Settings → Extensions** to convert `.md`, `.markdown`, and UTF-8 `.txt` files to **PDF or DOCX**. Choose A4 or Letter paper, then convert them alongside your other files. Markdown supports headings, lists, tables, code, math, footnotes, links, and relative PNG/JPEG images. Plain text stays literal. PDF fonts are bundled with the extension; DOCX appearance also depends on the fonts available in the app used to open it.
+
+Extensions download separately and work offline after installation. You can also choose **Install from file** for a local `.recast-extension` package. Installed formats appear automatically. Image, audio, and video conversion are included in Recast itself.
+
+This first document extension accepts UTF-8 files up to 16 MiB and local images up to 64 MiB each / 128 MiB total. Remote images, raw HTML/TeX/Typst, custom templates, citations, and missing PDF glyphs receive an explanation instead of an incomplete export. DOCX input and other Office documents are not supported by this extension.
+
 ## Batches
 
 Batches preserve originals and existing outputs, produce one output per successful input, report per-file results, support cancellation, and retry unfinished files. Destinations must work for the entire group. Completed files show status and size, with technical details available on expansion. Warnings and failures remain visible.

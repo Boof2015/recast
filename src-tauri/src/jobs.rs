@@ -25,6 +25,10 @@ pub struct ConversionRequest {
     pub video_audio_options: Option<VideoAudioOptions>,
     pub animation_options: Option<crate::video_animation::AnimationOptions>,
     pub video_frame_options: Option<crate::video_frame::FrameOptions>,
+    #[serde(default)]
+    pub extension_options: HashMap<String, crate::providers::Selection>,
+    #[serde(skip)]
+    pub providers: Vec<Arc<crate::providers::Provider>>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -239,6 +243,7 @@ impl JobManager {
                 && request.video_audio_options.is_none()
                 && request.animation_options.is_none()
                 && request.video_frame_options.is_none()
+                && request.extension_options.is_empty()
             {
                 return Err("Choose an output format before converting.".into());
             }
@@ -324,46 +329,110 @@ pub fn run_job(
         let source = snapshot.files[index].id.clone();
         report(snapshot);
         let folder = job.request.output_folder.as_deref().map(Path::new);
-        let result = crate::inputs::inspect_with_audio(Path::new(&source), audio, &job.cancel)
-            .map_err(ConversionError::from)
-            .and_then(|input| match input.kind.as_str() {
-                "images" if job.request.image_frame_options.is_some() => {
-                    let options = job.request.image_frame_options.as_ref().unwrap();
-                    backend.convert_with_frame(
+        let result = if let Some(selection) = job.request.extension_options.get(&source) {
+            crate::providers::selected(&job.request.providers, selection)
+                .map_err(ConversionError::from)
+                .and_then(|provider| {
+                    provider.convert(
                         Path::new(&source),
                         folder,
-                        &options.image,
-                        options.frames.get(&source),
-                        true,
+                        selection,
                         &job.cancel,
+                        |progress, phase| {
+                            report(job.update(|state| {
+                                state.files[index].progress = Some(progress);
+                                state.files[index].phase = Some(phase.into());
+                            }));
+                        },
                     )
-                }
-                "images" => backend.convert(
-                    Path::new(&source),
-                    folder,
-                    job.request
-                        .image_options
-                        .as_ref()
-                        .ok_or_else(|| "Choose an image output format.".to_string())?,
-                    &job.cancel,
-                ),
-                "audio" => audio.convert(
-                    Path::new(&source),
-                    folder,
-                    job.request
-                        .audio_options
-                        .as_ref()
-                        .ok_or_else(|| "Choose an audio output format.".to_string())?,
-                    &job.cancel,
-                ),
-                "video" if job.request.video_frame_options.is_some() => {
-                    let options = job.request.video_frame_options.as_ref().unwrap();
-                    input.require_frame_target(options)?;
-                    audio.convert_frame(
-                        backend,
+                })
+        } else {
+            crate::inputs::inspect_with_audio(Path::new(&source), audio, &job.cancel)
+                .map_err(ConversionError::from)
+                .and_then(|input| match input.kind.as_str() {
+                    "images" if job.request.image_frame_options.is_some() => {
+                        let options = job.request.image_frame_options.as_ref().unwrap();
+                        backend.convert_with_frame(
+                            Path::new(&source),
+                            folder,
+                            &options.image,
+                            options.frames.get(&source),
+                            true,
+                            &job.cancel,
+                        )
+                    }
+                    "images" => backend.convert(
                         Path::new(&source),
                         folder,
-                        options,
+                        job.request
+                            .image_options
+                            .as_ref()
+                            .ok_or_else(|| "Choose an image output format.".to_string())?,
+                        &job.cancel,
+                    ),
+                    "audio" => audio.convert(
+                        Path::new(&source),
+                        folder,
+                        job.request
+                            .audio_options
+                            .as_ref()
+                            .ok_or_else(|| "Choose an audio output format.".to_string())?,
+                        &job.cancel,
+                    ),
+                    "video" if job.request.video_frame_options.is_some() => {
+                        let options = job.request.video_frame_options.as_ref().unwrap();
+                        input.require_frame_target(options)?;
+                        audio.convert_frame(
+                            backend,
+                            Path::new(&source),
+                            folder,
+                            options,
+                            &job.cancel,
+                            |progress, phase| {
+                                report(job.update(|state| {
+                                    state.files[index].progress = Some(progress);
+                                    state.files[index].phase = Some(phase.into());
+                                }))
+                            },
+                        )
+                    }
+                    "video" if job.request.animation_options.is_some() => {
+                        let options = job.request.animation_options.as_ref().unwrap();
+                        let range = *options
+                            .ranges
+                            .get(&source)
+                            .ok_or_else(|| "Choose a range for this video.".to_string())?;
+                        audio.convert_animation(
+                            backend,
+                            Path::new(&source),
+                            folder,
+                            (options, range),
+                            &job.cancel,
+                            |progress, phase| {
+                                report(job.update(|state| {
+                                    state.files[index].progress = Some(progress);
+                                    state.files[index].phase = Some(phase.into());
+                                }))
+                            },
+                        )
+                    }
+                    "video" if job.request.video_audio_options.is_some() => {
+                        let options = job.request.video_audio_options.as_ref().unwrap();
+                        audio.extract_audio(
+                            Path::new(&source),
+                            folder,
+                            &options.audio,
+                            options.tracks.get(&source).copied(),
+                            &job.cancel,
+                        )
+                    }
+                    "video" => audio.convert_video(
+                        Path::new(&source),
+                        folder,
+                        job.request
+                            .video_options
+                            .as_ref()
+                            .ok_or_else(|| "Choose a video output format.".to_string())?,
                         &job.cancel,
                         |progress, phase| {
                             report(job.update(|state| {
@@ -371,57 +440,12 @@ pub fn run_job(
                                 state.files[index].phase = Some(phase.into());
                             }))
                         },
-                    )
-                }
-                "video" if job.request.animation_options.is_some() => {
-                    let options = job.request.animation_options.as_ref().unwrap();
-                    let range = *options
-                        .ranges
-                        .get(&source)
-                        .ok_or_else(|| "Choose a range for this video.".to_string())?;
-                    audio.convert_animation(
-                        backend,
-                        Path::new(&source),
-                        folder,
-                        (options, range),
-                        &job.cancel,
-                        |progress, phase| {
-                            report(job.update(|state| {
-                                state.files[index].progress = Some(progress);
-                                state.files[index].phase = Some(phase.into());
-                            }))
-                        },
-                    )
-                }
-                "video" if job.request.video_audio_options.is_some() => {
-                    let options = job.request.video_audio_options.as_ref().unwrap();
-                    audio.extract_audio(
-                        Path::new(&source),
-                        folder,
-                        &options.audio,
-                        options.tracks.get(&source).copied(),
-                        &job.cancel,
-                    )
-                }
-                "video" => audio.convert_video(
-                    Path::new(&source),
-                    folder,
-                    job.request
-                        .video_options
-                        .as_ref()
-                        .ok_or_else(|| "Choose a video output format.".to_string())?,
-                    &job.cancel,
-                    |progress, phase| {
-                        report(job.update(|state| {
-                            state.files[index].progress = Some(progress);
-                            state.files[index].phase = Some(phase.into());
-                        }))
-                    },
-                ),
-                _ => Err(ConversionError::Failed(
-                    "This file type is not supported for conversion yet.".into(),
-                )),
-            });
+                    ),
+                    _ => Err(ConversionError::Failed(
+                        "This file type is not supported for conversion yet.".into(),
+                    )),
+                })
+        };
         let snapshot = job.update(|state| {
             let file = &mut state.files[index];
             file.progress = None;
@@ -501,6 +525,7 @@ pub async fn start_conversion(
     manager: State<'_, JobManager>,
     backend: State<'_, ImageBackend>,
     audio: State<'_, AudioBackend>,
+    extensions: State<'_, crate::extensions::ExtensionManager>,
     request: ConversionRequest,
     on_progress: Channel<BatchSnapshot>,
 ) -> Result<BatchSnapshot, String> {
@@ -508,8 +533,36 @@ pub async fn start_conversion(
     let check = backend.clone();
     let audio = audio.inner().clone();
     let audio_check = audio.clone();
-    let preflight = request.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    let guard = if request.extension_options.is_empty() {
+        None
+    } else {
+        Some(extensions.begin_read(window.label())?)
+    };
+    let operations = extensions.inner().clone();
+    let extensions = operations.clone();
+    let mut preflight = request;
+    let (request, _guard) = tauri::async_runtime::spawn_blocking(move || {
+        let cancelled = AtomicBool::new(false);
+        let cancelled = guard
+            .as_ref()
+            .map(|guard| guard.cancelled())
+            .unwrap_or(&cancelled);
+        if !preflight.extension_options.is_empty() {
+            preflight.providers = extensions.providers(cancelled)?;
+            preflight.providers.retain(|provider| {
+                preflight
+                    .extension_options
+                    .values()
+                    .any(|selection| selection.key == provider.key)
+            });
+            if preflight
+                .extension_options
+                .keys()
+                .any(|path| !preflight.paths.contains(path))
+            {
+                return Err("An extension selection refers to a different batch.".into());
+            }
+        }
         if preflight.image_options.is_some()
             || preflight.image_frame_options.is_some()
             || preflight.animation_options.is_some()
@@ -525,7 +578,43 @@ pub async fn start_conversion(
         {
             audio_check.verify()?;
         }
+        let mut extension_groups = HashMap::new();
         for path in &preflight.paths {
+            if let Some(selection) = preflight.extension_options.get(path) {
+                let provider = crate::providers::selected(&preflight.providers, selection)?;
+                provider.target(selection)?;
+                let (input, targets) = provider.inspect(Path::new(path), cancelled)?;
+                if !targets
+                    .iter()
+                    .any(|target| target.provider_target == selection.target)
+                {
+                    return Err("This file does not support the selected extension output.".into());
+                }
+                let identity = serde_json::to_string(selection).map_err(|e| e.to_string())?;
+                if extension_groups
+                    .insert(input.kind.clone(), identity.clone())
+                    .is_some_and(|previous| previous != identity)
+                {
+                    return Err("Choose one output and settings for the whole group.".into());
+                }
+                let core_selected = match input.kind.as_str() {
+                    "images" => {
+                        preflight.image_options.is_some() || preflight.image_frame_options.is_some()
+                    }
+                    "audio" => preflight.audio_options.is_some(),
+                    "video" => {
+                        preflight.video_options.is_some()
+                            || preflight.video_audio_options.is_some()
+                            || preflight.animation_options.is_some()
+                            || preflight.video_frame_options.is_some()
+                    }
+                    _ => false,
+                };
+                if core_selected {
+                    return Err("Choose one output for the whole group.".into());
+                }
+                continue;
+            }
             let input = crate::inputs::inspect_with_audio(
                 Path::new(path),
                 &audio_check,
@@ -574,7 +663,7 @@ pub async fn start_conversion(
             };
             valid.map_err(|message| format!("{}: {message}", input.name))?;
         }
-        Ok::<(), String>(())
+        Ok::<_, String>((preflight, guard))
     })
     .await
     .map_err(|_| "The converters could not be checked.".to_string())??;
@@ -585,8 +674,21 @@ pub async fn start_conversion(
     {
         return Err("This batch window was closed.".into());
     }
-    let job = manager.prepare(window.label(), request, false)?;
+    let job = operations.while_open(window.label(), || {
+        manager.prepare(window.label(), request, false)
+    })?;
     Ok(launch(job, backend, audio, on_progress))
+}
+
+#[tauri::command]
+pub fn clear_conversion(window: WebviewWindow, manager: State<'_, JobManager>, id: String) {
+    let mut jobs = manager.0.lock().unwrap();
+    if jobs
+        .get(window.label())
+        .is_some_and(|job| !job.active() && job.snapshot().id == id)
+    {
+        jobs.remove(window.label());
+    }
 }
 
 #[tauri::command]
@@ -595,6 +697,7 @@ pub fn retry_conversion(
     manager: State<'_, JobManager>,
     backend: State<'_, ImageBackend>,
     audio: State<'_, AudioBackend>,
+    extensions: State<'_, crate::extensions::ExtensionManager>,
     allow_clipping: Option<bool>,
     on_progress: Channel<BatchSnapshot>,
 ) -> Result<BatchSnapshot, String> {
@@ -614,7 +717,9 @@ pub fn retry_conversion(
             options.audio.allow_clipping = true;
         }
     }
-    let job = manager.prepare(window.label(), request, true)?;
+    let job = extensions.while_open(window.label(), || {
+        manager.prepare(window.label(), request, true)
+    })?;
     Ok(launch(
         job,
         backend.inner().clone(),

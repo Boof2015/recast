@@ -22,4 +22,5 @@ src-tauri/resources/.audio-backend-*/
 # Downloadable extension engines are release assets, not source.
 *.recast-extension
 extension-artifacts/
+extensions/text/worker/target/
 extensions/README.md

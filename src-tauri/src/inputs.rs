@@ -27,6 +27,7 @@ pub struct InputFile {
     pub animation: Option<crate::video_animation::AnimationInfo>,
     target_issues: std::collections::HashMap<String, String>,
     pub sequence: Option<crate::animation::Sequence>,
+    pub extension_targets: Vec<crate::providers::Destination>,
 }
 
 #[derive(Debug, Serialize)]
@@ -130,6 +131,7 @@ pub fn inspect(path: &Path) -> Result<InputFile, String> {
         targets.extend(ImageFormat::ALL.map(|format| format!("frame-{}", format.id())));
     }
     Ok(InputFile {
+        extension_targets: Vec::new(),
         id: path_string.clone(),
         name: path
             .file_name()
@@ -484,16 +486,25 @@ impl InputFile {
 pub async fn inspect_inputs(
     paths: Vec<String>,
     audio: tauri::State<'_, crate::audio_backend::AudioBackend>,
+    extensions: tauri::State<'_, crate::extensions::ExtensionManager>,
+    window: tauri::WebviewWindow,
 ) -> Result<Inspection, String> {
+    let guard = extensions.begin_read(window.label())?;
+    let extensions = extensions.inner().clone();
     let audio = audio.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let mut result = Inspection::default();
+        let providers = extensions
+            .providers(guard.cancelled())
+            .unwrap_or_else(|message| {
+                result.errors.push(InputError {
+                    name: "Extensions".into(),
+                    message,
+                });
+                Vec::new()
+            });
         for path in paths {
-            match inspect_with_audio(
-                Path::new(&path),
-                &audio,
-                &std::sync::atomic::AtomicBool::new(false),
-            ) {
+            match inspect_with_providers(Path::new(&path), &audio, guard.cancelled(), &providers) {
                 Ok(file) => result.files.push(file),
                 Err(message) => result.errors.push(InputError {
                     name: Path::new(&path)
@@ -509,6 +520,95 @@ pub async fn inspect_inputs(
     })
     .await
     .map_err(|_| "File inspection could not finish.".into())
+}
+
+pub fn inspect_with_providers(
+    path: &Path,
+    audio: &crate::audio_backend::AudioBackend,
+    cancel: &std::sync::atomic::AtomicBool,
+    providers: &[std::sync::Arc<crate::providers::Provider>],
+) -> Result<InputFile, String> {
+    let base = inspect_with_audio(path, audio, cancel);
+    let kind = base.as_ref().ok().map(|input| input.kind.as_str());
+    let extension = path
+        .extension()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_ascii_lowercase();
+    let candidates: Vec<_> = providers
+        .iter()
+        .filter(|provider| provider.matches(path, kind))
+        .collect();
+    if candidates.is_empty()
+        && base.is_err()
+        && !["md", "markdown", "txt"].contains(&extension.as_str())
+    {
+        return base;
+    }
+    let mut input = match base {
+        Ok(input) => input,
+        Err(_) => {
+            let canonical = path
+                .canonicalize()
+                .map_err(|_| "This file is no longer available.")?;
+            let metadata = canonical
+                .metadata()
+                .map_err(|_| "This file could not be read.")?;
+            if !metadata.is_file() {
+                return Err("Choose individual files, rather than a folder.".into());
+            }
+            let path = canonical.to_string_lossy().into_owned();
+            InputFile {
+                id: path.clone(),
+                path,
+                name: canonical
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned(),
+                kind: "documents".into(),
+                format: extension.to_uppercase(),
+                bytes: metadata.len(),
+                has_audio: None,
+                targets: vec![],
+                conversion_issue: Some(
+                    "Install Text & Markdown in Settings → Extensions to convert this file.".into(),
+                ),
+                animated: false,
+                audio: None,
+                audio_tracks: vec![],
+                selected_audio_track: None,
+                video: None,
+                animation: None,
+                target_issues: Default::default(),
+                sequence: None,
+                extension_targets: vec![],
+            }
+        }
+    };
+    for provider in candidates {
+        match provider.inspect(Path::new(&input.path), cancel) {
+            Ok((format, targets)) => {
+                if input.targets.is_empty() {
+                    input.kind = format.kind;
+                    input.format = format.label;
+                }
+                input
+                    .targets
+                    .extend(targets.iter().map(|target| target.id.clone()));
+                input.extension_targets.extend(targets);
+            }
+            Err(issue) => {
+                if input.targets.is_empty() {
+                    input.conversion_issue = Some(issue);
+                }
+            }
+        }
+    }
+    if !input.targets.is_empty() {
+        input.conversion_issue = None;
+    }
+    Ok(input)
 }
 
 #[cfg(test)]

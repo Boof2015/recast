@@ -10,7 +10,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, Mutex,
+        Arc, Mutex, Weak,
     },
     time::Duration,
 };
@@ -91,6 +91,7 @@ pub struct Review {
 #[derive(Default)]
 struct OperationState {
     owner: Option<String>,
+    readers: BTreeMap<String, Vec<Weak<AtomicBool>>>,
     closing: HashSet<String>,
     exiting: bool,
 }
@@ -100,9 +101,16 @@ struct Operation {
     cancelled: AtomicBool,
 }
 
+#[derive(Clone)]
 pub struct ExtensionManager {
     root: PathBuf,
     operation: Arc<Operation>,
+    leases: Arc<Mutex<BTreeMap<String, Weak<()>>>>,
+}
+
+#[derive(Debug)]
+pub struct Lease {
+    _pin: Arc<()>,
 }
 
 impl ExtensionManager {
@@ -110,16 +118,19 @@ impl ExtensionManager {
         Self {
             root,
             operation: Arc::default(),
+            leases: Arc::default(),
         }
     }
     pub fn busy(&self, owner: Option<&str>) -> bool {
-        self.operation
-            .state
-            .lock()
-            .unwrap()
+        let state = self.operation.state.lock().unwrap();
+        state
             .owner
             .as_ref()
             .is_some_and(|active| owner.is_none_or(|label| label == active))
+            || state.readers.iter().any(|(label, readers)| {
+                owner.is_none_or(|owner| owner == label)
+                    && readers.iter().any(|reader| reader.strong_count() > 0)
+            })
     }
     pub fn cancel(&self, owner: Option<&str>) -> bool {
         self.cancel_or_close(owner, false)
@@ -136,18 +147,37 @@ impl ExtensionManager {
                 state.exiting = true;
             }
         }
+        let mut busy = false;
+        for (label, readers) in &state.readers {
+            if owner.is_none_or(|owner| owner == label) {
+                for cancel in readers.iter().filter_map(Weak::upgrade) {
+                    cancel.store(true, Ordering::Relaxed);
+                    busy = true;
+                }
+            }
+        }
         if state
             .owner
             .as_ref()
             .is_some_and(|label| owner.is_none_or(|wanted| wanted == label))
         {
             self.operation.cancelled.store(true, Ordering::Relaxed);
-            true
-        } else {
-            false
+            busy = true;
         }
+        busy
     }
-    fn begin(&self, owner: &str) -> Result<Guard> {
+    pub(crate) fn begin_read(&self, owner: &str) -> Result<ReadGuard> {
+        let mut state = self.operation.state.lock().unwrap();
+        if state.exiting || state.closing.contains(owner) {
+            return Err("This window is closing.".into());
+        }
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let readers = state.readers.entry(owner.into()).or_default();
+        readers.retain(|reader| reader.strong_count() > 0);
+        readers.push(Arc::downgrade(&cancelled));
+        Ok(ReadGuard(cancelled))
+    }
+    pub(crate) fn begin(&self, owner: &str) -> Result<Guard> {
         let mut state = self.operation.state.lock().unwrap();
         if state.exiting || state.closing.contains(owner) {
             return Err("This window is closing.".into());
@@ -159,8 +189,116 @@ impl ExtensionManager {
         state.owner = Some(owner.into());
         Ok(Guard(self.operation.clone()))
     }
+
+    fn remove_unused(&self, key: &str) -> Result<()> {
+        let leases = self.leases.lock().unwrap();
+        if leases.get(key).and_then(Weak::upgrade).is_some() {
+            return Err(
+                "This extension is in use by a batch. Clear that batch before removing it.".into(),
+            );
+        }
+        remove(&self.root, key)
+    }
+
+    pub fn while_open<T>(&self, owner: &str, action: impl FnOnce() -> Result<T>) -> Result<T> {
+        let state = self.operation.state.lock().unwrap();
+        if state.exiting || state.closing.contains(owner) {
+            return Err("This window is closing.".into());
+        }
+        action()
+    }
+
+    pub fn providers(
+        &self,
+        cancelled: &AtomicBool,
+    ) -> Result<Vec<Arc<crate::providers::Provider>>> {
+        let mut leases = self.leases.lock().unwrap();
+        let mut providers = Vec::new();
+        let mut seen = HashSet::new();
+        let mut installed = list(&self.root)?;
+        installed.sort_by(|a, b| {
+            a.package
+                .id
+                .cmp(&b.package.id)
+                .then_with(|| {
+                    Version::parse(&b.package.version)
+                        .unwrap()
+                        .cmp(&Version::parse(&a.package.version).unwrap())
+                })
+                .then_with(|| a.key.cmp(&b.key))
+        });
+        for installed in installed {
+            if seen.contains(&installed.package.id) {
+                continue;
+            }
+            let directory = self.root.join(&installed.key);
+            let root = directory.join("payload");
+            let bytes =
+                crate::providers::read_bounded(&directory.join("manifest.json"), MAX_MANIFEST)?;
+            let manifest: Manifest = serde_json::from_slice(&bytes).map_err(io)?;
+            validate_manifest(&manifest)?;
+            if manifest.package != installed.package {
+                return Err("Extension receipt and manifest differ.".into());
+            }
+            if !manifest
+                .files
+                .iter()
+                .any(|entry| entry.path == "provider.json")
+            {
+                continue;
+            }
+            for entry in &manifest.files {
+                let path = root.join(&entry.path);
+                let metadata = fs::symlink_metadata(&path).map_err(io)?;
+                if !metadata.file_type().is_file()
+                    || metadata.len() != entry.bytes
+                    || !path
+                        .canonicalize()
+                        .map_err(io)?
+                        .starts_with(root.canonicalize().map_err(io)?)
+                {
+                    return Err(
+                        "An installed extension file has changed. Reinstall the extension.".into(),
+                    );
+                }
+                let (_, hash) = transfer(
+                    File::open(path).map_err(io)?,
+                    std::io::sink(),
+                    entry.bytes,
+                    cancelled,
+                )?;
+                if hash != entry.sha256 {
+                    return Err("An installed extension failed its integrity check. Reinstall the extension.".into());
+                }
+            }
+            let descriptor = provider_descriptor(&root, &manifest)?;
+            seen.insert(installed.package.id.clone());
+            let pin = leases
+                .get(&installed.key)
+                .and_then(Weak::upgrade)
+                .unwrap_or_else(|| Arc::new(()));
+            leases.insert(installed.key.clone(), Arc::downgrade(&pin));
+            providers.push(Arc::new(crate::providers::Provider {
+                key: installed.key.clone(),
+                id: installed.package.id,
+                name: installed.package.name,
+                version: installed.package.version,
+                root,
+                descriptor,
+                _lease: Lease { _pin: pin },
+            }));
+        }
+        Ok(providers)
+    }
 }
-struct Guard(Arc<Operation>);
+pub(crate) struct Guard(Arc<Operation>);
+
+pub(crate) struct ReadGuard(Arc<AtomicBool>);
+impl ReadGuard {
+    pub fn cancelled(&self) -> &AtomicBool {
+        &self.0
+    }
+}
 impl Drop for Guard {
     fn drop(&mut self) {
         self.0.state.lock().unwrap().owner = None;
@@ -198,7 +336,7 @@ fn valid_hash(value: &str) -> bool {
             .bytes()
             .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
 }
-fn portable_path(value: &str) -> bool {
+pub(crate) fn portable_path(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 240
         && value.split('/').all(|part| {
@@ -374,6 +512,22 @@ fn open_archive(file: &File) -> Result<ZipArchive<File>> {
     file.seek(SeekFrom::Start(0)).map_err(io)?;
     ZipArchive::new(file).map_err(|_| "The file is not a valid Recast extension package.".into())
 }
+fn provider_descriptor(root: &Path, manifest: &Manifest) -> Result<crate::providers::Descriptor> {
+    let descriptor: crate::providers::Descriptor = serde_json::from_slice(
+        &crate::providers::read_bounded(&root.join("provider.json"), 128 * 1024)?,
+    )
+    .map_err(io)?;
+    descriptor.validate()?;
+    if !manifest
+        .files
+        .iter()
+        .any(|entry| entry.path == descriptor.executable && entry.executable)
+    {
+        return Err("The conversion provider executable is not declared.".into());
+    }
+    Ok(descriptor)
+}
+
 fn install_snapshot(
     root: &Path,
     file: &File,
@@ -444,6 +598,13 @@ fn install_snapshot(
             )
             .map_err(io)?;
         }
+    }
+    if manifest
+        .files
+        .iter()
+        .any(|entry| entry.path == "provider.json")
+    {
+        provider_descriptor(&staging.path().join("payload"), &manifest)?;
     }
     let installed = Installed {
         key: hash.into(),
@@ -730,7 +891,8 @@ pub async fn extensions_remove(
     window: WebviewWindow,
     key: String,
 ) -> Result<()> {
-    let result = operation(&manager, &window, move |root, _| remove(&root, &key)).await;
+    let cloned = manager.inner().clone();
+    let result = operation(&manager, &window, move |_, _| cloned.remove_unused(&key)).await;
     if result.is_ok() {
         let _ = window.app_handle().emit("recast:extensions-changed", ());
     }
@@ -800,6 +962,251 @@ mod tests {
     ) -> Result<Installed> {
         let (copy, _, hash) = snapshot(file.path(), cancel)?;
         install_snapshot(root, copy.as_file(), &hash, "local", None, cancel)
+    }
+    fn provider_archive(
+        version: &str,
+        descriptor: &crate::providers::Descriptor,
+    ) -> tempfile::NamedTempFile {
+        let descriptor = serde_json::to_vec(descriptor).unwrap();
+        let mut manifest = manifest();
+        manifest.package.version = version.into();
+        manifest.package.installed_bytes += descriptor.len() as u64;
+        manifest.files.push(Entry {
+            path: "provider.json".into(),
+            bytes: descriptor.len() as u64,
+            sha256: format!("{:x}", Sha256::digest(&descriptor)),
+            executable: false,
+        });
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let mut zip = ZipWriter::new(file.reopen().unwrap());
+        for (name, bytes) in [
+            ("manifest.json", serde_json::to_vec(&manifest).unwrap()),
+            ("payload/provider.json", descriptor),
+            ("payload/bin/worker", b"hello".to_vec()),
+        ] {
+            zip.start_file(name, SimpleFileOptions::default()).unwrap();
+            zip.write_all(&bytes).unwrap();
+        }
+        zip.finish().unwrap();
+        file
+    }
+    #[test]
+    fn provider_versions_are_pinned_and_checked_before_use() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = ExtensionManager::new(dir.path().to_path_buf());
+        let cancel = AtomicBool::new(false);
+        let descriptor = crate::providers::test_descriptor();
+        let old =
+            install_test(dir.path(), &provider_archive("1.0.0", &descriptor), &cancel).unwrap();
+        let pinned = manager.providers(&cancel).unwrap();
+        assert_eq!(pinned[0].key, old.key);
+        let new =
+            install_test(dir.path(), &provider_archive("1.1.0", &descriptor), &cancel).unwrap();
+        let current = manager.providers(&cancel).unwrap();
+        assert_eq!(current.len(), 1);
+        assert_eq!(current[0].key, new.key);
+        assert_eq!(pinned[0].version, "1.0.0");
+        assert!(manager
+            .remove_unused(&old.key)
+            .unwrap_err()
+            .contains("in use"));
+        drop(pinned);
+        manager.remove_unused(&old.key).unwrap();
+        fs::write(
+            dir.path().join(&new.key).join("payload/bin/worker"),
+            b"other",
+        )
+        .unwrap();
+        assert!(manager
+            .providers(&cancel)
+            .unwrap_err()
+            .contains("integrity"));
+        drop(current);
+        manager.remove_unused(&new.key).unwrap();
+        assert!(manager.providers(&cancel).unwrap().is_empty());
+    }
+    #[test]
+    fn invalid_provider_never_becomes_installed() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut descriptor = crate::providers::test_descriptor();
+        descriptor.executable = "bin/undeclared".into();
+        let error = install_test(
+            dir.path(),
+            &provider_archive("1.0.0", &descriptor),
+            &AtomicBool::new(false),
+        )
+        .unwrap_err();
+        assert!(error.contains("not declared"));
+        assert!(list(dir.path()).unwrap().is_empty());
+    }
+    #[test]
+    fn independent_inspections_cancel_on_their_own_window_close() {
+        let manager = ExtensionManager::new(PathBuf::new());
+        let first = manager.begin_read("first").unwrap();
+        let second = manager.begin_read("second").unwrap();
+        assert!(manager.close(Some("first")));
+        assert!(first.cancelled().load(Ordering::Relaxed));
+        assert!(!second.cancelled().load(Ordering::Relaxed));
+        assert!(manager.while_open("first", || Ok(())).is_err());
+        assert!(manager.begin_read("first").is_err());
+        drop(first);
+        assert!(!manager.busy(Some("first")));
+        assert!(manager.busy(Some("second")));
+        assert!(manager.close(None));
+        assert!(second.cancelled().load(Ordering::Relaxed));
+        drop(second);
+        assert!(!manager.busy(None));
+    }
+    #[test]
+    #[ignore = "requires RECAST_TEST_TEXT_EXTENSION pointing at the actual package"]
+    fn packaged_text_provider_installs_converts_and_preserves_existing_files() {
+        let archive = PathBuf::from(
+            std::env::var_os("RECAST_TEST_TEXT_EXTENSION").expect("Set RECAST_TEST_TEXT_EXTENSION"),
+        );
+        let root = tempfile::tempdir().unwrap();
+        let cancel = AtomicBool::new(false);
+        let (copy, _, hash) = snapshot(&archive, &cancel).unwrap();
+        let installed =
+            install_snapshot(root.path(), copy.as_file(), &hash, "local", None, &cancel).unwrap();
+        let manager = ExtensionManager::new(root.path().to_path_buf());
+        let providers = manager.providers(&cancel).unwrap();
+        let provider = &providers[0];
+        let docs = tempfile::tempdir().unwrap();
+        let source = docs.path().join("notes.md");
+        fs::write(&source, "# Recast\n\nA real document.").unwrap();
+        fs::write(docs.path().join("notes.pdf"), "existing PDF").unwrap();
+        let (input, targets) = provider.inspect(&source, &cancel).unwrap();
+        assert_eq!(input.kind, "documents");
+        assert_eq!(targets.len(), 2);
+        let selection = crate::providers::Selection {
+            key: provider.key.clone(),
+            target: "pdf".into(),
+            settings: BTreeMap::from([("page-size".into(), "Letter".into())]),
+        };
+        let output = provider
+            .convert(&source, None, &selection, &cancel, |_, _| {})
+            .unwrap();
+        assert!(fs::read(&output.path).unwrap().starts_with(b"%PDF-"));
+        assert_ne!(PathBuf::from(&output.path), docs.path().join("notes.pdf"));
+        assert_eq!(
+            fs::read_to_string(docs.path().join("notes.pdf")).unwrap(),
+            "existing PDF"
+        );
+        assert_eq!(
+            fs::read_to_string(&source).unwrap(),
+            "# Recast\n\nA real document."
+        );
+        assert!(fs::read_dir(docs.path()).unwrap().all(|e| !e
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".recast-")));
+        assert!(manager.remove_unused(&installed.key).is_err());
+        // Run the same installed provider alongside a core image conversion,
+        // then retry only the failed document using the frozen configuration.
+        let broken = docs.path().join("broken.md");
+        fs::write(&broken, "![Missing](absent.png)").unwrap();
+        let image = docs.path().join("picture.png");
+        let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        fs::copy(repo.join("tests/fixtures/rgba.png"), &image).unwrap();
+        let image_backend = crate::image_backend::ImageBackend {
+            root: repo.join("resources/image-backend"),
+        };
+        let audio_backend = crate::audio_backend::AudioBackend {
+            root: repo.join("resources/audio-backend"),
+        };
+        let source = source
+            .canonicalize()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let broken = broken
+            .canonicalize()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let image = image.canonicalize().unwrap().to_string_lossy().into_owned();
+        let inspected = crate::inputs::inspect_with_providers(
+            Path::new(&source),
+            &audio_backend,
+            &cancel,
+            &providers,
+        )
+        .unwrap();
+        assert_eq!(inspected.extension_targets.len(), 2);
+        let mut request = crate::jobs::ConversionRequest {
+            paths: vec![source.clone(), broken.clone(), image],
+            output_folder: None,
+            image_options: Some(crate::image_backend::ImageOptions {
+                target: "webp".into(),
+                quality: 85,
+                lossless: false,
+                resize: 100,
+                metadata: true,
+                background: "#ffffff".into(),
+                colors: 256,
+                dither: true,
+            }),
+            image_frame_options: None,
+            audio_options: None,
+            video_options: None,
+            video_audio_options: None,
+            animation_options: None,
+            video_frame_options: None,
+            extension_options: std::collections::HashMap::from([
+                (source, selection.clone()),
+                (broken.clone(), selection),
+            ]),
+            providers: providers.clone(),
+        };
+        let jobs = crate::jobs::JobManager::default();
+        let job = jobs.prepare("test", request.clone(), false).unwrap();
+        let snapshot = Mutex::new(None);
+        crate::jobs::run_job(&job, &image_backend, &audio_backend, |state| {
+            *snapshot.lock().unwrap() = Some(state)
+        });
+        let first = snapshot.lock().unwrap().clone().unwrap();
+        assert_eq!(
+            first
+                .files
+                .iter()
+                .filter(|f| f.status == crate::jobs::FileStatus::Succeeded)
+                .count(),
+            2
+        );
+        assert_eq!(first.files[1].status, crate::jobs::FileStatus::Failed);
+        let previous = first.files[0].output_path.clone().unwrap();
+        let previous_bytes = fs::read(&previous).unwrap();
+        fs::write(&broken, "# Repaired document").unwrap();
+        request.providers.clear();
+        for selection in request.extension_options.values_mut() {
+            selection.key = "unavailable".into();
+            selection.target = "docx".into();
+        }
+        let retry = jobs.prepare("test", request, true).unwrap();
+        crate::jobs::run_job(&retry, &image_backend, &audio_backend, |state| {
+            *snapshot.lock().unwrap() = Some(state)
+        });
+        let last = snapshot.into_inner().unwrap().unwrap();
+        assert!(last
+            .files
+            .iter()
+            .all(|f| f.status == crate::jobs::FileStatus::Succeeded));
+        assert_eq!(
+            last.files[0].output_path.as_deref(),
+            Some(previous.as_str())
+        );
+        assert_eq!(fs::read(&previous).unwrap(), previous_bytes);
+        assert!(last.files[1]
+            .output_path
+            .as_ref()
+            .unwrap()
+            .ends_with(".pdf"));
+        drop(job);
+        drop(retry);
+        drop(jobs);
+        drop(providers);
+        manager.remove_unused(&installed.key).unwrap();
     }
     #[test]
     fn installs_persists_and_removes_without_running_payload() {

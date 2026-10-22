@@ -4,7 +4,7 @@ import { invoke, isTauri } from '@tauri-apps/api/core';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { open } from '@tauri-apps/plugin-dialog';
-import { isVideoAnimationTarget, isImageFrameTarget, isFrameTarget, isAudioTarget, selectAudioTrack, videoModeKey, formatBytes, videoSettingIssue, vorbisQualities, opusBitrateChoices, aacBitrateChoices, aacRates, isLossyAudio, audioDescription, videoDescription, audioSampleFormats, audioSettingIssue, audioWillDither, defaultSettings, destinationsFor, formatCounts, kindLabels, kinds, unitLabels, mp3BitrateChoices, mp3Qualities, mp3Rates, type Appearance, type Destination, type GroupSettings, type InputFile, type MediaKind } from './model';
+import { extensionValues, isVideoAnimationTarget, isImageFrameTarget, isFrameTarget, isAudioTarget, selectAudioTrack, videoModeKey, formatBytes, videoSettingIssue, vorbisQualities, opusBitrateChoices, aacBitrateChoices, aacRates, isLossyAudio, audioDescription, videoDescription, audioSampleFormats, audioSettingIssue, audioWillDither, defaultSettings, destinationsFor, formatCounts, kindLabels, kinds, unitLabels, mp3BitrateChoices, mp3Qualities, mp3Rates, type Appearance, type Destination, type GroupSettings, type InputFile, type MediaKind } from './model';
 import { sampleFiles, type Scenario } from './fixtures';
 import { CheckboxSetting, QualitySetting, SelectSetting, SizeSetting } from './controls';
 import { VideoRange } from './VideoRange';
@@ -58,6 +58,10 @@ function ScrollArea({ children, className = '', onScroll }: { children: ReactNod
 }
 
 function FormatSettings({ kind, destination, value, onChange, disabled, animated, files }: { kind: MediaKind; destination: Destination; value: GroupSettings; onChange: (change: Partial<GroupSettings>) => void; disabled: boolean; animated: boolean; files: InputFile[] }) {
+  if (destination.providerKey) {
+    const values = extensionValues(destination, value);
+    return <div className="settings-stack">{destination.settings?.map(setting => <SelectSetting key={setting.id} label={setting.label} value={values[setting.id]} options={setting.choices} onChange={next => onChange({ extensionSettings: { ...value.extensionSettings, [destination.id]: { ...values, [setting.id]: next } } })} />)}</div>;
+  }
   const target = destination.id.replace(/^frame-/, '');
   const isFrame = kind === 'video' && destination.category === 'Still image';
   const isAnimation = kind === 'video' && destination.category === 'Animation';
@@ -196,7 +200,7 @@ export default function App() {
   const formats = destinationsFor(activeKind, activeFiles, previewCatalog);
   const activeSettings = settings[activeKind];
   const selectedFormat = formats.find((format) => format.id === activeSettings.target);
-  const activeFormatLabel = destinationsFor(activeKind, activeFiles, true).find(format => format.id === activeSettings.target)?.label ?? activeSettings.target?.toUpperCase();
+  const activeFormatLabel = destinationsFor(activeKind, activeFiles, true).find(format => format.id === activeSettings.target)?.label ?? activeSettings.target?.split(':').at(-1)?.toUpperCase();
   const unresolvedTarget = activeSettings.target && !selectedFormat;
   const affectedFiles = unresolvedTarget ? activeFiles.filter(file => previewCatalog ? activeKind === 'video' && file.hasAudio !== true : !file.targets?.includes(activeSettings.target!)) : [];
   const activeAudioIssue = isAudioTarget(activeSettings.target) ? activeFiles.map(file => audioSettingIssue(file, activeSettings)).find(Boolean) : null;
@@ -306,6 +310,33 @@ export default function App() {
     return () => { disposed = true; stop?.(); };
   }, []);
 
+  const [extensionRevision, setExtensionRevision] = useState(0);
+  const appliedExtensionRevision = useRef(0);
+  useEffect(() => {
+    if (!isTauri()) return;
+    let disposed = false;
+    let stop: (() => void) | undefined;
+    void getCurrentWindow().listen('recast:extensions-changed', () => setExtensionRevision(value => value + 1))
+      .then(unlisten => { if (disposed) unlisten(); else stop = unlisten; });
+    return () => { disposed = true; stop?.(); };
+  }, []);
+  useEffect(() => {
+    if (busy || inspecting || appliedExtensionRevision.current === extensionRevision) return;
+    appliedExtensionRevision.current = extensionRevision;
+    const paths = filesRef.current.filter(file => file.path).map(file => file.path);
+    if (!paths.length) return;
+    inspectionCount.current++; setInspecting(true);
+    void invoke<{ files: InputFile[]; errors: { name: string; message: string }[] }>('inspect_inputs', { paths }).then(result => {
+      setFiles(current => current.map(old => {
+        const fresh = result.files.find(file => file.id === old.id);
+        if (!fresh) return { ...old, targets: [], extensionTargets: [], conversionIssue: result.errors.find(error => error.name === old.name)?.message ?? "This file is no longer available." };
+        const updated = { ...old, ...fresh };
+        return old.selectedAudioTrack != null ? selectAudioTrack(updated, old.selectedAudioTrack) : updated;
+      }));
+      if (result.errors.length) setNotice(result.errors.map(error => `${error.name}: ${error.message}`).join(' '));
+    }).catch(error => setNotice(String(error))).finally(() => { inspectionCount.current--; setInspecting(inspectionCount.current > 0); });
+  }, [extensionRevision, busy, inspecting]);
+
   async function chooseFolder() {
     if (conversion.busyRef.current || pickerOpen.current) return;
     if (!isTauri()) { setNotice('Destination folder selection is available in the desktop app.'); return; }
@@ -373,7 +404,7 @@ export default function App() {
     {settingsOpen ? <ExtensionSettings onClose={() => { setSettingsOpen(false); requestAnimationFrame(() => settingsButton.current?.focus()); }} /> : files.length === 0 ? <main className="empty-state">
       <div className="empty-symbol" aria-hidden="true"><File className="file-back" size={49} strokeWidth={1.15} /><File className="file-front" size={49} strokeWidth={1.15} /><ArrowDownToLine className="file-arrow" size={18} strokeWidth={1.6} /></div>
       <h1>Drop files here</h1>
-      <p>{previewCatalog ? 'Images, audio, or video. All on your device.' : 'Images, audio, and video. All on your device.'}</p>
+      <p>Convert files. All on your device.</p>
       <button className="primary-button choose-files" onClick={() => void chooseFiles()} disabled={inspecting}>{inspecting ? 'Reading files…' : 'Choose files'}<Plus size={16} /></button>
     </main> : <>
       <main className="workspace" ref={workspaceRef}>

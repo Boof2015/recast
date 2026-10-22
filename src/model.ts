@@ -1,4 +1,4 @@
-export type MediaKind = 'images' | 'audio' | 'video';
+export type MediaKind = 'images' | 'audio' | 'video' | 'documents';
 export type Appearance = 'system' | 'light' | 'dark';
 export interface SourceRange { start: number; end: number }
 export interface FrameSelection { pts: string; time: number; source: string }
@@ -12,6 +12,7 @@ export interface InputFile {
   bytes: number;
   hasAudio: boolean | null;
   targets?: string[];
+  extensionTargets?: Destination[];
   conversionIssue?: string | null;
   animated?: boolean;
   sequence?: { width: number; height: number; delays: number[]; loops: number } | null;
@@ -56,6 +57,7 @@ export interface GroupSettings {
   allowClipping: boolean;
   animationSize: string;
   animationFrameRate: string;
+  extensionSettings: Record<string, Record<string, string>>;
 }
 
 export interface Destination {
@@ -64,11 +66,20 @@ export interface Destination {
   description: string;
   category: string;
   hidden?: boolean;
+  providerKey?: string;
+  providerTarget?: string;
+  settings?: { id: string; label: string; choices: string[]; default: string }[];
 }
 
-export const kinds: MediaKind[] = ['images', 'audio', 'video'];
-export const kindLabels: Record<MediaKind, string> = { images: 'Images', audio: 'Audio', video: 'Video' };
-export const unitLabels: Record<MediaKind, string> = { images: 'images', audio: 'audio files', video: 'videos' };
+export const kinds: MediaKind[] = ['images', 'audio', 'video', 'documents'];
+export const kindLabels: Record<MediaKind, string> = { images: 'Images', audio: 'Audio', video: 'Video', documents: 'Documents' };
+export const unitLabels: Record<MediaKind, string> = { images: 'images', audio: 'audio files', video: 'videos', documents: 'documents' };
+
+export function isExtensionTarget(target: string | null): boolean { return !!target?.startsWith('extension:'); }
+export function extensionValues(format: Destination, settings: GroupSettings): Record<string, string> {
+  const saved = settings.extensionSettings[format.id] ?? {};
+  return Object.fromEntries((format.settings ?? []).map(setting => [setting.id, setting.choices.includes(saved[setting.id]) ? saved[setting.id] : setting.default]));
+}
 
 const imageDestinations: Destination[] = [
   { id: 'webp', label: 'WebP', description: 'Compact & versatile', category: 'Image' },
@@ -137,15 +148,18 @@ export function selectAudioTrack(file: InputFile, index: number): InputFile {
 // Preview fixtures use the full planned catalog. Real file targets are inspected
 // by Rust and intersected here: every file must support the whole-group target.
 export function destinationsFor(kind: MediaKind, files: InputFile[], preview = false): Destination[] {
+  const extensions = files[0]?.extensionTargets?.filter(format => files.every(file => file.extensionTargets?.some(other => other.id === format.id && other.providerKey === format.providerKey))) ?? [];
   if (!preview) {
     if (!files.length) return [];
-    const catalog = kind === 'images' ? imageCatalog(files) : kind === 'audio' ? audioDestinations : [...videoDestinations, ...audioDestinations.map(format => ({ ...format, category: 'Audio only' }))];
+    const catalog = [...(kind === 'images' ? imageCatalog(files) : kind === 'audio' ? audioDestinations : kind === 'documents' ? [] : [...videoDestinations, ...audioDestinations.map(format => ({ ...format, category: 'Audio only' }))]), ...extensions];
     return catalog.filter(format => files.every(file => file.targets?.includes(format.id)));
   }
-  if (kind === 'images') return imageCatalog(files);
-  if (kind === 'audio') return audioDestinations;
+  if (kind === 'images') return [...imageCatalog(files), ...extensions];
+  if (kind === 'audio') return [...audioDestinations, ...extensions];
+  if (kind === 'documents') return extensions;
   return [
     ...videoDestinations,
+    ...extensions,
     ...(files.length > 0 && files.every((file) => file.hasAudio === true)
       ? audioDestinations.map((format) => ({ ...format, category: 'Audio only' }))
       : []),
@@ -160,8 +174,9 @@ export function defaultSettings(): Record<MediaKind, GroupSettings> {
     mp3Mode: 'vbr', mp3Quality: 'V2 · High', aacBitrate: '192 kbps', opusBitrate: '128 kbps', vorbisQuality: '5 · High',
     videoMode: 'Quality', mkvMode: 'Keep original', movMode: 'Quality', webmMode: 'Quality', targetSize: '10', sizeResolution: 'Auto',
     animationSize: '480 px', animationFrameRate: '15 fps',
+    extensionSettings: {},
   };
-  return { images: { ...settings }, audio: { ...settings }, video: { ...settings } };
+  return { images: { ...settings }, audio: { ...settings }, video: { ...settings }, documents: { ...settings } };
 }
 
 export function videoModeKey(target: string | null): 'mkvMode' | 'movMode' | 'webmMode' | 'videoMode' {

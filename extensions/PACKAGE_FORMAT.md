@@ -26,7 +26,7 @@ A `.recast-extension` is a ZIP archive with `manifest.json` at its root and all 
 }
 ```
 
-The example is illustrative, not an installable engine. The builder computes file sizes, checksums and executable flags, and requires license files under `licenses/`. Manifest fields are strict; unknown fields are rejected. The maximum archive is 1 GiB, installed payload 4 GiB, manifest 8 MiB and inventory 30,000 files. Unix permissions are normalized to 0755 for executables and 0644 otherwise; privileges and ownership are not restored from ZIP metadata.
+The example is illustrative, not an installable engine. Executable conversion packages also include `payload/provider.json`; see [the provider protocol](PROVIDERS.md). The installer validates that descriptor and its declared executable before making the package available. The builder computes file sizes, checksums and executable flags, and requires license files under `licenses/`. Manifest fields are strict; unknown fields are rejected. The maximum archive is 1 GiB, installed payload 4 GiB, manifest 8 MiB and inventory 30,000 files. Unix permissions are normalized to 0755 for executables and 0644 otherwise; privileges and ownership are not restored from ZIP metadata.
 
 Platform names: `macos-arm64`, `macos-x86_64`, `windows-x86_64`, `linux-arm64`, `linux-x86_64`. Versions use SemVer. `minimumAppVersion` checks the host app version, not an executable-provider ABI. Engine recipes must separately establish OS compatibility; official packs must support Recast's declared baseline, including macOS 13. The measured upstream Pandoc ARM Mac binary requires a newer macOS and cannot be shipped unchanged.
 

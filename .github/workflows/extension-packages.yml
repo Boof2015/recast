@@ -1,0 +1,75 @@
+name: Extension packages
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'extensions/text/**'
+      - 'extensions/shared/**'
+      - '.github/workflows/extension-packages.yml'
+  pull_request:
+    paths:
+      - 'extensions/text/**'
+      - 'extensions/shared/**'
+      - '.github/workflows/extension-packages.yml'
+permissions:
+  contents: read
+concurrency:
+  group: extension-packages-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  text:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            platform: macos-arm64
+          - os: macos-15-intel
+            platform: macos-x86_64
+          - os: windows-2022
+            platform: windows-x86_64
+          - os: ubuntu-22.04
+            platform: linux-x86_64
+          - os: ubuntu-24.04-arm
+            platform: linux-arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '13.0'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Rust toolchain
+        run: rustup toolchain install 1.98.1 --profile minimal --component rustfmt,clippy
+      - run: rustup default 1.98.1
+      - uses: actions/cache@v4
+        with:
+          path: .backend-build/extension-downloads
+          key: text-engine-downloads-${{ hashFiles('extensions/text/dependencies.lock.json') }}
+      - run: cargo fetch --locked --manifest-path extensions/text/worker/Cargo.toml
+      - run: cargo fmt --manifest-path extensions/text/worker/Cargo.toml --check
+      - run: cargo clippy --locked --manifest-path extensions/text/worker/Cargo.toml --all-targets -j 2 -- -D warnings
+      - run: cargo test --locked --manifest-path extensions/text/worker/Cargo.toml -j 2
+      - name: Build extension
+        run: python extensions/text/build.py --output extension-artifacts
+      - name: Independently check package outputs
+        shell: bash
+        run: |
+          python -m pip install pypdf==6.21.2
+          python extensions/text/check.py --package extension-artifacts --output .backend-build/text-checks
+      - uses: actions/upload-artifact@v4
+        with:
+          name: extension-package-text-${{ matrix.platform }}
+          path: extension-artifacts/*.recast-extension
+          if-no-files-found: error
+          compression-level: 0
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: extension-checks-text-${{ matrix.platform }}
+          path: .backend-build/text-checks
+          if-no-files-found: ignore
+          include-hidden-files: true
