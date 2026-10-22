@@ -64,8 +64,8 @@ impl FrameSelection {
     }
 }
 
-fn fingerprint(source: &Path) -> Result<String, String> {
-    let meta = fs::metadata(source).map_err(|_| "The video is no longer available.")?;
+pub(crate) fn fingerprint(source: &Path) -> Result<String, String> {
+    let meta = fs::metadata(source).map_err(|_| "The file is no longer available.")?;
     let time = meta
         .modified()
         .map_err(|e| e.to_string())?
@@ -73,9 +73,9 @@ fn fingerprint(source: &Path) -> Result<String, String> {
         .map_err(|e| e.to_string())?;
     Ok(format!("{}:{}", meta.len(), time.as_nanos()))
 }
-fn unchanged(source: &Path, expected: &str) -> Result<(), String> {
+pub(crate) fn unchanged(source: &Path, expected: &str) -> Result<(), String> {
     if fingerprint(source)? != expected {
-        return Err("This video changed. Preview its frame again before converting.".into());
+        return Err("This file changed. Preview its frame again before converting.".into());
     }
     Ok(())
 }

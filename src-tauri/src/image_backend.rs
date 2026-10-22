@@ -152,10 +152,35 @@ impl ImageBackend {
         options: &ImageOptions,
         cancel: &AtomicBool,
     ) -> Result<OutputFile, ConversionError> {
+        self.convert_with_frame(source, folder, options, None, false, cancel)
+    }
+
+    pub(crate) fn convert_with_frame(
+        &self,
+        source: &Path,
+        folder: Option<&Path>,
+        options: &ImageOptions,
+        selection: Option<&crate::video_frame::FrameSelection>,
+        single_frame: bool,
+        cancel: &AtomicBool,
+    ) -> Result<OutputFile, ConversionError> {
         options.validate()?;
         let format = ImageFormat::from_id(&options.target)?;
         check_cancel(cancel)?;
-        let input = inputs::require_target(source, &options.target)?;
+        let target = if single_frame {
+            format!("frame-{}", options.target)
+        } else {
+            options.target.clone()
+        };
+        let input = inputs::require_target(source, &target)?;
+        let identity = if single_frame {
+            Some(crate::video_frame::fingerprint(source)?)
+        } else {
+            None
+        };
+        if let Some(selection) = selection {
+            crate::video_frame::unchanged(source, &selection.source)?;
+        }
         let source = Path::new(&input.path);
         let parent = folder.unwrap_or_else(|| source.parent().unwrap());
         if !parent.is_dir() {
@@ -191,8 +216,19 @@ impl ImageBackend {
         }
         drop(staged_file);
         // Recheck staged bytes in case the source changed while it was copied.
-        let inspected = inputs::require_target(&staged, &options.target)?;
+        if let Some(identity) = identity {
+            crate::video_frame::unchanged(source, &identity)?;
+        }
+        let inspected = inputs::require_target(&staged, &target)?;
         let animated = inspected.sequence.as_ref().is_some_and(|s| s.animated());
+        let selected = if single_frame && animated {
+            Some(crate::image_frame::resolve(
+                inspected.sequence.as_ref().unwrap(),
+                selection,
+            )?)
+        } else {
+            None
+        };
         let output = tempfile::Builder::new()
             .prefix(".recast-")
             .suffix(&format!(".{}", format.extension()))
@@ -215,6 +251,9 @@ impl ImageBackend {
             .arg(&staged);
         if inspected.sequence.is_some() {
             command.args(["-alpha", "set", "-coalesce"]);
+        }
+        if let Some(index) = selected {
+            crate::image_frame::select(&mut command, inspected.sequence.as_ref().unwrap(), index);
         }
         command.arg("-auto-orient");
         if options.resize != 100 {
@@ -381,47 +420,23 @@ impl ImageBackend {
                 .map_err(|_| "The output file could not be opened.".to_string())?,
         ));
         command.stderr(Stdio::from(diagnostics));
-        let mut child = command
-            .spawn()
-            .map_err(|_| "The bundled image converter could not start.".to_string())?;
-        let started = Instant::now();
-        let status = loop {
-            if cancel.load(Ordering::Relaxed) || started.elapsed() > Duration::from_secs(300) {
-                let _ = child.kill();
-                let _ = child.wait();
-                check_cancel(cancel)?;
-                return Err("This image took too long to convert. Try a smaller image."
-                    .to_string()
-                    .into());
+        run(&mut command, &diagnostics_path, cancel).map_err(|error| match error {
+            ConversionError::Failed(detail) => ConversionError::Failed(
+                detail.replace(staged.to_string_lossy().as_ref(), &input.name),
+            ),
+            other => other,
+        })?;
+        if selected.is_none() {
+            if let Some(sequence) = &inspected.sequence {
+                sequence.finish_output(output.path(), &options.target, options.resize)?;
             }
-            match child.try_wait() {
-                Ok(Some(status)) => break status,
-                Ok(None) => thread::sleep(Duration::from_millis(35)),
-                Err(_) => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err("The image converter stopped unexpectedly."
-                        .to_string()
-                        .into());
-                }
-            }
-        };
-        check_cancel(cancel)?;
-        if !status.success() {
-            let mut detail = String::new();
-            if let Ok(file) = File::open(diagnostics_path) {
-                let _ = file.take(4096).read_to_string(&mut detail);
-            }
-            let detail = detail.replace(staged.to_string_lossy().as_ref(), &input.name);
-            let detail = detail
-                .lines()
-                .next()
-                .unwrap_or("The image data could not be converted.")
-                .trim_start_matches("magick: ");
-            return Err(format!("Conversion failed: {detail}").into());
-        }
-        if let Some(sequence) = &inspected.sequence {
-            sequence.finish_output(output.path(), &options.target, options.resize)?;
+        } else if inputs::inspect(output.path())?
+            .sequence
+            .is_some_and(|s| s.animated())
+        {
+            return Err("The converter did not produce a single frame."
+                .to_string()
+                .into());
         }
         let bytes = format.validate_output(output.path())?;
         output.as_file().sync_all().map_err(|_| {
@@ -438,7 +453,13 @@ impl ImageBackend {
             path: path.to_string_lossy().into_owned(),
             bytes,
             warnings: vec![],
-            details: None,
+            details: selected.map(|index| {
+                format!(
+                    "Frame {} of {}",
+                    index + 1,
+                    inspected.sequence.as_ref().unwrap().delays.len()
+                )
+            }),
         })
     }
 }
@@ -473,4 +494,52 @@ pub(crate) fn publish(
         }
     }
     Err("Too many files already use this output name. Choose another folder.".into())
+}
+
+// Wait for and always reap image workers, including cancelled previews.
+pub(crate) fn run(
+    command: &mut Command,
+    diagnostics_path: &Path,
+    cancel: &AtomicBool,
+) -> Result<(), ConversionError> {
+    check_cancel(cancel)?;
+    let mut child = command
+        .spawn()
+        .map_err(|_| "The bundled image converter could not start.".to_string())?;
+    let started = Instant::now();
+    let status = loop {
+        if cancel.load(Ordering::Relaxed) || started.elapsed() > Duration::from_secs(300) {
+            let _ = child.kill();
+            let _ = child.wait();
+            check_cancel(cancel)?;
+            return Err("This image took too long to convert. Try a smaller image."
+                .to_string()
+                .into());
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => thread::sleep(Duration::from_millis(35)),
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("The image converter stopped unexpectedly."
+                    .to_string()
+                    .into());
+            }
+        }
+    };
+    check_cancel(cancel)?;
+    if !status.success() {
+        let mut detail = String::new();
+        if let Ok(file) = File::open(diagnostics_path) {
+            let _ = file.take(4096).read_to_string(&mut detail);
+        }
+        let detail = detail
+            .lines()
+            .next()
+            .unwrap_or("The image data could not be converted.")
+            .trim_start_matches("magick: ");
+        return Err(format!("Conversion failed: {detail}").into());
+    }
+    Ok(())
 }

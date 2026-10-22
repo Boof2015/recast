@@ -56,6 +56,7 @@ fn request(paths: &[PathBuf], folder: &Path) -> ConversionRequest {
             .collect(),
         output_folder: Some(folder.to_string_lossy().into_owned()),
         image_options: Some(options()),
+        image_frame_options: None,
         audio_options: None,
         video_options: None,
         video_audio_options: None,
@@ -127,8 +128,17 @@ fn converts_every_still_image_pair_and_same_format_without_overwriting() {
             let input = crate::inputs::inspect(&source).unwrap();
             let json = serde_json::to_value(input).unwrap();
             assert_eq!(
-                json["targets"],
+                json["targets"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|target| !target.as_str().unwrap().starts_with("frame-"))
+                    .cloned()
+                    .collect::<Vec<_>>(),
                 serde_json::json!(["webp", "jpeg", "png", "bmp", "tiff", "avif", "gif"])
+                    .as_array()
+                    .unwrap()
+                    .clone()
             );
             let output = backend()
                 .convert(&source, None, &settings, &AtomicBool::new(false))

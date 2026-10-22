@@ -14,6 +14,7 @@ export interface InputFile {
   targets?: string[];
   conversionIssue?: string | null;
   animated?: boolean;
+  sequence?: { width: number; height: number; delays: number[]; loops: number } | null;
   targetIssues?: Record<string, string>;
   video?: { codec: string; width: number; height: number; rotation: number; duration: number; frameRate: number; audioTracks: number; subtitleTracks: number; aacIssue?: string | null; movCopyIssue?: string | null; webmCopyIssue?: string | null; opusIssue?: string | null } | null;
   audio?: { container: string; codec: string; sampleRate: number; sampleFormat: string; channels: number; channelLayout: string | null; duration: number | null } | null;
@@ -62,6 +63,7 @@ export interface Destination {
   label: string;
   description: string;
   category: string;
+  hidden?: boolean;
 }
 
 export const kinds: MediaKind[] = ['images', 'audio', 'video'];
@@ -95,6 +97,17 @@ const videoDestinations: Destination[] = [
   ...imageDestinations.filter(format => format.id !== 'gif').map(format => ({ ...format, category: 'Still image' })),
 ];
 
+export function isImageFrameTarget(target: string | null): boolean {
+  return !!target?.startsWith('frame-');
+}
+function imageCatalog(files: InputFile[]): Destination[] {
+  const animated = files.some(file => file.animated);
+  return [
+    ...(animated ? imageDestinations.filter(format => ['gif', 'webp'].includes(format.id)).map(format => ({ ...format, category: 'Animation', description: 'Keep animation' })) : imageDestinations),
+    ...imageDestinations.map(format => ({ ...format, id: `frame-${format.id}`, description: format.id === 'gif' ? 'Single frame' : format.description, category: 'Still image', hidden: !animated })),
+  ];
+}
+
 export function isFrameTarget(target: string | null): boolean {
   return imageDestinations.some(format => format.id !== 'gif' && format.id === target);
 }
@@ -117,10 +130,10 @@ export function selectAudioTrack(file: InputFile, index: number): InputFile {
 export function destinationsFor(kind: MediaKind, files: InputFile[], preview = false): Destination[] {
   if (!preview) {
     if (!files.length) return [];
-    const catalog = kind === 'images' ? imageDestinations : kind === 'audio' ? audioDestinations : [...videoDestinations, ...audioDestinations.map(format => ({ ...format, category: 'Audio only' }))];
+    const catalog = kind === 'images' ? imageCatalog(files) : kind === 'audio' ? audioDestinations : [...videoDestinations, ...audioDestinations.map(format => ({ ...format, category: 'Audio only' }))];
     return catalog.filter(format => files.every(file => file.targets?.includes(format.id)));
   }
-  if (kind === 'images') return imageDestinations;
+  if (kind === 'images') return imageCatalog(files);
   if (kind === 'audio') return audioDestinations;
   return [
     ...videoDestinations,

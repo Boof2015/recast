@@ -199,15 +199,9 @@ pub async fn preview_video_frame(
         let (frame, bytes) = audio
             .preview_selected_frame(source, request.time, &ticket.cancel)
             .map_err(message)?;
-        // One atomic binary response: little-endian JSON length, JSON metadata,
-        // then BMP. Avoid a base64 copy and a race between image and timestamp.
-        let json = serde_json::to_vec(&frame).map_err(|e| e.to_string())?;
-        let mut response = Vec::with_capacity(4 + json.len() + bytes.len());
-        response.extend((json.len() as u32).to_le_bytes());
-        response.extend(json);
-        response.extend(bytes);
+        let response = frame_response(&frame, bytes)?;
         crate::image_backend::check_cancel(&ticket.cancel).map_err(message)?;
-        Ok(Response::new(response))
+        Ok(response)
     })
     .await
     .map_err(|_| "The frame preview could not finish.".to_string())?
@@ -249,4 +243,51 @@ mod tests {
         assert!(windows.iter().all(|w| !w.busy()));
         assert!(manager.begin("three", "no".into()).is_err());
     }
+}
+
+// One atomic response prevents the selected identifier and picture from racing.
+fn frame_response(frame: &impl serde::Serialize, bytes: Vec<u8>) -> Result<Response, String> {
+    let json = serde_json::to_vec(frame).map_err(|e| e.to_string())?;
+    let mut response = Vec::with_capacity(4 + json.len() + bytes.len());
+    response.extend((json.len() as u32).to_le_bytes());
+    response.extend(json);
+    response.extend(bytes);
+    Ok(Response::new(response))
+}
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AnimationFrameRequest {
+    request_id: String,
+    path: String,
+    time: f64,
+    index: Option<usize>,
+}
+#[tauri::command]
+pub async fn preview_animation_frame(
+    window: WebviewWindow,
+    manager: State<'_, PreviewManager>,
+    image: State<'_, ImageBackend>,
+    request: AnimationFrameRequest,
+) -> Result<Response, String> {
+    let ticket = manager.begin(window.label(), request.request_id)?;
+    let image = image.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _gate = ticket
+            .window
+            .gate
+            .lock()
+            .map_err(|_| "Preview is unavailable.")?;
+        crate::image_backend::check_cancel(&ticket.cancel).map_err(message)?;
+        let source = Path::new(&request.path);
+        if !source.is_absolute() || !source.is_file() {
+            return Err("The animation is no longer available.".into());
+        }
+        let (frame, bytes) = image
+            .preview_animation_frame(source, request.time, request.index, &ticket.cancel)
+            .map_err(message)?;
+        crate::image_backend::check_cancel(&ticket.cancel).map_err(message)?;
+        frame_response(&frame, bytes)
+    })
+    .await
+    .map_err(|_| "The frame preview could not finish.".to_string())?
 }

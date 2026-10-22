@@ -19,6 +19,7 @@ pub struct ConversionRequest {
     pub paths: Vec<String>,
     pub output_folder: Option<String>,
     pub image_options: Option<ImageOptions>,
+    pub image_frame_options: Option<crate::image_frame::ImageFrameOptions>,
     pub audio_options: Option<AudioOptions>,
     pub video_options: Option<VideoOptions>,
     pub video_audio_options: Option<VideoAudioOptions>,
@@ -225,7 +226,14 @@ impl JobManager {
                     return Err("Choose one output for the video group.".into());
                 }
             }
+            if let Some(options) = &request.image_frame_options {
+                options.validate()?;
+                if request.image_options.is_some() {
+                    return Err("Choose one output for the image group.".into());
+                }
+            }
             if request.image_options.is_none()
+                && request.image_frame_options.is_none()
                 && request.audio_options.is_none()
                 && request.video_options.is_none()
                 && request.video_audio_options.is_none()
@@ -319,6 +327,17 @@ pub fn run_job(
         let result = crate::inputs::inspect_with_audio(Path::new(&source), audio, &job.cancel)
             .map_err(ConversionError::from)
             .and_then(|input| match input.kind.as_str() {
+                "images" if job.request.image_frame_options.is_some() => {
+                    let options = job.request.image_frame_options.as_ref().unwrap();
+                    backend.convert_with_frame(
+                        Path::new(&source),
+                        folder,
+                        &options.image,
+                        options.frames.get(&source),
+                        true,
+                        &job.cancel,
+                    )
+                }
                 "images" => backend.convert(
                     Path::new(&source),
                     folder,
@@ -492,6 +511,7 @@ pub async fn start_conversion(
     let preflight = request.clone();
     tauri::async_runtime::spawn_blocking(move || {
         if preflight.image_options.is_some()
+            || preflight.image_frame_options.is_some()
             || preflight.animation_options.is_some()
             || preflight.video_frame_options.is_some()
         {
@@ -512,6 +532,15 @@ pub async fn start_conversion(
                 &AtomicBool::new(false),
             )?;
             let valid = match input.kind.as_str() {
+                "images" if preflight.image_frame_options.is_some() => {
+                    let options = preflight.image_frame_options.as_ref().unwrap();
+                    options.validate()?;
+                    crate::inputs::require_target(
+                        Path::new(path),
+                        &format!("frame-{}", options.image.target),
+                    )
+                    .map(|_| ())
+                }
                 "images" => crate::inputs::require_target(
                     Path::new(path),
                     &preflight

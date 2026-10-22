@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { Channel, invoke, isTauri } from '@tauri-apps/api/core';
-import { sourceRange, isAudioTarget, isFrameTarget, videoModeKey, audioSampleFormats, type GroupSettings, type InputFile, type MediaKind } from './model';
+import { sourceRange, isAudioTarget, isFrameTarget, isImageFrameTarget, videoModeKey, audioSampleFormats, type GroupSettings, type InputFile, type MediaKind } from './model';
 
 function imageOptions(settings: GroupSettings) {
-  return { target: settings.target, quality: settings.quality, lossless: settings.lossless, resize: settings.resize === 'Original' ? 100 : Number.parseInt(settings.resize, 10), metadata: settings.metadata, background: settings.background, colors: settings.colors, dither: settings.dither };
+  return { target: settings.target?.replace(/^frame-/, ''), quality: settings.quality, lossless: settings.lossless, resize: settings.resize === 'Original' ? 100 : Number.parseInt(settings.resize, 10), metadata: settings.metadata, background: settings.background, colors: settings.colors, dither: settings.dither };
 }
 
 function audioOptions(audio: GroupSettings) {
@@ -76,7 +76,8 @@ export function useConversion() {
         ...(retry ? { allowClipping } : {}),
         ...(!retry ? { request: {
           paths: files.map(file => file.path), outputFolder,
-          imageOptions: files.some(file => file.kind === 'images') ? imageOptions(settings) : null,
+          imageOptions: files.some(file => file.kind === 'images') && !isImageFrameTarget(settings.target) ? imageOptions(settings) : null,
+          imageFrameOptions: files.some(file => file.kind === 'images') && isImageFrameTarget(settings.target) ? { image: imageOptions(settings), frames: Object.fromEntries(files.filter(file => file.kind === 'images' && file.animated && file.frame).map(file => [file.path, file.frame])) } : null,
           videoOptions: videoFiles.length && !videoAudio && !videoGif && !videoFrame ? { target: video.target, quality: video.quality, resolution: copyStreams || ['Auto', 'Original'].includes(resolution) ? null : Number.parseInt(resolution), sizeLimit: targetSize ? Math.floor(Number(video.targetSize) * 1_000_000) : null, autoResolution: targetSize && resolution === 'Auto', copyStreams, acceleration: video.acceleration.toLowerCase(), frameRate: copyStreams || video.frameRate === 'Original' ? null : Number.parseInt(video.frameRate), metadata: video.metadata } : null,
           videoFrameOptions: videoFiles.length && videoFrame ? { image: { ...imageOptions(video), metadata: false }, frames: Object.fromEntries(videoFiles.filter(file => file.frame).map(file => [file.path, file.frame])) } : null,
           animationOptions: videoFiles.length && videoGif ? { size: Number.parseInt(video.gifSize), frameRate: Number.parseInt(video.gifFrameRate), colors: video.colors, dither: video.dither, ranges: Object.fromEntries(videoFiles.map(file => [file.path, sourceRange(file)])) } : null,

@@ -12,12 +12,13 @@ type View = { start: number; span: number };
 type Part = 'start' | 'end' | 'position' | 'selection' | 'overview';
 type Drag = { part: Part; x: number; rect: DOMRect; view: View; range: SourceRange; grab: number; moved: boolean };
 
-export function RangeTimeline({ duration, range, position, disabled, onBoundary, onSeek, onMove, frameOnly = false, onStep }: {
+export function RangeTimeline({ duration, range, position, disabled, onBoundary, onSeek, onMove, frameOnly = false, onStep, sourceLabel = 'video' }: {
   duration: number; range: SourceRange; position: number; disabled: boolean;
   onBoundary: (part: 'start' | 'end', value: number) => void;
   onSeek: (value: number) => void;
   onMove: (range: SourceRange) => void;
   frameOnly?: boolean;
+  sourceLabel?: 'video' | 'animation';
   onStep?: (direction: -1 | 1) => void;
 }) {
   const frame = (center: number, span: number): View => {
@@ -114,7 +115,7 @@ export function RangeTimeline({ duration, range, position, disabled, onBoundary,
   }
   const events = { onPointerMove: seek, onPointerUp: end, onPointerCancel: end, onLostPointerCapture: end };
   return <div className="range-navigation" data-view-start={view.start} data-view-end={viewEnd}>
-    {hasOverview && <div className="range-overview-row"><span>Whole video</span><button ref={overview} type="button" className="range-overview" role="slider" aria-label={frameOnly ? "Frame position in full video" : "Segment position in full video"} title={frameOnly ? "Click or drag to seek" : "Click or drag to move the selected segment through the video"} disabled={disabled} aria-valuemin={0} aria-valuemax={Math.max(0, duration - (range.end - range.start))} aria-valuenow={range.start} aria-valuetext={frameOnly ? `${position.toFixed(3)} seconds` : `${rangeTime(range.start)} to ${rangeTime(range.end)}`} onPointerDown={event => begin(event, 'overview')} onKeyDown={event => keyboard(event, 'overview', range.start)} {...events}>
+    {hasOverview && <div className="range-overview-row"><span>Whole {sourceLabel}</span><button ref={overview} type="button" className="range-overview" role="slider" aria-label={frameOnly ? `Frame position in full ${sourceLabel}` : "Segment position in full video"} title={frameOnly ? "Click or drag to seek" : "Click or drag to move the selected segment through the video"} disabled={disabled} aria-valuemin={0} aria-valuemax={Math.max(0, duration - (range.end - range.start))} aria-valuenow={range.start} aria-valuetext={frameOnly ? `${position.toFixed(3)} seconds` : `${rangeTime(range.start)} to ${rangeTime(range.end)}`} onPointerDown={event => begin(event, 'overview')} onKeyDown={event => keyboard(event, 'overview', range.start)} {...events}>
       <span className="overview-track" /><span className="overview-window" style={{ left: `${view.start / duration * 100}%`, width: `${view.span / duration * 100}%` }} /><span className="overview-selection" style={{ left: `${range.start / duration * 100}%`, width: `${(range.end - range.start) / duration * 100}%` }} />
     </button></div>}
     <div className="range-scale"><span>{rangeTime(view.start)}</span><div>

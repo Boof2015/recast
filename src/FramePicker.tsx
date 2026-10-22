@@ -5,9 +5,9 @@ import { RangeTimeline, rangeTime } from './RangeTimeline';
 import type { FrameSelection, InputFile } from './model';
 
 type Change = { frameTime: number; frame?: FrameSelection };
-type Preview = { selection: FrameSelection; previous: number | null; next: number | null };
+type Preview = { selection: FrameSelection; previous: number | null; next: number | null; index?: number; count?: number; previousFrame?: number | null; nextFrame?: number | null; mime?: string };
 
-export function VideoFrame({ files, disabled, onChange }: { files: InputFile[]; disabled: boolean; onChange: (id: string, change: Change, edited: boolean) => void }) {
+export function FramePicker({ files, disabled, onChange }: { files: InputFile[]; disabled: boolean; onChange: (id: string, change: Change, edited: boolean) => void }) {
   const [selected, setSelected] = useState(files[0]?.id);
   const [loading, setLoading] = useState(true);
   const index = Math.max(0, files.findIndex(file => file.id === selected));
@@ -20,7 +20,9 @@ export function VideoFrame({ files, disabled, onChange }: { files: InputFile[]; 
 }
 
 function FrameEditor({ file, disabled, onChange, onLoading }: { file: InputFile; disabled: boolean; onChange: (change: Change, edited: boolean) => void; onLoading: (value: boolean) => void }) {
-  const duration = file.animation?.duration ?? file.video?.duration ?? 5;
+  const animated = file.kind === 'images';
+  const duration = animated ? (file.sequence?.delays.reduce((sum, ms) => sum + ms, 0) ?? 0) / 1000 : file.animation?.duration ?? file.video?.duration ?? 5;
+  const [index, setIndex] = useState<number | null>(animated ? Number(file.frame?.pts ?? 0) : null);
   const [time, setTime] = useState(file.frameTime ?? 0);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [image, setImage] = useState('');
@@ -43,53 +45,53 @@ function FrameEditor({ file, disabled, onChange, onLoading }: { file: InputFile;
     const requestId = crypto.randomUUID();
     setLoading(true); setError('');
     change.current({ frameTime: time, frame: undefined }, false);
-    if (!isTauri() || !file.path) { setLoading(false); setError('Add a video to choose a frame.'); return; }
+    if (!isTauri() || !file.path) { setLoading(false); setError('Add a file to choose a frame.'); return; }
     const timer = setTimeout(() => {
       started = true;
-      void invoke<ArrayBuffer | number[]>('preview_video_frame', { request: { requestId, path: file.path, time } }).then(data => {
+      void invoke<ArrayBuffer | number[]>(animated ? 'preview_animation_frame' : 'preview_video_frame', { request: { requestId, path: file.path, time, ...(animated ? { index } : {}) } }).then(data => {
         if (!active) return;
         const bytes = data instanceof ArrayBuffer ? new Uint8Array(data) : new Uint8Array(data);
         if (bytes.byteLength < 4) throw new Error('The frame preview is incomplete.');
         const length = new DataView(bytes.buffer).getUint32(0, true);
         if (length > bytes.byteLength - 4) throw new Error('The frame preview is incomplete.');
         const result = JSON.parse(new TextDecoder().decode(bytes.subarray(4, 4 + length))) as Preview;
-        const next = URL.createObjectURL(new Blob([bytes.subarray(4 + length)], { type: 'image/bmp' }));
+        const next = URL.createObjectURL(new Blob([bytes.subarray(4 + length)], { type: result.mime ?? 'image/bmp' }));
         if (url.current) URL.revokeObjectURL(url.current);
         url.current = next; setImage(next); setPreview(result); setLoading(false);
         change.current({ frameTime: result.selection.time, frame: result.selection }, false);
       }).catch(reason => { if (active) { setLoading(false); setError(String(reason)); } });
     }, 90);
     return () => { active = false; clearTimeout(timer); if (started) void invoke('cancel_video_preview', { requestId }).catch(() => {}); };
-  }, [file.path, time, revision, disabled]);
+  }, [file.path, time, index, animated, revision, disabled]);
   useEffect(() => () => { if (url.current) URL.revokeObjectURL(url.current); }, []);
 
-  function seek(value: number) {
+  function seek(value: number, frameIndex: number | null = null) {
     if (disabled) return;
     const next = Math.min(duration, Math.max(0, value));
-    setTime(next); setLoading(true);
+    setTime(next); setIndex(frameIndex); setLoading(true);
     change.current({ frameTime: next, frame: undefined }, true);
     if (next === time) setRevision(value => value + 1);
   }
   function step(direction: -1 | 1) {
     if (disabled || loading || error) return;
     const next = direction === -1 ? preview?.previous : preview?.next;
-    if (next != null) seek(next);
+    if (next != null) seek(next, (direction === -1 ? preview?.previousFrame : preview?.nextFrame) ?? null);
   }
   return <>
-    <div className="range-picture" aria-busy={loading}>
+    <div className={`range-picture ${animated ? 'transparent-preview' : ''}`} aria-busy={loading}>
       {image && !error && <img src={image} alt={`Selected frame at ${preview?.selection.time.toFixed(3)} seconds`} draggable={false} />}
       {loading && <span className="preview-loading" role="status">Loading…</span>}
       {error && <div className="preview-error" role="status"><span>{error}</span><button className="quiet-button" disabled={disabled} onClick={() => setRevision(value => value + 1)}>Try again<RotateCcw size={12} /></button></div>}
     </div>
-    <div className="range-transport frame-transport"><div>
-      <button className="icon-button" aria-label="Previous frame" title="Previous frame" disabled={disabled || loading || !!error || preview?.previous == null} onClick={() => step(-1)}><StepBack size={14} /></button>
-      <button className="icon-button" aria-label="Next frame" title="Next frame" disabled={disabled || loading || !!error || preview?.next == null} onClick={() => step(1)}><StepForward size={14} /></button>
-    </div><label className="frame-position"><input aria-label="Frame time in seconds" inputMode="decimal" value={draft} disabled={disabled} onChange={e => setDraft(e.target.value)} onBlur={() => {
+    <div className="range-transport frame-transport"><div onKeyDown={e => { if (animated && ['ArrowLeft', 'ArrowRight'].includes(e.key)) { e.preventDefault(); step(e.key === 'ArrowLeft' ? -1 : 1); } }}>
+      <button className="icon-button" aria-label="Previous frame" title="Previous frame" disabled={disabled} aria-disabled={loading || !!error || preview?.previous == null} onClick={() => step(-1)}><StepBack size={14} /></button>
+      <button className="icon-button" aria-label="Next frame" title="Next frame" disabled={disabled} aria-disabled={loading || !!error || preview?.next == null} onClick={() => step(1)}><StepForward size={14} /></button>
+    </div>{animated && preview && <span className="frame-count" aria-label={`Frame ${preview.index! + 1} of ${preview.count}`}>{preview.index! + 1} / {preview.count}</span>}<label className="frame-position"><input aria-label="Frame time in seconds" inputMode="decimal" value={draft} disabled={disabled} onChange={e => setDraft(e.target.value)} onBlur={() => {
       if (discard.current) { discard.current = false; setDraft(position.toFixed(3)); return; }
       const value = draft.trim() ? Number(draft) : NaN;
       if (Number.isFinite(value) && draft !== position.toFixed(3)) seek(value);
       else setDraft(position.toFixed(3));
     }} onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); if (e.key === 'Escape') { discard.current = true; e.currentTarget.blur(); } }} /><span>s</span></label><span className="range-total">/ {rangeTime(duration)}</span></div>
-    <RangeTimeline frameOnly duration={duration} range={{ start: position, end: position }} position={position} disabled={disabled} onBoundary={() => {}} onMove={() => {}} onSeek={seek} onStep={step} />
+    {duration > 0 && <RangeTimeline frameOnly sourceLabel={animated ? 'animation' : 'video'} duration={duration} range={{ start: position, end: position }} position={position} disabled={disabled} onBoundary={() => {}} onMove={() => {}} onSeek={seek} onStep={step} />}
   </>;
 }

@@ -10,7 +10,7 @@ Settings follow the output: JPEG has quality, WebP and AVIF have quality/lossles
 
 TIFF accepts classic TIFF and BigTIFF, either byte order, with unsigned samples up to 16 bits. Output is ordinary single-page TIFF with Deflate compression and preserved transparency. Resize and Keep metadata are its only settings; XMP/IPTC, color profiles, and common TIFF tags can be retained, but camera EXIF is not fully carried over. Multipage/layered TIFF, raw camera containers, floating-point samples, and unsupported compression receive an explicit explanation.
 
-Animated GIF/WebP inputs only offer destinations that retain animation. Animated PNG/AVIF, multi-image BMPs, and BMP wrappers containing embedded PNG/JPEG are rejected. Still-frame extraction from animations remains planned.
+Animated GIF/WebP inputs offer separate **Animation** and **Still image** sections. To extract one frame, choose a still output and scrub or step through the preview; each animation has its own frame selection. All seven image formats are available, with the usual resize, transparency, and metadata controls. Animated PNG/AVIF, multi-image BMPs, and BMP wrappers containing embedded PNG/JPEG are rejected.
 
 ## Audio
 

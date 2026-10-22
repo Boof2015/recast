@@ -7,12 +7,13 @@ use std::{
 pub const MAX_FRAMES: usize = 1000;
 const MAX_CANVAS_PIXELS: u64 = 100_000_000;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct Sequence {
     pub width: u32,
     pub height: u32,
     pub delays: Vec<u32>, // milliseconds
     pub loops: u32,       // total plays; zero means forever
+    #[serde(skip)]
     delay_offsets: Vec<u64>,
 }
 
@@ -61,7 +62,7 @@ impl Sequence {
             "webp" if self.loops > 65535 => Some("This animation repeats more times than WebP can store. Choose GIF to retain its loop count.".into()),
             "gif" if self.delays.iter().any(|&ms| (ms > 0 && ms < 10) || ms > 655350) => Some("This animation has frame timing outside GIF’s range. Choose WebP to preserve it.".into()),
             "gif" | "webp" => None,
-            _ => Some("This file is animated. Choose GIF or WebP, or remove it to convert the rest.".into()),
+            _ => Some("This file is animated. Choose a Still image output to select one frame, or GIF/WebP to keep the animation.".into()),
         }
     }
     // GIF stores centiseconds. Round cumulative timestamps to avoid drift over

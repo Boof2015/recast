@@ -26,8 +26,17 @@ fn animation_targets_preserve_motion_and_explain_incompatible_formats() {
     ] {
         let input = serde_json::to_value(crate::inputs::inspect(&fixture(name)).unwrap()).unwrap();
         assert_eq!(
-            input["targets"],
-            serde_json::json!(["webp", "gif"]),
+            input["targets"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|target| !target.as_str().unwrap().starts_with("frame-"))
+                .cloned()
+                .collect::<Vec<_>>(),
+            serde_json::json!(["webp", "gif"])
+                .as_array()
+                .unwrap()
+                .clone(),
             "{name}: {input}"
         );
         assert_eq!(input["animated"], true);
@@ -38,7 +47,17 @@ fn animation_targets_preserve_motion_and_explain_incompatible_formats() {
     }
     for (name, targets) in [("fast.webp", vec!["webp"]), ("max-loops.gif", vec!["gif"])] {
         let input = serde_json::to_value(crate::inputs::inspect(&fixture(name)).unwrap()).unwrap();
-        assert_eq!(input["targets"], serde_json::json!(targets), "{input}");
+        assert_eq!(
+            input["targets"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|target| !target.as_str().unwrap().starts_with("frame-"))
+                .cloned()
+                .collect::<Vec<_>>(),
+            serde_json::json!(targets).as_array().unwrap().clone(),
+            "{input}"
+        );
     }
 }
 #[test]
@@ -95,7 +114,11 @@ fn animation_frame_timing_loops_dimensions_and_sources_survive_conversion() {
 // Read BMP bytes rather than use the worker's textual color formatting. The
 // independent fixture generator supplies expected fully composed GIF canvases.
 fn pixels(path: &Path, frame: usize) -> Vec<u8> {
-    let frames = sequence(path).delays.len();
+    let frames = crate::inputs::inspect(path)
+        .unwrap()
+        .sequence
+        .map(|s| s.delays.len())
+        .unwrap_or(1);
     let mut channels = vec![];
     for alpha in ["off", "extract"] {
         let result = backend()
@@ -425,4 +448,378 @@ fn animated_webp_applies_orientation_and_color_profiles_before_metadata_retentio
         identify(&dir.path().join("first.webp"), sample),
         identify(&expected, sample)
     );
+}
+
+#[test]
+fn still_frames_preserve_composed_gif_canvases_and_webp_blend_alpha() {
+    let expected: Vec<Vec<u8>> =
+        serde_json::from_slice(&fs::read(fixture("disposal-frames.json")).unwrap()).unwrap();
+    for name in ["disposal.gif", "partial.webp"] {
+        let dir = tempfile::tempdir().unwrap();
+        let source = copy(name, &dir.path().join(name));
+        let original = fs::read(&source).unwrap();
+        let input = serde_json::to_value(crate::inputs::inspect(&source).unwrap()).unwrap();
+        for target in crate::image_format::ImageFormat::ALL {
+            assert!(input["targets"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!(format!("frame-{}", target.id()))));
+        }
+        for (index, _) in sequence(&source).delays.iter().enumerate() {
+            let (preview, png) = backend()
+                .preview_animation_frame(&source, 0.0, Some(index), &AtomicBool::new(false))
+                .unwrap();
+            let preview_path = dir.path().join("preview.png");
+            fs::write(&preview_path, png).unwrap();
+            let settings = ImageOptions {
+                target: "png".into(),
+                ..options()
+            };
+            let result = backend()
+                .convert_with_frame(
+                    &source,
+                    None,
+                    &settings,
+                    Some(&preview.frame.selection),
+                    true,
+                    &AtomicBool::new(false),
+                )
+                .unwrap();
+            if let Some(folder) = std::env::var_os("RECAST_IMAGE_FRAME_EVIDENCE") {
+                fs::create_dir_all(&folder).unwrap();
+                fs::copy(
+                    &preview_path,
+                    Path::new(&folder).join(format!("{name}-{index}-preview.png")),
+                )
+                .unwrap();
+                fs::copy(
+                    &result.path,
+                    Path::new(&folder).join(format!("{name}-{index}-export.png")),
+                )
+                .unwrap();
+            }
+            let actual = pixels(Path::new(&result.path), 0);
+            assert_eq!(
+                actual,
+                pixels(&preview_path, 0),
+                "{name} frame {index}: preview/export"
+            );
+            assert_eq!(
+                actual,
+                if name == "disposal.gif" {
+                    expected[index].clone()
+                } else {
+                    pixels(&source, index)
+                },
+                "{name} frame {index}: canvas"
+            );
+            assert_eq!(preview.index, index);
+            assert_eq!(preview.count, 4);
+            assert_eq!(preview.previous_frame, index.checked_sub(1));
+            assert_eq!(preview.next_frame, (index < 3).then_some(index + 1));
+        }
+        assert_eq!(fs::read(&source).unwrap(), original);
+        no_partials(dir.path());
+    }
+}
+
+#[test]
+fn still_frames_support_all_formats_background_resize_and_explicit_mode() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = copy("partial.webp", &dir.path().join("source.webp"));
+    let (selected, _) = backend()
+        .preview_animation_frame(&source, 0.05, None, &AtomicBool::new(false))
+        .unwrap();
+    assert_eq!(selected.index, 1);
+    for target in crate::image_format::ImageFormat::ALL {
+        let settings = ImageOptions {
+            target: target.id().into(),
+            lossless: true,
+            background: "#123456".into(),
+            ..options()
+        };
+        let output = backend()
+            .convert_with_frame(
+                &source,
+                None,
+                &settings,
+                Some(&selected.frame.selection),
+                true,
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+        let path = Path::new(&output.path);
+        assert_eq!(identify(path, "%w %h %n"), "40 24 1");
+        assert!(!crate::inputs::inspect(path)
+            .unwrap()
+            .sequence
+            .is_some_and(|s| s.animated()));
+        assert!(target.validate_output(path).is_ok());
+        if target == crate::image_format::ImageFormat::Bmp {
+            assert_eq!(&pixels(path, 0)[..4], &[0x12, 0x34, 0x56, 255]);
+        }
+        if [
+            crate::image_format::ImageFormat::Png,
+            crate::image_format::ImageFormat::Tiff,
+            crate::image_format::ImageFormat::WebP,
+        ]
+        .contains(&target)
+        {
+            let actual = pixels(path, 0);
+            let expected = pixels(&source, 1);
+            let max = actual
+                .iter()
+                .zip(&expected)
+                .map(|(a, b)| a.abs_diff(*b))
+                .max()
+                .unwrap();
+            // WebP quantizes the coalesced Q16 RGB to 8 bits; alpha stays exact.
+            let allowed = actual.iter().zip(&expected).enumerate().all(|(i, (a, b))| {
+                a.abs_diff(*b)
+                    <= if target == crate::image_format::ImageFormat::WebP && i % 4 != 3 {
+                        1
+                    } else {
+                        0
+                    }
+            });
+            assert!(allowed, "{target:?}: maximum channel difference {max}");
+        }
+    }
+    let settings = ImageOptions {
+        target: "png".into(),
+        resize: 50,
+        ..options()
+    };
+    let output = backend()
+        .convert_with_frame(
+            &source,
+            None,
+            &settings,
+            Some(&selected.frame.selection),
+            true,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+    assert_eq!(identify(Path::new(&output.path), "%w %h"), "20 12");
+    assert!(backend()
+        .convert(&source, None, &settings, &AtomicBool::new(false))
+        .is_err());
+    let motion = convert(
+        &source,
+        &ImageOptions {
+            target: "gif".into(),
+            ..options()
+        },
+    );
+    assert_eq!(sequence(&motion).delays.len(), 4);
+    no_partials(dir.path());
+}
+
+#[test]
+fn still_frames_preserve_color_orientation_and_metadata_choices() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = copy("profiled-animation.webp", &dir.path().join("profiled.webp"));
+    let (preview, png) = backend()
+        .preview_animation_frame(&source, 0.04, None, &AtomicBool::new(false))
+        .unwrap();
+    let reference = dir.path().join("preview.png");
+    fs::write(&reference, png).unwrap();
+    for metadata in [true, false] {
+        let settings = ImageOptions {
+            target: "png".into(),
+            metadata,
+            ..options()
+        };
+        let output = backend()
+            .convert_with_frame(
+                &source,
+                None,
+                &settings,
+                Some(&preview.frame.selection),
+                true,
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+        let path = Path::new(&output.path);
+        assert_eq!(identify(path, "%w %h"), "20 32");
+        assert_eq!(pixels(path, 0), pixels(&reference, 0));
+        let profiles = identify(path, "%[profiles]");
+        if metadata {
+            assert!(
+                profiles.contains("icc") && profiles.contains("xmp"),
+                "{profiles}"
+            );
+        } else {
+            assert!(profiles.is_empty(), "{profiles}");
+        }
+    }
+}
+
+#[test]
+fn still_frames_zero_and_millisecond_delays_keep_every_frame_accessible() {
+    let dir = tempfile::tempdir().unwrap();
+    let zero = dir.path().join("zero.gif");
+    let mut bytes = fs::read(fixture("disposal.gif")).unwrap();
+    for i in 0..bytes.len() - 7 {
+        if bytes[i..i + 3] == [0x21, 0xf9, 4] {
+            bytes[i + 4] = 0;
+            bytes[i + 5] = 0;
+        }
+    }
+    fs::write(&zero, bytes).unwrap();
+    for source in [
+        zero,
+        fixture("fast.webp"),
+        fixture("millisecond.webp"),
+        fixture("long-delay.webp"),
+    ] {
+        let delays = sequence(&source).delays;
+        let mut elapsed = 0u64;
+        for (index, delay) in delays.iter().enumerate() {
+            let (preview, _) = backend()
+                .preview_animation_frame(
+                    &source,
+                    elapsed as f64 / 1000.0,
+                    Some(index),
+                    &AtomicBool::new(false),
+                )
+                .unwrap();
+            assert_eq!(preview.index, index);
+            assert_eq!(preview.frame.selection.time, elapsed as f64 / 1000.0);
+            assert_eq!(
+                crate::image_frame::resolve(&sequence(&source), Some(&preview.frame.selection))
+                    .unwrap(),
+                index
+            );
+            elapsed += u64::from(*delay);
+        }
+        let (last, _) = backend()
+            .preview_animation_frame(
+                &source,
+                elapsed as f64 / 1000.0,
+                None,
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+        assert_eq!(last.index, delays.len() - 1);
+        assert!(backend()
+            .preview_animation_frame(&source, 0.0, Some(delays.len()), &AtomicBool::new(false))
+            .is_err());
+        assert!(backend()
+            .preview_animation_frame(&source, -1.0, None, &AtomicBool::new(false))
+            .is_err());
+    }
+}
+
+#[test]
+fn still_frames_changed_sources_invalid_ids_and_cancellation_do_not_publish() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = copy("disposal.gif", &dir.path().join("source.gif"));
+    let (preview, _) = backend()
+        .preview_animation_frame(&source, 0.08, None, &AtomicBool::new(false))
+        .unwrap();
+    let settings = ImageOptions {
+        target: "png".into(),
+        ..options()
+    };
+    let result = backend().convert_with_frame(
+        &source,
+        None,
+        &settings,
+        Some(&preview.frame.selection),
+        true,
+        &AtomicBool::new(true),
+    );
+    assert!(matches!(result, Err(ConversionError::Cancelled)));
+    assert!(matches!(
+        backend().preview_animation_frame(&source, 0.0, None, &AtomicBool::new(true)),
+        Err(ConversionError::Cancelled)
+    ));
+    let mut invalid = preview.frame.selection.clone();
+    invalid.pts = "1000".into();
+    assert!(backend()
+        .convert_with_frame(
+            &source,
+            None,
+            &settings,
+            Some(&invalid),
+            true,
+            &AtomicBool::new(false)
+        )
+        .is_err());
+    let mut invalid = preview.frame.selection.clone();
+    invalid.time = f64::NAN;
+    assert!(backend()
+        .convert_with_frame(
+            &source,
+            None,
+            &settings,
+            Some(&invalid),
+            true,
+            &AtomicBool::new(false)
+        )
+        .is_err());
+    // Same valid container, changed timestamp/size fingerprint: no silent re-selection.
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&source)
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(2))
+        .unwrap();
+    assert!(
+        matches!(backend().convert_with_frame(&source,None,&settings,Some(&preview.frame.selection),true,&AtomicBool::new(false)),Err(ConversionError::Failed(s)) if s.contains("changed"))
+    );
+    assert!(!dir.path().join("source.png").exists());
+    no_partials(dir.path());
+}
+
+#[test]
+fn still_frames_mixed_batch_retry_freezes_selection_and_preserves_successes() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = copy("disposal.gif", &dir.path().join("a.gif"));
+    let b = copy("disposal.gif", &dir.path().join("b.gif"));
+    let still = copy("rgba.png", &dir.path().join("ordinary.png"));
+    let (selected, _) = backend()
+        .preview_animation_frame(&b, 0.0, Some(2), &AtomicBool::new(false))
+        .unwrap();
+    let mut req = request(&[a.clone(), b.clone(), still], dir.path());
+    req.image_options = None;
+    req.image_frame_options = Some(crate::image_frame::ImageFrameOptions {
+        image: ImageOptions {
+            target: "png".into(),
+            ..options()
+        },
+        frames: [(b.to_string_lossy().into_owned(), selected.frame.selection)].into(),
+    });
+    let held = dir.path().join("held.gif");
+    fs::rename(&b, &held).unwrap();
+    let manager = JobManager::default();
+    let job = manager.prepare("image-frames", req.clone(), false).unwrap();
+    run_job(&job, &backend(), &audio_backend(), |_| {});
+    let before = job.snapshot();
+    assert_eq!(before.files[0].status, FileStatus::Succeeded, "{before:?}");
+    assert_eq!(before.files[1].status, FileStatus::Failed);
+    assert_eq!(before.files[2].status, FileStatus::Succeeded);
+    assert_eq!(
+        pixels(Path::new(before.files[0].output_path.as_ref().unwrap()), 0),
+        pixels(&a, 0)
+    );
+    fs::rename(held, &b).unwrap();
+    req.image_frame_options.as_mut().unwrap().frames.clear();
+    req.image_frame_options.as_mut().unwrap().image.target = "jpeg".into();
+    let retry = manager.prepare("image-frames", req, true).unwrap();
+    run_job(&retry, &backend(), &audio_backend(), |_| {});
+    let after = retry.snapshot();
+    assert!(
+        after
+            .files
+            .iter()
+            .all(|f| f.status == FileStatus::Succeeded),
+        "{after:?}"
+    );
+    assert_eq!(before.files[0].output_path, after.files[0].output_path);
+    let output = after.files[1].output_path.as_ref().unwrap();
+    assert!(output.ends_with("b.png"));
+    assert_eq!(pixels(Path::new(output), 0), pixels(&b, 2));
+    no_partials(dir.path());
 }

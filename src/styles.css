@@ -297,3 +297,7 @@ button:disabled { cursor: default; }
 .range-time input { min-width: 0; width: 100%; background: transparent; border: 0; color: var(--ink); font-variant-numeric: tabular-nums; }
 .range-time input:focus-visible { outline-offset: 1px; }
 .range-times output { white-space: nowrap; padding-bottom: 5px; color: var(--secondary); font-variant-numeric: tabular-nums; }
+
+.transparent-preview { background: conic-gradient(var(--control) 25%, var(--mass) 0 50%, var(--control) 0 75%, var(--mass) 0) 0 0 / 16px 16px; }
+.frame-count { color: var(--secondary); white-space: nowrap; }
+.frame-transport .icon-button[aria-disabled="true"] { opacity: .4; cursor: default; background: none; }

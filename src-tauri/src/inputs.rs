@@ -26,7 +26,6 @@ pub struct InputFile {
     pub video: Option<crate::video_backend::VideoInfo>,
     pub animation: Option<crate::video_animation::AnimationInfo>,
     target_issues: std::collections::HashMap<String, String>,
-    #[serde(skip)]
     pub sequence: Option<crate::animation::Sequence>,
 }
 
@@ -116,7 +115,7 @@ pub fn inspect(path: &Path) -> Result<InputFile, String> {
                 .map(|issue| (format.id().into(), issue))
         })
         .collect();
-    let targets = if conversion_issue.is_none() {
+    let mut targets: Vec<String> = if conversion_issue.is_none() {
         ImageFormat::ALL
             .into_iter()
             .filter(|format| !target_issues.contains_key(format.id()))
@@ -125,6 +124,11 @@ pub fn inspect(path: &Path) -> Result<InputFile, String> {
     } else {
         vec![]
     };
+    // Still-frame destinations are explicit, separate from motion-preserving
+    // targets. Ordinary images also support them for mixed image batches.
+    if conversion_issue.is_none() && kind == "images" {
+        targets.extend(ImageFormat::ALL.map(|format| format!("frame-{}", format.id())));
+    }
     Ok(InputFile {
         id: path_string.clone(),
         name: path

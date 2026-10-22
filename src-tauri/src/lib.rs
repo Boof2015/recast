@@ -6,6 +6,7 @@ mod avif;
 mod desktop;
 mod image_backend;
 mod image_format;
+mod image_frame;
 mod inputs;
 mod jobs;
 mod mp3;
@@ -80,6 +81,7 @@ pub fn run() {
             jobs::reveal_output,
             video_preview::preview_video,
             video_preview::preview_video_frame,
+            video_preview::preview_animation_frame,
             video_preview::cancel_video_preview
         ])
         .build(tauri::generate_context!())

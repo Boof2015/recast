@@ -4,11 +4,11 @@ import { invoke, isTauri } from '@tauri-apps/api/core';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { open } from '@tauri-apps/plugin-dialog';
-import { isFrameTarget, isAudioTarget, selectAudioTrack, videoModeKey, formatBytes, videoSettingIssue, vorbisQualities, opusBitrateChoices, aacBitrateChoices, aacRates, isLossyAudio, audioDescription, videoDescription, audioSampleFormats, audioSettingIssue, audioWillDither, defaultSettings, destinationsFor, formatCounts, kindLabels, kinds, unitLabels, mp3BitrateChoices, mp3Qualities, mp3Rates, type Appearance, type Destination, type GroupSettings, type InputFile, type MediaKind } from './model';
+import { isImageFrameTarget, isFrameTarget, isAudioTarget, selectAudioTrack, videoModeKey, formatBytes, videoSettingIssue, vorbisQualities, opusBitrateChoices, aacBitrateChoices, aacRates, isLossyAudio, audioDescription, videoDescription, audioSampleFormats, audioSettingIssue, audioWillDither, defaultSettings, destinationsFor, formatCounts, kindLabels, kinds, unitLabels, mp3BitrateChoices, mp3Qualities, mp3Rates, type Appearance, type Destination, type GroupSettings, type InputFile, type MediaKind } from './model';
 import { sampleFiles, type Scenario } from './fixtures';
 import { CheckboxSetting, QualitySetting, SelectSetting, SizeSetting } from './controls';
 import { VideoRange } from './VideoRange';
-import { VideoFrame } from './VideoFrame';
+import { FramePicker } from './FramePicker';
 import { ColorSetting } from './ColorSetting';
 import { GroupStack } from './GroupStack';
 import { useConversion, type FileResult } from './useConversion';
@@ -57,82 +57,84 @@ function ScrollArea({ children, className = '', onScroll }: { children: ReactNod
 }
 
 function FormatSettings({ kind, destination, value, onChange, disabled, animated, files }: { kind: MediaKind; destination: Destination; value: GroupSettings; onChange: (change: Partial<GroupSettings>) => void; disabled: boolean; animated: boolean; files: InputFile[] }) {
+  const target = destination.id.replace(/^frame-/, '');
   const isFrame = kind === 'video' && destination.category === 'Still image';
   const isImage = kind === 'images' || isFrame;
   const isAudio = kind === 'audio' || destination.category === 'Audio only';
   const isVideo = kind === 'video' && !isAudio;
-  const videoOutput = isVideo && ['mp4', 'mkv', 'mov', 'webm'].includes(destination.id);
-  const modeKey = videoModeKey(destination.id);
+  const videoOutput = isVideo && ['mp4', 'mkv', 'mov', 'webm'].includes(target);
+  const modeKey = videoModeKey(target);
   const mode = value[modeKey];
   const targetSize = videoOutput && mode === 'Target size';
   const copyStreams = videoOutput && mode === 'Keep original';
-  const hasQuality = (isImage && ['webp', 'jpeg', 'avif'].includes(destination.id)) || (videoOutput && mode === 'Quality');
-  const hasLossless = isImage && ['webp', 'avif'].includes(destination.id);
+  const hasQuality = (isImage && ['webp', 'jpeg', 'avif'].includes(target)) || (videoOutput && mode === 'Quality');
+  const hasLossless = isImage && ['webp', 'avif'].includes(target);
   const lossyInput = files.some(isLossyAudio);
   const sampleFormatLabel = (label: string) => lossyInput && label === 'Keep source' ? 'Auto' : label;
   return <div className="settings-stack">
-    {videoOutput && <SelectSetting label="Mode" value={mode} options={[...(['mkv', 'mov', 'webm'].includes(destination.id) ? ['Keep original'] : []), 'Quality', 'Target size']} onChange={mode => onChange({ [modeKey]: mode })} />}
+    {videoOutput && <SelectSetting label="Mode" value={mode} options={[...(['mkv', 'mov', 'webm'].includes(target) ? ['Keep original'] : []), 'Quality', 'Target size']} onChange={mode => onChange({ [modeKey]: mode })} />}
     {copyStreams && <p className="settings-note">Copies the original tracks without re-encoding.</p>}
     {targetSize && <><SizeSetting value={value.targetSize} onChange={targetSize => onChange({ targetSize })} /><p className="settings-note">Limit applies to each file.</p></>}
     {hasQuality && <QualitySetting value={value.quality} disabled={hasLossless && value.lossless} onChange={(quality) => onChange({ quality })} />}
     {hasLossless && <CheckboxSetting label="Lossless" checked={value.lossless} onChange={(lossless) => onChange({ lossless })} />}
-    {isImage && destination.id === 'gif' && <>
+    {isImage && target === 'gif' && <>
       <SelectSetting label="Colors" value={String(value.colors)} options={['256', '128', '64', '32']} onChange={(colors) => onChange({ colors: Number(colors) })} />
       <CheckboxSetting label="Dithering" checked={value.dither} onChange={(dither) => onChange({ dither })} />
     </>}
     {isImage && <SelectSetting label="Resize" value={value.resize} options={['Original', '75%', '50%', '25%']} onChange={(resize) => onChange({ resize })} />}
-    {isImage && !isFrame && ['jpeg', 'bmp'].includes(destination.id) && <ColorSetting label="Background" value={value.background} disabled={disabled} onChange={(background) => onChange({ background })} />}
-    {isAudio && destination.id === 'mp3' && <>
+    {isImage && !isFrame && ['jpeg', 'bmp'].includes(target) && <ColorSetting label="Background" value={value.background} disabled={disabled} onChange={(background) => onChange({ background })} />}
+    {isAudio && target === 'mp3' && <>
       <SelectSetting label="Encoding" value={value.mp3Mode === 'vbr' ? 'Variable bitrate' : 'Constant bitrate'} options={['Variable bitrate', 'Constant bitrate']} onChange={(mode) => onChange({ mp3Mode: mode === 'Variable bitrate' ? 'vbr' : 'cbr' })} />
       {value.mp3Mode === 'vbr' ? <SelectSetting label="Quality" value={value.mp3Quality} options={mp3Qualities} onChange={(mp3Quality) => onChange({ mp3Quality })} /> : <SelectSetting label="Bitrate" value={value.bitrate} options={mp3BitrateChoices(files, value)} onChange={(bitrate) => onChange({ bitrate })} />}
     </>}
-    {isAudio && destination.id === 'm4a' && <SelectSetting label="Bitrate" value={value.aacBitrate} options={aacBitrateChoices(files, value)} onChange={(aacBitrate) => onChange({ aacBitrate })} />}
-    {isAudio && destination.id === 'opus' && <SelectSetting label="Bitrate" value={value.opusBitrate} options={opusBitrateChoices(files)} onChange={(opusBitrate) => onChange({ opusBitrate })} />}
-    {isAudio && destination.id === 'ogg' && <SelectSetting label="Quality" value={value.vorbisQuality} options={vorbisQualities} onChange={(vorbisQuality) => onChange({ vorbisQuality })} />}
+    {isAudio && target === 'm4a' && <SelectSetting label="Bitrate" value={value.aacBitrate} options={aacBitrateChoices(files, value)} onChange={(aacBitrate) => onChange({ aacBitrate })} />}
+    {isAudio && target === 'opus' && <SelectSetting label="Bitrate" value={value.opusBitrate} options={opusBitrateChoices(files)} onChange={(opusBitrate) => onChange({ opusBitrate })} />}
+    {isAudio && target === 'ogg' && <SelectSetting label="Quality" value={value.vorbisQuality} options={vorbisQualities} onChange={(vorbisQuality) => onChange({ vorbisQuality })} />}
     {isAudio && <>
-      {destination.id !== 'opus' && <SelectSetting label="Sample rate" value={value.sampleRate} options={['Keep source', ...(destination.id === 'mp3' ? mp3Rates : destination.id === 'm4a' ? aacRates : ['7350', ...mp3Rates, '64000', '88200', '96000', '176400', '192000'])]} onChange={(sampleRate) => onChange({ sampleRate })} />}
-      {['wav', 'flac', 'alac'].includes(destination.id) && <>
-        <SelectSetting label="Sample format" value={sampleFormatLabel(value.sampleFormat)} options={Object.keys(audioSampleFormats).filter(label => destination.id === 'wav' || ['Keep source', '16-bit PCM', '24-bit PCM'].includes(label)).map(sampleFormatLabel)} onChange={(sampleFormat) => onChange({ sampleFormat: sampleFormat === 'Auto' ? 'Keep source' : sampleFormat })} />
-        {lossyInput && value.sampleFormat === 'Keep source' && <p className="settings-note">Auto uses {destination.id === 'wav' ? '32-bit float' : '24-bit PCM'} for lossy inputs and keeps other files’ source formats.</p>}
+      {target !== 'opus' && <SelectSetting label="Sample rate" value={value.sampleRate} options={['Keep source', ...(target === 'mp3' ? mp3Rates : target === 'm4a' ? aacRates : ['7350', ...mp3Rates, '64000', '88200', '96000', '176400', '192000'])]} onChange={(sampleRate) => onChange({ sampleRate })} />}
+      {['wav', 'flac', 'alac'].includes(target) && <>
+        <SelectSetting label="Sample format" value={sampleFormatLabel(value.sampleFormat)} options={Object.keys(audioSampleFormats).filter(label => target === 'wav' || ['Keep source', '16-bit PCM', '24-bit PCM'].includes(label)).map(sampleFormatLabel)} onChange={(sampleFormat) => onChange({ sampleFormat: sampleFormat === 'Auto' ? 'Keep source' : sampleFormat })} />
+        {lossyInput && value.sampleFormat === 'Keep source' && <p className="settings-note">Auto uses {target === 'wav' ? '32-bit float' : '24-bit PCM'} for lossy inputs and keeps other files’ source formats.</p>}
         <SelectSetting label="Dithering" value={value.audioDither ? 'Auto' : 'Off'} options={['Auto', 'Off']} onChange={(dither) => onChange({ audioDither: dither === 'Auto' })} />
         <CheckboxSetting label="Allow clipping" checked={value.allowClipping} onChange={(allowClipping) => onChange({ allowClipping })} />
         {value.allowClipping && <p className="settings-note">Peaks outside the integer output range may be clipped.</p>}
         {files.some(file => file.audio) && <p className="settings-note">{value.audioDither ? `Dither applies to ${files.filter(file => audioWillDither(file, value)).length} of ${files.length} files when quantizing to integer samples.` : 'Dithering is off.'}</p>}
       </>}
-      <p className="settings-note">{destination.id === 'opus' ? '48,000 Hz · resamples when needed. Keeps each file’s original channels.' : 'Keeps each file’s original channels. Sample rate is in Hz.'}</p>
+      <p className="settings-note">{target === 'opus' ? '48,000 Hz · resamples when needed. Keeps each file’s original channels.' : 'Keeps each file’s original channels. Sample rate is in Hz.'}</p>
     </>}
     {videoOutput && !copyStreams && <>
       <SelectSetting label="Encoding" value={value.acceleration} options={['Automatic', 'Software']} onChange={(acceleration) => onChange({ acceleration: acceleration as GroupSettings['acceleration'] })} />
-      <div className="setting-row"><span>Video codec</span><span className="setting-value">{destination.id === 'webm' ? 'VP9' : 'H.264'}</span></div>
+      <div className="setting-row"><span>Video codec</span><span className="setting-value">{target === 'webm' ? 'VP9' : 'H.264'}</span></div>
       <SelectSetting label="Resolution" value={targetSize ? value.sizeResolution : value.resolution} options={[...(targetSize ? ['Auto'] : []), 'Original', '1080p', '720p', '480p']} onChange={(resolution) => onChange(targetSize ? { sizeResolution: resolution } : { resolution })} />
       <SelectSetting label="Frame rate" value={value.frameRate} options={['Original', '24 fps', '30 fps', '60 fps']} onChange={(frameRate) => onChange({ frameRate })} />
-      <div className="setting-row"><span>Audio codec</span><span className="setting-value">{destination.id === 'webm' ? targetSize ? 'Opus' : 'Original / Opus' : destination.id === 'mkv' && !targetSize ? 'Keep original' : destination.id === 'mov' && !targetSize ? 'Original / AAC' : 'AAC'}</span></div>
+      <div className="setting-row"><span>Audio codec</span><span className="setting-value">{target === 'webm' ? targetSize ? 'Opus' : 'Original / Opus' : target === 'mkv' && !targetSize ? 'Keep original' : target === 'mov' && !targetSize ? 'Original / AAC' : 'AAC'}</span></div>
     </>}
-    {videoOutput && destination.id === 'webm' && !copyStreams && files.some(file => file.hasAudio) && <p className="settings-note">Opus encodes at 48,000 Hz · resamples when needed.</p>}
+    {videoOutput && target === 'webm' && !copyStreams && files.some(file => file.hasAudio) && <p className="settings-note">Opus encodes at 48,000 Hz · resamples when needed.</p>}
     {targetSize && <p className="settings-note">Size is checked before saving. Audio may be re-encoded.</p>}
-    {isVideo && destination.id === 'mp4' && !targetSize && <p className="settings-note">Automatic uses available hardware, with software fallback. Quality and file size vary by encoder. Keeps original timing unless a frame rate is selected. Resolution fits without upscaling. AAC audio is kept; other supported audio is encoded to AAC.</p>}
-    {isVideo && destination.id === 'gif' && <>
+    {isVideo && target === 'mp4' && !targetSize && <p className="settings-note">Automatic uses available hardware, with software fallback. Quality and file size vary by encoder. Keeps original timing unless a frame rate is selected. Resolution fits without upscaling. AAC audio is kept; other supported audio is encoded to AAC.</p>}
+    {isVideo && target === 'gif' && <>
       <SelectSetting label="Size" value={value.gifSize} options={['320 px', '480 px', '720 px', '960 px']} onChange={gifSize => onChange({ gifSize })} />
       <SelectSetting label="Frame rate" value={value.gifFrameRate} options={['10 fps', '15 fps', '20 fps', '25 fps', '30 fps']} onChange={gifFrameRate => onChange({ gifFrameRate })} />
       <SelectSetting label="Colors" value={String(value.colors)} options={['256', '128', '64', '32']} onChange={colors => onChange({ colors: Number(colors) })} />
       <CheckboxSetting label="Dithering" checked={value.dither} onChange={dither => onChange({ dither })} />
       <p className="settings-note">Loops continuously · No audio</p>
     </>}
-    {!isFrame && destination.id !== 'gif' && destination.id !== 'bmp' && <CheckboxSetting label="Keep metadata" checked={value.metadata} onChange={(metadata) => onChange({ metadata })} />}
+    {!isFrame && target !== 'gif' && target !== 'bmp' && <CheckboxSetting label="Keep metadata" checked={value.metadata} onChange={(metadata) => onChange({ metadata })} />}
     {isAudio && value.metadata && <p className="settings-note">Keeps supported text tags. Artwork, loudness tags, and production metadata are omitted.</p>}
-    {isAudio && destination.id === 'alac' && <p className="settings-note">Apple Lossless audio in an .m4a file.</p>}
-    {isAudio && destination.id === 'mp3' && <p className="settings-note">{value.mp3Mode === 'vbr' ? 'Bitrate varies with the audio to meet the selected quality.' : 'Bitrate stays fixed; available rates depend on sample rate.'} MP3 encoding is lossy.</p>}
-    {isAudio && destination.id === 'm4a' && <p className="settings-note">AAC-LC audio in an .m4a file. Bitrate is a target for the whole stream; actual bitrate varies with the audio.</p>}
-    {isAudio && destination.id === 'opus' && <p className="settings-note">Opus audio in an .opus file. Variable bitrate targets the whole stream; actual bitrate varies with the audio.</p>}
-    {isAudio && destination.id === 'ogg' && <p className="settings-note">Vorbis audio in an .ogg file. Higher quality makes larger files; bitrate varies with the audio, sample rate, and channels.</p>}
-    {isAudio && lossyInput && <p className="settings-note">{['mp3', 'm4a', 'opus', 'ogg'].includes(destination.id) ? 'Re-encoding lossy audio adds another lossy generation.' : 'Converting lossy audio to PCM or a lossless format does not restore lost detail.'}</p>}
-    {isImage && !isFrame && destination.id === 'tiff' && value.metadata && <p className="settings-note">Keeps color profiles and supported tags. Camera EXIF may not carry over.</p>}
-    {isImage && destination.id === 'gif' && <p className="settings-note">Partial transparency becomes clear or opaque.{animated && <> Timing rounds to 10&nbsp;ms.</>}</p>}
-    {isImage && destination.id === 'avif' && <p className="settings-note">AVIF supports up to 12-bit color.</p>}
+    {isAudio && target === 'alac' && <p className="settings-note">Apple Lossless audio in an .m4a file.</p>}
+    {isAudio && target === 'mp3' && <p className="settings-note">{value.mp3Mode === 'vbr' ? 'Bitrate varies with the audio to meet the selected quality.' : 'Bitrate stays fixed; available rates depend on sample rate.'} MP3 encoding is lossy.</p>}
+    {isAudio && target === 'm4a' && <p className="settings-note">AAC-LC audio in an .m4a file. Bitrate is a target for the whole stream; actual bitrate varies with the audio.</p>}
+    {isAudio && target === 'opus' && <p className="settings-note">Opus audio in an .opus file. Variable bitrate targets the whole stream; actual bitrate varies with the audio.</p>}
+    {isAudio && target === 'ogg' && <p className="settings-note">Vorbis audio in an .ogg file. Higher quality makes larger files; bitrate varies with the audio, sample rate, and channels.</p>}
+    {isAudio && lossyInput && <p className="settings-note">{['mp3', 'm4a', 'opus', 'ogg'].includes(target) ? 'Re-encoding lossy audio adds another lossy generation.' : 'Converting lossy audio to PCM or a lossless format does not restore lost detail.'}</p>}
+    {isImage && !isFrame && target === 'tiff' && value.metadata && <p className="settings-note">Keeps color profiles and supported tags. Camera EXIF may not carry over.</p>}
+    {isImage && target === 'gif' && <p className="settings-note">Partial transparency becomes clear or opaque.{animated && <> Timing rounds to 10&nbsp;ms.</>}</p>}
+    {isImage && target === 'avif' && <p className="settings-note">AVIF supports up to 12-bit color.</p>}
   </div>;
 }
 
 function DestinationBrowser({ formats, onChoose }: { formats: Destination[]; onChoose: (format: string) => void }) {
+  formats = formats.filter(format => !format.hidden);
   const categories = [...new Set(formats.map((format) => format.category))];
   return <div className="destination-browser">
     <h2>Convert to</h2>
@@ -208,7 +210,8 @@ export default function App() {
   const progressTotal = Math.max(job?.files.length ?? files.length, 1);
   const progressValue = completedUnits + (measuredProgress ?? 0);
   const progressPercent = measuredProgress != null ? Math.round(progressValue / progressTotal * 100) : null;
-  const canConvert = !videoIssue && audioSettingsValid && conversion.backendReady && !previewCatalog && allConfigured && !inspecting && !busy && files.every(file => file.path);
+  const imageFramePending = isImageFrameTarget(settings.images.target) && files.some(file => file.kind === 'images' && file.animated && file.frameTime != null && !file.frame);
+  const canConvert = !imageFramePending && !videoIssue && audioSettingsValid && conversion.backendReady && !previewCatalog && allConfigured && !inspecting && !busy && files.every(file => file.path);
   const jobText = conversion.starting ? 'Preparing conversion…' : job?.status === 'cancelling' ? 'Cancelling…' : busy && job ? `Converting ${Math.min(succeeded.length + failed.length + 1, job.files.length)} of ${job.files.length}` : job ? `${succeeded.length} converted${failed.length ? ` · ${failed.length} failed` : ''}${job.status === 'cancelled' ? ' · Cancelled' : ''}` : '';
 
   useEffect(() => {
@@ -406,12 +409,12 @@ export default function App() {
                 conversion.clear();
                 setFiles(current => current.map(file => file.id === id ? { ...file, sourceRange } : file));
               }} />}
-              {activeKind === 'video' && selectedFormat.category === 'Still image' && <VideoFrame files={activeFiles} disabled={busy} onChange={(id, change, edited) => {
+              {selectedFormat.category === 'Still image' && (activeKind === 'video' || activeFiles.some(file => file.animated)) && <FramePicker files={activeKind === 'images' ? activeFiles.filter(file => file.animated) : activeFiles} disabled={busy} onChange={(id, change, edited) => {
                 if (conversion.busyRef.current) return;
                 if (edited) conversion.clear();
                 setFiles(current => current.map(file => file.id === id ? { ...file, ...change } : file));
               }} />}
-              <FormatSettings kind={activeKind} destination={selectedFormat} value={activeSettings} onChange={updateSettings} disabled={busy} animated={activeFiles.some(file => file.animated)} files={activeFiles} />
+              <FormatSettings kind={activeKind} destination={selectedFormat} value={activeSettings} onChange={updateSettings} disabled={busy} animated={!isImageFrameTarget(activeSettings.target) && activeFiles.some(file => file.animated)} files={activeFiles} />
             </> : <DestinationBrowser formats={formats} onChoose={(target) => updateSettings({ target })} />}
             </fieldset>
             {activeKind === 'video' && !selectedFormat && !expanded.includes('video') && activeFiles.some(file => (file.audioTracks?.length ?? 0) > 1) && <button className="text-button" onClick={() => setExpanded(current => [...current, 'video'])}>Audio tracks<ChevronRight size={13} /></button>}
@@ -460,7 +463,7 @@ export default function App() {
         {!busy && failed.some(file => file.canAllowClipping) && <button className="quiet-button" onClick={() => { setSettings(current => ({ ...current, audio: { ...current.audio, allowClipping: true }, video: { ...current.video, allowClipping: true } })); void runConversion(true, true); }}>Allow clipping & retry</button>}
         {!busy && job && retryCount > 0 && <button className="quiet-button" onClick={newBatch}>New batch</button>}
         <div className="folder-choice"><button className="folder-button" disabled={busy} onClick={() => void chooseFolder()} title={outputFolder ?? 'Choose an output folder'}><Folder size={16} strokeWidth={1.6} /><span>{folderName}</span><ChevronDown size={12} /></button>{outputFolder && <button className="icon-button" disabled={busy} aria-label="Use source folders" title="Use source folders" onClick={() => { conversion.clear(); setOutputFolder(null); }}><X size={12} /></button>}</div>
-        {busy ? <button className="primary-button" disabled={conversion.starting || job?.status === 'cancelling'} onClick={() => void conversion.cancel().catch(error => setNotice(String(error)))}>{job?.status === 'cancelling' ? 'Cancelling…' : 'Cancel'}</button> : job ? retryCount > 0 ? <button className="primary-button" onClick={() => void runConversion(true)}>Retry {retryCount} {retryCount === 1 ? 'file' : 'files'}</button> : <button className="primary-button" onClick={newBatch}>New batch</button> : <button className={`primary-button convert-button ${allConfigured ? 'configured' : ''}`} disabled={!canConvert} onClick={() => void runConversion()} title={previewCatalog ? 'Sample files are for design review. Add real images, audio, or video files to convert.' : !allConfigured ? 'Choose a supported output for every group.' : !audioSettingsValid ? 'Choose compatible audio settings.' : videoIssue ?? undefined}>Convert {files.length} {files.length === 1 ? 'file' : 'files'}</button>}
+        {busy ? <button className="primary-button" disabled={conversion.starting || job?.status === 'cancelling'} onClick={() => void conversion.cancel().catch(error => setNotice(String(error)))}>{job?.status === 'cancelling' ? 'Cancelling…' : 'Cancel'}</button> : job ? retryCount > 0 ? <button className="primary-button" onClick={() => void runConversion(true)}>Retry {retryCount} {retryCount === 1 ? 'file' : 'files'}</button> : <button className="primary-button" onClick={newBatch}>New batch</button> : <button className={`primary-button convert-button ${allConfigured ? 'configured' : ''}`} disabled={!canConvert} onClick={() => void runConversion()} title={previewCatalog ? 'Sample files are for design review. Add real images, audio, or video files to convert.' : !allConfigured ? 'Choose a supported output for every group.' : !audioSettingsValid ? 'Choose compatible audio settings.' : imageFramePending ? 'Preview the selected frame before converting.' : videoIssue ?? undefined}>Convert {files.length} {files.length === 1 ? 'file' : 'files'}</button>}
       </footer>
     </>}
 
