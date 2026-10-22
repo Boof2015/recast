@@ -4,10 +4,11 @@ import { invoke, isTauri } from '@tauri-apps/api/core';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { open } from '@tauri-apps/plugin-dialog';
-import { isAudioTarget, selectAudioTrack, videoModeKey, formatBytes, videoSettingIssue, vorbisQualities, opusBitrateChoices, aacBitrateChoices, aacRates, isLossyAudio, audioDescription, videoDescription, audioSampleFormats, audioSettingIssue, audioWillDither, defaultSettings, destinationsFor, formatCounts, kindLabels, kinds, unitLabels, mp3BitrateChoices, mp3Qualities, mp3Rates, type Appearance, type Destination, type GroupSettings, type InputFile, type MediaKind } from './model';
+import { isFrameTarget, isAudioTarget, selectAudioTrack, videoModeKey, formatBytes, videoSettingIssue, vorbisQualities, opusBitrateChoices, aacBitrateChoices, aacRates, isLossyAudio, audioDescription, videoDescription, audioSampleFormats, audioSettingIssue, audioWillDither, defaultSettings, destinationsFor, formatCounts, kindLabels, kinds, unitLabels, mp3BitrateChoices, mp3Qualities, mp3Rates, type Appearance, type Destination, type GroupSettings, type InputFile, type MediaKind } from './model';
 import { sampleFiles, type Scenario } from './fixtures';
 import { CheckboxSetting, QualitySetting, SelectSetting, SizeSetting } from './controls';
 import { VideoRange } from './VideoRange';
+import { VideoFrame } from './VideoFrame';
 import { ColorSetting } from './ColorSetting';
 import { GroupStack } from './GroupStack';
 import { useConversion, type FileResult } from './useConversion';
@@ -56,7 +57,8 @@ function ScrollArea({ children, className = '', onScroll }: { children: ReactNod
 }
 
 function FormatSettings({ kind, destination, value, onChange, disabled, animated, files }: { kind: MediaKind; destination: Destination; value: GroupSettings; onChange: (change: Partial<GroupSettings>) => void; disabled: boolean; animated: boolean; files: InputFile[] }) {
-  const isImage = kind === 'images';
+  const isFrame = kind === 'video' && destination.category === 'Still image';
+  const isImage = kind === 'images' || isFrame;
   const isAudio = kind === 'audio' || destination.category === 'Audio only';
   const isVideo = kind === 'video' && !isAudio;
   const videoOutput = isVideo && ['mp4', 'mkv', 'mov', 'webm'].includes(destination.id);
@@ -79,7 +81,7 @@ function FormatSettings({ kind, destination, value, onChange, disabled, animated
       <CheckboxSetting label="Dithering" checked={value.dither} onChange={(dither) => onChange({ dither })} />
     </>}
     {isImage && <SelectSetting label="Resize" value={value.resize} options={['Original', '75%', '50%', '25%']} onChange={(resize) => onChange({ resize })} />}
-    {isImage && ['jpeg', 'bmp'].includes(destination.id) && <ColorSetting label="Background" value={value.background} disabled={disabled} onChange={(background) => onChange({ background })} />}
+    {isImage && !isFrame && ['jpeg', 'bmp'].includes(destination.id) && <ColorSetting label="Background" value={value.background} disabled={disabled} onChange={(background) => onChange({ background })} />}
     {isAudio && destination.id === 'mp3' && <>
       <SelectSetting label="Encoding" value={value.mp3Mode === 'vbr' ? 'Variable bitrate' : 'Constant bitrate'} options={['Variable bitrate', 'Constant bitrate']} onChange={(mode) => onChange({ mp3Mode: mode === 'Variable bitrate' ? 'vbr' : 'cbr' })} />
       {value.mp3Mode === 'vbr' ? <SelectSetting label="Quality" value={value.mp3Quality} options={mp3Qualities} onChange={(mp3Quality) => onChange({ mp3Quality })} /> : <SelectSetting label="Bitrate" value={value.bitrate} options={mp3BitrateChoices(files, value)} onChange={(bitrate) => onChange({ bitrate })} />}
@@ -99,7 +101,7 @@ function FormatSettings({ kind, destination, value, onChange, disabled, animated
       </>}
       <p className="settings-note">{destination.id === 'opus' ? '48,000 Hz · resamples when needed. Keeps each file’s original channels.' : 'Keeps each file’s original channels. Sample rate is in Hz.'}</p>
     </>}
-    {isVideo && destination.id !== 'gif' && !copyStreams && <>
+    {videoOutput && !copyStreams && <>
       <SelectSetting label="Encoding" value={value.acceleration} options={['Automatic', 'Software']} onChange={(acceleration) => onChange({ acceleration: acceleration as GroupSettings['acceleration'] })} />
       <div className="setting-row"><span>Video codec</span><span className="setting-value">{destination.id === 'webm' ? 'VP9' : 'H.264'}</span></div>
       <SelectSetting label="Resolution" value={targetSize ? value.sizeResolution : value.resolution} options={[...(targetSize ? ['Auto'] : []), 'Original', '1080p', '720p', '480p']} onChange={(resolution) => onChange(targetSize ? { sizeResolution: resolution } : { resolution })} />
@@ -116,7 +118,7 @@ function FormatSettings({ kind, destination, value, onChange, disabled, animated
       <CheckboxSetting label="Dithering" checked={value.dither} onChange={dither => onChange({ dither })} />
       <p className="settings-note">Loops continuously · No audio</p>
     </>}
-    {destination.id !== 'gif' && destination.id !== 'bmp' && <CheckboxSetting label="Keep metadata" checked={value.metadata} onChange={(metadata) => onChange({ metadata })} />}
+    {!isFrame && destination.id !== 'gif' && destination.id !== 'bmp' && <CheckboxSetting label="Keep metadata" checked={value.metadata} onChange={(metadata) => onChange({ metadata })} />}
     {isAudio && value.metadata && <p className="settings-note">Keeps supported text tags. Artwork, loudness tags, and production metadata are omitted.</p>}
     {isAudio && destination.id === 'alac' && <p className="settings-note">Apple Lossless audio in an .m4a file.</p>}
     {isAudio && destination.id === 'mp3' && <p className="settings-note">{value.mp3Mode === 'vbr' ? 'Bitrate varies with the audio to meet the selected quality.' : 'Bitrate stays fixed; available rates depend on sample rate.'} MP3 encoding is lossy.</p>}
@@ -124,7 +126,7 @@ function FormatSettings({ kind, destination, value, onChange, disabled, animated
     {isAudio && destination.id === 'opus' && <p className="settings-note">Opus audio in an .opus file. Variable bitrate targets the whole stream; actual bitrate varies with the audio.</p>}
     {isAudio && destination.id === 'ogg' && <p className="settings-note">Vorbis audio in an .ogg file. Higher quality makes larger files; bitrate varies with the audio, sample rate, and channels.</p>}
     {isAudio && lossyInput && <p className="settings-note">{['mp3', 'm4a', 'opus', 'ogg'].includes(destination.id) ? 'Re-encoding lossy audio adds another lossy generation.' : 'Converting lossy audio to PCM or a lossless format does not restore lost detail.'}</p>}
-    {isImage && destination.id === 'tiff' && value.metadata && <p className="settings-note">Keeps color profiles and supported tags. Camera EXIF may not carry over.</p>}
+    {isImage && !isFrame && destination.id === 'tiff' && value.metadata && <p className="settings-note">Keeps color profiles and supported tags. Camera EXIF may not carry over.</p>}
     {isImage && destination.id === 'gif' && <p className="settings-note">Partial transparency becomes clear or opaque.{animated && <> Timing rounds to 10&nbsp;ms.</>}</p>}
     {isImage && destination.id === 'avif' && <p className="settings-note">AVIF supports up to 12-bit color.</p>}
   </div>;
@@ -397,12 +399,17 @@ export default function App() {
             <fieldset className="conversion-fields" disabled={busy}>
             {selectedFormat ? <>
               <button className="format-back" onClick={() => updateSettings({ target: null })} aria-label="Change output format"><ArrowLeft size={18} strokeWidth={1.7} /><h2>{selectedFormat.label}</h2></button>
-              {activeKind === 'video' && videoIssue && <p className="compatibility-message" role="status">{videoIssue}</p>}
+              {activeKind === 'video' && selectedFormat.category !== 'Still image' && videoIssue && <p className="compatibility-message" role="status">{videoIssue}</p>}
               {activeAudioIssue && <p className="compatibility-message" role="status">{activeAudioIssue}</p>}
               {activeKind === 'video' && selectedFormat.id === 'gif' && <VideoRange files={activeFiles} settings={activeSettings} disabled={busy} onChange={(id, sourceRange) => {
                 if (conversion.busyRef.current) return;
                 conversion.clear();
                 setFiles(current => current.map(file => file.id === id ? { ...file, sourceRange } : file));
+              }} />}
+              {activeKind === 'video' && selectedFormat.category === 'Still image' && <VideoFrame files={activeFiles} disabled={busy} onChange={(id, change, edited) => {
+                if (conversion.busyRef.current) return;
+                if (edited) conversion.clear();
+                setFiles(current => current.map(file => file.id === id ? { ...file, ...change } : file));
               }} />}
               <FormatSettings kind={activeKind} destination={selectedFormat} value={activeSettings} onChange={updateSettings} disabled={busy} animated={activeFiles.some(file => file.animated)} files={activeFiles} />
             </> : <DestinationBrowser formats={formats} onChoose={(target) => updateSettings({ target })} />}
@@ -426,7 +433,7 @@ export default function App() {
             return <section key={kind} className="output-group" style={{ minHeight: groupSizes[kind] }}>
               <button className="group-header output-select" data-selection-key={kind} aria-label={`${kindLabels[kind]} output`} aria-pressed={activeKind === kind} onClick={() => setSelected(kind)}>
                 <span className={`output-result ${target ? '' : 'pending-output'}`}>{groupFiles.length} {target?.label ?? 'files'}</span>
-                <span className="output-detail">{job ? groupText : kind === 'video' && videoIssue ? 'Choose compatible video settings' : isAudioTarget(settings[kind].target) && groupFiles.some(file => audioSettingIssue(file, settings[kind])) ? 'Choose compatible audio settings' : target ? outputFolder ? folderName : 'Same folder as source' : 'Choose an output format'}</span>
+                <span className="output-detail">{job ? groupText : kind === 'video' && videoIssue && !isFrameTarget(settings.video.target) ? 'Choose compatible video settings' : isAudioTarget(settings[kind].target) && groupFiles.some(file => audioSettingIssue(file, settings[kind])) ? 'Choose compatible audio settings' : target ? outputFolder ? folderName : 'Same folder as source' : 'Choose an output format'}</span>
               </button>
               {groupSucceeded.length > 0 && <div className="output-files" aria-label="Converted files">{groupSucceeded.map(file => <button className="output-file" key={file.id} title={file.outputPath!} aria-label={`Show ${file.outputPath!.split(/[\\/]/).at(-1)} in folder`} onClick={() => void revealOutput(file.outputPath!)}><Check size={13} aria-hidden="true" /><span>{file.outputPath!.split(/[\\/]/).at(-1)}</span><Folder size={13} aria-hidden="true" /></button>)}</div>}
             </section>;

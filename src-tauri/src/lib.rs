@@ -14,6 +14,7 @@ mod opus;
 mod tiff;
 mod video_animation;
 mod video_backend;
+mod video_frame;
 mod video_preview;
 mod vorbis;
 use tauri::Manager;
@@ -78,6 +79,7 @@ pub fn run() {
             jobs::backend_status,
             jobs::reveal_output,
             video_preview::preview_video,
+            video_preview::preview_video_frame,
             video_preview::cancel_video_preview
         ])
         .build(tauri::generate_context!())

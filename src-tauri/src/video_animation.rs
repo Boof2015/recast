@@ -47,7 +47,7 @@ pub fn inspect(probe: &Value) -> Result<AnimationInfo, String> {
         .ok_or("No video track was found.")?;
     streams.retain(|s| s["codec_type"] == "video" && s["disposition"]["attached_pic"] != 1);
     if streams.len() != 1 {
-        return Err("GIF needs a single video track.".into());
+        return Err("Frame extraction needs a single video track.".into());
     }
     let stream_index = streams[0]["index"]
         .as_u64()
@@ -137,7 +137,7 @@ impl AnimationInfo {
 
 // The image worker's policy accepts BMP, not raw pixels. A small top-down 24-bit
 // BMP bridge avoids enabling extra coders/delegates or platform media codecs.
-fn bmp(rgb: &[u8], width: u32, height: u32) -> Vec<u8> {
+pub(crate) fn bmp(rgb: &[u8], width: u32, height: u32) -> Vec<u8> {
     let stride = (width * 3).div_ceil(4) * 4;
     let size = 54 + stride * height;
     let mut bytes = Vec::with_capacity(size as usize);

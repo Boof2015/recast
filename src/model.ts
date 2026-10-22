@@ -1,6 +1,7 @@
 export type MediaKind = 'images' | 'audio' | 'video';
 export type Appearance = 'system' | 'light' | 'dark';
 export interface SourceRange { start: number; end: number }
+export interface FrameSelection { pts: string; time: number; source: string }
 
 export interface InputFile {
   id: string;
@@ -20,6 +21,8 @@ export interface InputFile {
   selectedAudioTrack?: number | null;
   animation?: { duration: number; width: number; height: number } | null;
   sourceRange?: SourceRange;
+  frameTime?: number;
+  frame?: FrameSelection;
 }
 
 export interface GroupSettings {
@@ -89,7 +92,12 @@ const videoDestinations: Destination[] = [
   { id: 'webm', label: 'WebM', description: 'Made for the web', category: 'Video' },
   { id: 'mov', label: 'MOV', description: 'QuickTime video', category: 'Video' },
   { id: 'gif', label: 'GIF', description: 'A short animation', category: 'Animation' },
+  ...imageDestinations.filter(format => format.id !== 'gif').map(format => ({ ...format, category: 'Still image' })),
 ];
+
+export function isFrameTarget(target: string | null): boolean {
+  return imageDestinations.some(format => format.id !== 'gif' && format.id === target);
+}
 
 export function isAudioTarget(target: string | null): boolean {
   return audioDestinations.some(format => format.id === target);
@@ -139,6 +147,10 @@ export function videoModeKey(target: string | null): 'mkvMode' | 'movMode' | 'we
 }
 
 export function videoSettingIssue(settings: GroupSettings, files: InputFile[] = []): string | null {
+  if (isFrameTarget(settings.target)) {
+    return files.some(file => file.kind === 'video' && file.frameTime != null && !file.frame)
+      ? 'Preview the selected frame before converting.' : null;
+  }
   if (settings.target === 'gif') {
     for (const file of files.filter(file => file.kind === 'video')) {
       if (!file.animation) continue;

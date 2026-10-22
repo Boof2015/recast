@@ -23,6 +23,7 @@ pub struct ConversionRequest {
     pub video_options: Option<VideoOptions>,
     pub video_audio_options: Option<VideoAudioOptions>,
     pub animation_options: Option<crate::video_animation::AnimationOptions>,
+    pub video_frame_options: Option<crate::video_frame::FrameOptions>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -229,8 +230,18 @@ impl JobManager {
                 && request.video_options.is_none()
                 && request.video_audio_options.is_none()
                 && request.animation_options.is_none()
+                && request.video_frame_options.is_none()
             {
                 return Err("Choose an output format before converting.".into());
+            }
+            if let Some(options) = &request.video_frame_options {
+                options.validate()?;
+                if request.video_options.is_some()
+                    || request.video_audio_options.is_some()
+                    || request.animation_options.is_some()
+                {
+                    return Err("Choose one output for the video group.".into());
+                }
             }
             if request.paths.is_empty() {
                 return Err("Choose at least one file to convert.".into());
@@ -326,6 +337,23 @@ pub fn run_job(
                         .ok_or_else(|| "Choose an audio output format.".to_string())?,
                     &job.cancel,
                 ),
+                "video" if job.request.video_frame_options.is_some() => {
+                    let options = job.request.video_frame_options.as_ref().unwrap();
+                    input.require_frame_target(options)?;
+                    audio.convert_frame(
+                        backend,
+                        Path::new(&source),
+                        folder,
+                        options,
+                        &job.cancel,
+                        |progress, phase| {
+                            report(job.update(|state| {
+                                state.files[index].progress = Some(progress);
+                                state.files[index].phase = Some(phase.into());
+                            }))
+                        },
+                    )
+                }
                 "video" if job.request.animation_options.is_some() => {
                     let options = job.request.animation_options.as_ref().unwrap();
                     let range = *options
@@ -463,13 +491,17 @@ pub async fn start_conversion(
     let audio_check = audio.clone();
     let preflight = request.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        if preflight.image_options.is_some() || preflight.animation_options.is_some() {
+        if preflight.image_options.is_some()
+            || preflight.animation_options.is_some()
+            || preflight.video_frame_options.is_some()
+        {
             check.verify()?;
         }
         if preflight.audio_options.is_some()
             || preflight.video_options.is_some()
             || preflight.video_audio_options.is_some()
             || preflight.animation_options.is_some()
+            || preflight.video_frame_options.is_some()
         {
             audio_check.verify()?;
         }
@@ -495,6 +527,9 @@ pub async fn start_conversion(
                         .as_ref()
                         .ok_or("Choose an audio output format.")?,
                 ),
+                "video" if preflight.video_frame_options.is_some() => {
+                    input.require_frame_target(preflight.video_frame_options.as_ref().unwrap())
+                }
                 "video" if preflight.animation_options.is_some() => {
                     input.require_animation_target(preflight.animation_options.as_ref().unwrap())
                 }

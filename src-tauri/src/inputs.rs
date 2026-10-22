@@ -299,9 +299,15 @@ pub fn inspect_with_audio(
                     Ok(info) => {
                         input.animation = Some(info);
                         input.targets.push("gif".into());
+                        input
+                            .targets
+                            .extend(crate::video_frame::TARGETS.map(String::from));
                     }
                     Err(issue) => {
-                        input.target_issues.insert("gif".into(), issue);
+                        input.target_issues.insert("gif".into(), issue.clone());
+                        for target in crate::video_frame::TARGETS {
+                            input.target_issues.insert(target.into(), issue.clone());
+                        }
                     }
                 }
                 for target in ["mp4", "mkv", "mov", "webm"] {
@@ -388,6 +394,20 @@ pub fn inspect_with_audio(
 }
 
 impl InputFile {
+    pub fn require_frame_target(
+        &self,
+        options: &crate::video_frame::FrameOptions,
+    ) -> Result<(), String> {
+        options.validate()?;
+        if !self.targets.contains(&options.image.target) {
+            return Err(self
+                .target_issues
+                .get(&options.image.target)
+                .cloned()
+                .unwrap_or_else(|| "This video cannot be converted to a still image yet.".into()));
+        }
+        Ok(())
+    }
     pub fn require_animation_target(
         &self,
         options: &crate::video_animation::AnimationOptions,

@@ -261,6 +261,13 @@ button:disabled { cursor: default; }
 .range-transport { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 6px -5px 2px; font-size: 10px; font-variant-numeric: tabular-nums; }
 .range-transport .quiet-button { font-size: 11px; }
 .range-total { color: var(--secondary); }
+.frame-transport > div { display: flex; }
+.frame-transport .icon-button { width: 26px; height: 26px; }
+.frame-position { display: flex; align-items: baseline; gap: 3px; margin-left: auto; border-radius: 6px; padding: 4px 6px; background: var(--control); color: var(--secondary); }
+.frame-position input { width: 62px; padding: 0; border: 0; background: transparent; color: var(--ink); text-align: right; font-variant-numeric: tabular-nums; }
+.video-frame .range-track { top: 16px; height: 5px; }
+.video-frame .range-playhead > span { background: var(--ink); }
+.video-frame .range-playhead > span::before { background: var(--ink); }
 .range-overview-row { display: flex; align-items: center; gap: 10px; margin-top: 2px; color: var(--secondary); font-size: 10px; }
 .range-overview-row > span { flex-shrink: 0; }
 .range-overview { position: relative; height: 24px; flex: 1; min-width: 0; padding: 0; cursor: ew-resize; touch-action: none; }
