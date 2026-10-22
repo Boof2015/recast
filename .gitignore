@@ -18,3 +18,8 @@ PLATFORM_CHECKS.md
 
 src-tauri/resources/audio-backend/
 src-tauri/resources/.audio-backend-*/
+
+# Downloadable extension engines are release assets, not source.
+*.recast-extension
+extension-artifacts/
+extensions/README.md

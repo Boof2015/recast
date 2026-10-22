@@ -1,0 +1,53 @@
+name: Draft extension release
+on:
+  workflow_run:
+    workflows: ['Extension packages']
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Successful main-branch build run containing extension-package-* artifacts
+        required: true
+        type: string
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: extension-release
+  cancel-in-progress: false
+jobs:
+  draft:
+    if: github.repository == 'Boof2015/recast' && github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check source build and download packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN: ${{ inputs.run_id || github.event.workflow_run.id }}
+        run: |
+          python3 - <<'PY'
+          import json, os, re, subprocess
+          run_id = os.environ['SOURCE_RUN']
+          if not re.fullmatch(r'[0-9]+', run_id):
+              raise SystemExit('Enter a numeric build run ID.')
+          repo = 'Boof2015/recast'
+          run = json.loads(subprocess.check_output(['gh', 'api', f'repos/{repo}/actions/runs/{run_id}'], text=True))
+          if not (run['conclusion'] == 'success' and run['status'] == 'completed' and run['head_branch'] == 'main' and run['head_repository']['full_name'] == repo and run['event'] in ('push', 'workflow_dispatch')):
+              raise SystemExit('Packages must come from a successful push/manual build on recast main.')
+          with open(os.environ['GITHUB_ENV'], 'a') as output:
+              output.write('EXTENSION_SOURCE_COMMIT=' + run['head_sha'] + '\n')
+          subprocess.run(['gh', 'run', 'download', run_id, '--repo', repo, '--pattern', 'extension-package-*', '--dir', 'extension-artifacts'], check=True)
+          PY
+      - name: Validate packages and create draft in recast-extensions
+        env:
+          GH_TOKEN: ${{ secrets.EXTENSIONS_RELEASE_TOKEN }}
+        run: |
+          test -n "$GH_TOKEN" || { echo 'Set EXTENSIONS_RELEASE_TOKEN with Contents write access to recast-extensions.'; exit 1; }
+          python3 extensions/shared/draft_release.py --directory extension-artifacts --source-commit "$EXTENSION_SOURCE_COMMIT"

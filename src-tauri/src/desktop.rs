@@ -131,6 +131,13 @@ pub fn install_menu(app: &AppHandle) -> tauri::Result<()> {
         ],
         0,
     )?;
+    let settings = MenuItem::with_id(app, "settings", "Settings…", true, Some("CmdOrCtrl+,"))?;
+    #[cfg(target_os = "macos")]
+    if let Some(MenuItemKind::Submenu(application)) = menu.items()?.first() {
+        application.insert_items(&[&settings, &PredefinedMenuItem::separator(app)?], 2)?;
+    }
+    #[cfg(not(target_os = "macos"))]
+    file.insert(&settings, 2)?;
     app.set_menu(menu)?;
     app.on_menu_event(|app, event| match event.id().as_ref() {
         "new-window" => {
@@ -145,6 +152,11 @@ pub fn install_menu(app: &AppHandle) -> tauri::Result<()> {
             if let Some(window) = focused_window(app) {
                 // A targeted event prevents every open batch from opening a picker.
                 let _ = app.emit_to(EventTarget::window(window.label()), "recast:add-files", ());
+            }
+        }
+        "settings" => {
+            if let Some(window) = focused_window(app) {
+                let _ = app.emit_to(EventTarget::window(window.label()), "recast:settings", ());
             }
         }
         _ => {}

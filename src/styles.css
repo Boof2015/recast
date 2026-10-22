@@ -301,3 +301,38 @@ button:disabled { cursor: default; }
 .transparent-preview { background: conic-gradient(var(--control) 25%, var(--mass) 0 50%, var(--control) 0 75%, var(--mass) 0) 0 0 / 16px 16px; }
 .frame-count { color: var(--secondary); white-space: nowrap; }
 .frame-transport .icon-button[aria-disabled="true"] { opacity: .4; cursor: default; background: none; }
+
+.extension-settings { display: grid; grid-template-columns: 180px minmax(0, 1fr); flex: 1; min-height: 0; gap: 32px; padding: 16px 20px 24px 6px; }
+.settings-navigation { display: flex; flex-direction: column; gap: 12px; align-items: stretch; }
+.settings-back { align-self: flex-start; margin-bottom: 10px; }
+.settings-navigation h1 { font-size: 18px; font-weight: 550; padding: 0 10px; }
+.settings-section { display: flex; gap: 10px; align-items: center; padding: 11px 12px; background: var(--mass); border-radius: 10px; }
+.extensions-content { max-width: 740px; display: flex; flex-direction: column; min-height: 0; min-width: 0; width: 100%; }
+.extensions-heading { display: flex; justify-content: space-between; align-items: center; gap: 20px; padding: 5px 0 24px; }
+.extensions-heading h2 { font-size: 19px; font-weight: 550; }
+.extensions-heading p { margin-top: 5px; color: var(--secondary); }
+.extensions-scroll { min-height: 0; overflow: auto; scrollbar-width: thin; padding: 0 5px 16px 0; }
+.extension-group { margin: 0 0 30px; }
+.extension-group > h3, .extension-group-heading h3 { font-size: 13px; font-weight: 550; }
+.extension-group-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.extension-empty { color: var(--secondary); padding: 16px 0; }
+.extension-row { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 18px 0; }
+.extension-details { min-width: 0; }
+.extension-title { display: flex; align-items: baseline; flex-wrap: wrap; gap: 10px; }
+.extension-title h3, .extension-title h4 { font-size: 14px; font-weight: 550; margin: 0; }
+.extension-title span, .extension-meta { font-size: 12px; color: var(--secondary); }
+.extension-row p, .extension-review p { margin-top: 6px; }
+.extension-details p { overflow-wrap: anywhere; }
+.extension-review { padding: 18px 20px; margin-bottom: 26px; background: var(--mass); border-radius: 12px; }
+.extension-trust { font-size: 12px; color: var(--secondary); padding-top: 8px; }
+.extension-actions { display: flex; justify-content: flex-end; gap: 8px; flex-shrink: 0; }
+.extension-review .extension-actions { margin-top: 16px; }
+.extension-feedback { display: flex; gap: 10px; align-items: center; justify-content: space-between; padding: 10px 14px; background: var(--mass); border-radius: 10px; margin-bottom: 12px; }
+.extension-feedback span { overflow-wrap: anywhere; }
+.extension-status { display: flex; align-items: center; gap: 10px; min-height: 20px; margin-bottom: 18px; color: var(--secondary); }
+.extension-status:empty { display: none; }
+.extension-status > span:nth-child(2) { flex: 1; }
+.extension-activity { width: 12px; height: 12px; border: 2px solid var(--control); border-top-color: var(--ink); border-radius: 50%; animation: extension-spin 1s linear infinite; }
+.extension-settings button:disabled { opacity: .5; }
+@keyframes extension-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .extension-activity { animation: none; border-color: var(--secondary); } }

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode, type UIEventHandler } from 'react';
-import { ArrowDownToLine, ArrowLeft, ArrowRight, Check, ChevronDown, ChevronRight, File, Folder, Monitor, Moon, Plus, Sun, X } from 'lucide-react';
+import { ArrowDownToLine, ArrowLeft, ArrowRight, Check, ChevronDown, ChevronRight, File, Folder, Monitor, Moon, Plus, Settings, Sun, X } from 'lucide-react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -9,6 +9,7 @@ import { sampleFiles, type Scenario } from './fixtures';
 import { CheckboxSetting, QualitySetting, SelectSetting, SizeSetting } from './controls';
 import { VideoRange } from './VideoRange';
 import { FramePicker } from './FramePicker';
+import { ExtensionSettings } from './ExtensionSettings';
 import { ColorSetting } from './ColorSetting';
 import { GroupStack } from './GroupStack';
 import { useConversion, type FileResult } from './useConversion';
@@ -170,6 +171,10 @@ export default function App() {
     try { const saved = localStorage.getItem('recast.appearance'); return saved === 'light' || saved === 'dark' ? saved : 'system'; }
     catch { return 'system'; }
   });
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const settingsOpenRef = useRef(false);
+  settingsOpenRef.current = settingsOpen;
+  const settingsButton = useRef<HTMLButtonElement>(null);
   const [appearanceOpen, setAppearanceOpen] = useState(false);
   const appearanceRef = useRef<HTMLDivElement>(null);
   const workspaceRef = useRef<HTMLElement>(null);
@@ -239,7 +244,7 @@ export default function App() {
   }, [appearanceOpen]);
 
   const addPaths = useCallback(async (paths: string[]) => {
-    if (!paths.length || conversion.busyRef.current) return;
+    if (settingsOpenRef.current || !paths.length || conversion.busyRef.current) return;
     inspectionCount.current++;
     setInspecting(true);
     try {
@@ -263,7 +268,7 @@ export default function App() {
     let disposed = false;
     let stop: (() => void) | undefined;
     void getCurrentWebview().onDragDropEvent((event) => {
-      if (conversion.busyRef.current) { setDragging(false); return; }
+      if (settingsOpenRef.current || conversion.busyRef.current) { setDragging(false); return; }
       if (event.payload.type === 'over' || event.payload.type === 'enter') setDragging(true);
       if (event.payload.type === 'leave') setDragging(false);
       if (event.payload.type === 'drop') { setDragging(false); void addPaths(event.payload.paths); }
@@ -272,7 +277,7 @@ export default function App() {
   }, [addPaths]);
 
   async function chooseFiles() {
-    if (conversion.busyRef.current || pickerOpen.current || inspectionCount.current > 0) return;
+    if (settingsOpenRef.current || conversion.busyRef.current || pickerOpen.current || inspectionCount.current > 0) return;
     if (!isTauri()) { setNotice('File selection is available in the desktop app. Use the sample batches below to explore this browser preview.'); return; }
     pickerOpen.current = true;
     try {
@@ -289,6 +294,15 @@ export default function App() {
     void getCurrentWindow().listen('recast:add-files', () => void chooseFiles())
       .then(unlisten => { if (disposed) unlisten(); else stop = unlisten; })
       .catch(() => setNotice('The Add Files menu is unavailable. Use the button or drop files here.'));
+    return () => { disposed = true; stop?.(); };
+  }, []);
+
+  useEffect(() => {
+    if (!isTauri()) return;
+    let disposed = false;
+    let stop: (() => void) | undefined;
+    void getCurrentWindow().listen('recast:settings', () => { setSettingsOpen(true); setAppearanceOpen(false); })
+      .then(unlisten => { if (disposed) unlisten(); else stop = unlisten; });
     return () => { disposed = true; stop?.(); };
   }, []);
 
@@ -348,14 +362,15 @@ export default function App() {
             {(['system', 'light', 'dark'] as Appearance[]).map((mode) => <button key={mode} onClick={() => { setAppearance(mode); setAppearanceOpen(false); }}>{mode === 'system' ? <Monitor size={15} /> : mode === 'light' ? <Sun size={15} /> : <Moon size={15} />}<span>{mode[0].toUpperCase() + mode.slice(1)}</span>{appearance === mode && <Check size={14} />}</button>)}
           </div>}
         </div>
-        {files.length > 0 && <button className="quiet-button add-files" onClick={() => void chooseFiles()} disabled={inspecting || busy}><Plus size={16} />{inspecting ? 'Adding…' : 'Add files'}</button>}
+        <button ref={settingsButton} className="icon-button" aria-label="Settings" aria-pressed={settingsOpen} disabled={settingsOpen} onClick={() => { setSettingsOpen(true); setAppearanceOpen(false); }}><Settings size={17} strokeWidth={1.7} /></button>
+        {!settingsOpen && files.length > 0 && <button className="quiet-button add-files" onClick={() => void chooseFiles()} disabled={inspecting || busy}><Plus size={16} />{inspecting ? 'Adding…' : 'Add files'}</button>}
       </div>
     </header>
 
     {notice && <div className="notice" role="status"><span>{notice}</span><button className="icon-button" aria-label="Dismiss message" onClick={() => setNotice('')}><X size={15} /></button></div>}
     {conversion.backendError && <div className="notice" role="alert">{conversion.backendError}</div>}
 
-    {files.length === 0 ? <main className="empty-state">
+    {settingsOpen ? <ExtensionSettings onClose={() => { setSettingsOpen(false); requestAnimationFrame(() => settingsButton.current?.focus()); }} /> : files.length === 0 ? <main className="empty-state">
       <div className="empty-symbol" aria-hidden="true"><File className="file-back" size={49} strokeWidth={1.15} /><File className="file-front" size={49} strokeWidth={1.15} /><ArrowDownToLine className="file-arrow" size={18} strokeWidth={1.6} /></div>
       <h1>Drop files here</h1>
       <p>{previewCatalog ? 'Images, audio, or video. All on your device.' : 'Images, audio, and video. All on your device.'}</p>
@@ -471,6 +486,6 @@ export default function App() {
 
     {dragging && <div className="drop-overlay"><ArrowDownToLine size={27} /><span>Add to this batch</span></div>}
 
-    {designMode && <aside className="design-tools" aria-label="Design preview controls"><span className="design-label">Design preview<span className="subtle-dot">·</span>{previewCatalog ? 'Sample files' : 'Real files'}</span><div className="scenario-control"><label htmlFor="scenario">View</label><select id="scenario" disabled={busy} value={scenario} onChange={(event) => changeScenario(event.target.value as Scenario)}><option value="empty">Empty</option><option value="mixed">Mixed batch</option><option value="images">Images</option><option value="video">Video</option></select></div>{scenario === 'video' && <button className="design-action" disabled={busy || files.some((file) => file.id === 'sample-silent')} onClick={() => setFiles((current) => [...current, { id: 'sample-silent', name: 'Screen recording.mp4', path: '', kind: 'video', format: 'MP4', bytes: 24_000_000, hasAudio: false }])}>Add silent video</button>}<span className="design-status">{previewCatalog ? 'Sample conversion disabled' : 'PNG / JPEG → WebP'}</span></aside>}
+    {designMode && !settingsOpen && <aside className="design-tools" aria-label="Design preview controls"><span className="design-label">Design preview<span className="subtle-dot">·</span>{previewCatalog ? 'Sample files' : 'Real files'}</span><div className="scenario-control"><label htmlFor="scenario">View</label><select id="scenario" disabled={busy} value={scenario} onChange={(event) => changeScenario(event.target.value as Scenario)}><option value="empty">Empty</option><option value="mixed">Mixed batch</option><option value="images">Images</option><option value="video">Video</option></select></div>{scenario === 'video' && <button className="design-action" disabled={busy || files.some((file) => file.id === 'sample-silent')} onClick={() => setFiles((current) => [...current, { id: 'sample-silent', name: 'Screen recording.mp4', path: '', kind: 'video', format: 'MP4', bytes: 24_000_000, hasAudio: false }])}>Add silent video</button>}<span className="design-status">{previewCatalog ? 'Sample conversion disabled' : 'PNG / JPEG → WebP'}</span></aside>}
   </div>;
 }
