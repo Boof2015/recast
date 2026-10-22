@@ -1,5 +1,7 @@
 import copy
+import errno
 import json
+import stat
 import subprocess
 import sys
 import tempfile
@@ -36,13 +38,41 @@ class ExtensionPackages(unittest.TestCase):
             self.build()
         self.assertEqual(path.read_bytes(), before)
 
-    def test_build_rejects_symlinks_and_output_inside_payload(self):
+    def test_build_rejects_output_inside_payload(self):
         with self.assertRaises(ValueError):
             package.build(self.metadata, self.payload, self.payload / 'out')
-        if sys.platform != 'win32':
-            (self.payload / 'link').symlink_to(self.payload / 'worker')
-            with self.assertRaises(ValueError):
-                self.build()
+
+    def test_build_rejects_symlinks(self):
+        link = self.payload / 'link'
+        try:
+            link.symlink_to(self.payload / 'worker')
+        except OSError as error:
+            if error.errno not in (errno.EPERM, errno.EACCES, errno.ENOSYS, errno.ENOTSUP) and getattr(error, 'winerror', None) != 1314:
+                raise
+            self.skipTest(f'Symlink creation is unavailable: {error}')
+        # MSYS2 may implement symlink_to as a regular copy. Check the fixture,
+        # not sys.platform, before expecting the packager to reject a link.
+        if not link.is_symlink():
+            self.assertTrue(link.is_file())
+            self.assertEqual(link.read_bytes(), (self.payload / 'worker').read_bytes())
+            self.skipTest('This runtime emulates file symlinks as regular copies')
+        with self.assertRaisesRegex(ValueError, 'Stage regular files, not symlinks'):
+            self.build()
+
+    def test_verify_rejects_symlink_archive_entries(self):
+        path = self.build()
+        bad = self.root / 'symlink.recast-extension'
+        with zipfile.ZipFile(path) as source, zipfile.ZipFile(bad, 'w') as target:
+            for info in source.infolist():
+                data = source.read(info)
+                if info.filename == 'payload/worker':
+                    # ZIP attributes let every host exercise this rejection,
+                    # even when its filesystem cannot create real symlinks.
+                    info.create_system = 3
+                    info.external_attr = (stat.S_IFLNK | 0o777) << 16
+                target.writestr(info, data)
+        with self.assertRaisesRegex(ValueError, 'Unsupported or duplicate archive entry'):
+            package.verify(bad)
 
     def test_mutated_payload_and_extra_archive_entries_fail(self):
         path = self.build()
