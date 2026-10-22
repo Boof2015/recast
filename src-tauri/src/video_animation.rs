@@ -23,6 +23,9 @@ pub struct SourceRange {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AnimationOptions {
+    pub target: String,
+    pub quality: u8,
+    pub lossless: bool,
     pub size: u32,
     pub frame_rate: u32,
     pub colors: u16,
@@ -52,7 +55,7 @@ pub fn inspect(probe: &Value) -> Result<AnimationInfo, String> {
     let stream_index = streams[0]["index"]
         .as_u64()
         .ok_or("The video track has no index.")? as u32;
-    // GIF deliberately omits audio, subtitles and chapters. Their codecs do not
+    // Animation deliberately omits audio, subtitles and chapters. Their codecs do not
     // constrain this destination, but picture preservation rules still apply.
     picture["chapters"] = serde_json::json!([]);
     let info = crate::video_backend::parse(picture)?.ok_or("No video track was found.")?;
@@ -63,7 +66,7 @@ pub fn inspect(probe: &Value) -> Result<AnimationInfo, String> {
         .unwrap_or(info.duration)
         .min(info.duration);
     if !duration.is_finite() || duration < 0.01 {
-        return Err("This video is too short for GIF timing.".into());
+        return Err("This video is too short for frame extraction.".into());
     }
     let (width, height) = if info.rotation.abs() % 180 == 90 {
         (info.height, info.width)
@@ -80,13 +83,66 @@ pub fn inspect(probe: &Value) -> Result<AnimationInfo, String> {
 
 impl AnimationOptions {
     pub fn validate(&self) -> Result<(), String> {
-        if ![320, 480, 720, 960].contains(&self.size)
+        if !["gif", "webp"].contains(&self.target.as_str())
+            || !(1..=100).contains(&self.quality)
+            || ![320, 480, 720, 960].contains(&self.size)
             || ![10, 15, 20, 25, 30].contains(&self.frame_rate)
             || ![32, 64, 128, 256].contains(&self.colors)
         {
-            return Err("Choose supported GIF size, frame rate, and colors.".into());
+            return Err(
+                "Choose supported animation format, size, frame rate, and quality settings.".into(),
+            );
         }
         Ok(())
+    }
+    pub fn label(&self) -> &'static str {
+        if self.target == "webp" {
+            "WebP"
+        } else {
+            "GIF"
+        }
+    }
+    pub fn target_id(&self) -> &'static str {
+        if self.target == "webp" {
+            "animated-webp"
+        } else {
+            "gif"
+        }
+    }
+    fn ticks_per_second(&self) -> u32 {
+        if self.target == "webp" {
+            1000
+        } else {
+            100
+        }
+    }
+    fn ticks(&self, range: SourceRange) -> u32 {
+        ((range.end - range.start) * f64::from(self.ticks_per_second()))
+            .round()
+            .max(1.0) as u32
+    }
+    fn delays(&self, range: SourceRange, count: usize) -> Vec<u32> {
+        let scale = self.ticks_per_second();
+        let mut previous = 0;
+        let mut delays: Vec<u32> = (1..=count)
+            .map(|i| {
+                let end = if i == count {
+                    self.ticks(range)
+                } else {
+                    (i as f64 / f64::from(self.frame_rate) * f64::from(scale)).round() as u32
+                };
+                let ms = end.saturating_sub(previous) * (1000 / scale);
+                previous = end;
+                ms
+            })
+            .collect();
+        // Avoid viewer clamps on a tiny final frame without stretching the range.
+        if count > 1 && delays[count - 1] < 20 {
+            let borrowed = 20 - delays[count - 1];
+            delays[count - 2] = delays[count - 2].saturating_sub(borrowed);
+            delays[count - 1] = 20;
+        }
+        delays
     }
     pub fn resolve(
         &self,
@@ -99,13 +155,14 @@ impl AnimationOptions {
         let frames = ((range.end - range.start) * f64::from(self.frame_rate) - 1e-8)
             .ceil()
             .max(1.0) as usize;
-        // Animated GIF delays below 20 ms are stretched by common viewers.
-        let frames = frames.min((((range.end - range.start) * 100.0).round() as usize / 2).max(1));
+        // Reserve at least 20 ms per animated frame for consistent viewer timing.
+        let milliseconds = u64::from(self.ticks(range)) * u64::from(1000 / self.ticks_per_second());
+        let frames = frames.min((milliseconds as usize / 20).max(1));
         if frames > crate::animation::MAX_FRAMES
             || u64::from(width) * u64::from(height) * frames as u64 > 100_000_000
         {
             return Err(
-                "This GIF would be too large. Shorten the range, or lower size or frame rate."
+                "This animation would be too large. Shorten the range, or lower size or frame rate."
                     .into(),
             );
         }
@@ -305,7 +362,7 @@ impl AudioBackend {
         }
         Ok(bmp(&bytes, size.0, size.1))
     }
-    pub fn render_gif(
+    pub fn render_animation(
         &self,
         image: &ImageBackend,
         source: &Path,
@@ -352,15 +409,18 @@ impl AudioBackend {
             fs::write(work.join(&name), bmp(&pixels, width, height)).map_err(|e| e.to_string())?;
             names.push(name);
         }
-        let output = work.join("animation.gif");
+        let output = work.join(format!("animation.{}", options.target));
+        let delays = options.delays(range, count);
         let mut command = image.command();
-        command
-            .current_dir(work)
-            .env("MAGICK_TEMPORARY_PATH", work)
-            .args(["-delay", "10"])
-            .args(&names)
-            .args([
-                "-strip",
+        command.current_dir(work).env("MAGICK_TEMPORARY_PATH", work);
+        // Set each source frame's millisecond delay before encoding WebP.
+        // GIF's centisecond delays are also checked/written after encoding.
+        for (name, delay) in names.iter().zip(&delays) {
+            command.args(["-delay", &format!("{delay}x1000"), name]);
+        }
+        command.args(["-strip", "-loop", "0", "-dispose", "None"]);
+        if options.target == "gif" {
+            command.args([
                 "-dither",
                 if options.dither {
                     "FloydSteinberg"
@@ -370,14 +430,28 @@ impl AudioBackend {
                 "-colors",
                 &options.colors.to_string(),
                 "+remap",
-                "-loop",
-                "0",
-                "-dispose",
-                "None",
-            ])
-            .arg(&output)
-            .stdout(Stdio::null());
-        report(0.7, "Encoding GIF");
+            ]);
+        } else {
+            command.args([
+                "-quality",
+                &if options.lossless {
+                    100
+                } else {
+                    options.quality
+                }
+                .to_string(),
+                "-define",
+                if options.lossless {
+                    "webp:lossless=true"
+                } else {
+                    "webp:lossless=false"
+                },
+                "-define",
+                "webp:exact=true",
+            ]);
+        }
+        command.arg(&output).stdout(Stdio::null());
+        report(0.7, &format!("Encoding {}", options.label()));
         crate::video_backend::run(
             &mut command,
             &work.join("encode.log"),
@@ -392,40 +466,41 @@ impl AudioBackend {
             .write(true)
             .open(&output)
             .map_err(|e| e.to_string())?;
-        let actual = crate::animation::inspect_gif(&mut file)?;
-        if actual.width != width
-            || actual.height != height
-            || actual.delays.len() != count
-            || (count > 1 && actual.loops != 0)
-        {
-            return Err("The GIF did not retain the requested frames or dimensions."
+        let actual = if options.target == "gif" {
+            Some(crate::animation::inspect_gif(&mut file)?)
+        } else {
+            crate::animation::inspect_webp(&mut file)?
+        };
+        if let Some(actual) = actual {
+            if actual.width != width
+                || actual.height != height
+                || actual.delays.len() != count
+                || (count > 1 && actual.loops != 0)
+            {
+                return Err(
+                    "The animation did not retain the requested frames or dimensions."
+                        .to_string()
+                        .into(),
+                );
+            }
+            if options.target == "gif" {
+                actual.write_gif_delays(&mut file, &delays)?;
+            } else if actual.delays != delays {
+                return Err("The WebP did not retain the selected range's timing."
+                    .to_string()
+                    .into());
+            }
+        } else if count != 1 {
+            return Err("The converter did not retain the animation."
                 .to_string()
                 .into());
         }
-        let ticks = ((range.end - range.start) * 100.0).round().max(1.0) as u32;
-        let mut previous = 0;
-        let mut delays: Vec<u32> = (1..=count)
-            .map(|i| {
-                let end = if i == count {
-                    ticks
-                } else {
-                    ((i as f64 / f64::from(options.frame_rate)) * 100.0).round() as u32
-                };
-                let ms = end.saturating_sub(previous) * 10;
-                previous = end;
-                ms
-            })
-            .collect();
-        if count > 1 && delays[count - 1] < 20 {
-            let borrowed = 20 - delays[count - 1];
-            delays[count - 2] = delays[count - 2].saturating_sub(borrowed);
-            delays[count - 1] = 20;
-        }
-        actual.write_gif_delays(&mut file, &delays)?;
-        report(0.98, "Checking GIF");
+        // A range containing one sampled picture is a valid still WebP.
+        crate::image_format::ImageFormat::from_id(&options.target)?.validate_output(&output)?;
+        report(0.98, &format!("Checking {}", options.label()));
         Ok(output)
     }
-    pub fn convert_gif(
+    pub fn convert_animation(
         &self,
         image: &ImageBackend,
         source: &Path,
@@ -442,7 +517,7 @@ impl AudioBackend {
             .map_err(|_| "The source file is no longer available.".to_string())?;
         let parent = folder.unwrap_or_else(|| source.parent().unwrap());
         let work = tempfile::Builder::new()
-            .prefix("recast-gif-")
+            .prefix("recast-animation-")
             .tempdir()
             .map_err(|e| e.to_string())?;
         let staged = work.path().join("source");
@@ -458,7 +533,7 @@ impl AudioBackend {
             copy.write_all(&buffer[..n]).map_err(|e| e.to_string())?;
         }
         drop(copy);
-        let gif = self.render_gif(
+        let animation = self.render_animation(
             image,
             &staged,
             work.path(),
@@ -468,10 +543,10 @@ impl AudioBackend {
         )?;
         let mut output = tempfile::Builder::new()
             .prefix(".recast-")
-            .suffix(".gif")
+            .suffix(&format!(".{}", options.target))
             .tempfile_in(parent)
             .map_err(|_| "Cannot write to this output folder.".to_string())?;
-        let mut input = File::open(gif).map_err(|e| e.to_string())?;
+        let mut input = File::open(animation).map_err(|e| e.to_string())?;
         loop {
             check_cancel(cancel)?;
             let n = input.read(&mut buffer).map_err(|e| e.to_string())?;
@@ -491,15 +566,18 @@ impl AudioBackend {
             output,
             source.file_stem().unwrap_or_default(),
             parent,
-            "gif",
+            &options.target,
         )?;
         Ok(OutputFile {
             path: path.to_string_lossy().into_owned(),
             bytes,
             warnings: vec![],
             details: Some(format!(
-                "{:.2}–{:.2} s · {} fps · GIF · Loops continuously · No audio",
-                range.start, range.end, options.frame_rate
+                "{:.2}–{:.2} s · {} fps · {} · Loops continuously · No audio",
+                range.start,
+                range.end,
+                options.frame_rate,
+                options.label()
             )),
         })
     }

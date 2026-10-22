@@ -302,13 +302,16 @@ pub fn inspect_with_audio(
                 match crate::video_animation::inspect(&probe) {
                     Ok(info) => {
                         input.animation = Some(info);
-                        input.targets.push("gif".into());
+                        input.targets.extend(["gif".into(), "animated-webp".into()]);
                         input
                             .targets
                             .extend(crate::video_frame::TARGETS.map(String::from));
                     }
                     Err(issue) => {
                         input.target_issues.insert("gif".into(), issue.clone());
+                        input
+                            .target_issues
+                            .insert("animated-webp".into(), issue.clone());
                         for target in crate::video_frame::TARGETS {
                             input.target_issues.insert(target.into(), issue.clone());
                         }
@@ -416,11 +419,12 @@ impl InputFile {
         &self,
         options: &crate::video_animation::AnimationOptions,
     ) -> Result<(), String> {
+        options.validate()?;
         let info = self.animation.as_ref().ok_or_else(|| {
             self.target_issues
-                .get("gif")
+                .get(options.target_id())
                 .cloned()
-                .unwrap_or_else(|| "This video cannot be converted to GIF yet.".into())
+                .unwrap_or_else(|| "This video cannot be converted to an animation yet.".into())
         })?;
         let range = options
             .ranges

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { ChevronLeft, ChevronRight, Play, Square, RotateCcw } from 'lucide-react';
 import { RangeTimeline, rangeTime as stamp } from './RangeTimeline';
-import { sourceRange, type GroupSettings, type InputFile, type SourceRange } from './model';
+import { videoAnimationOptions, sourceRange, type GroupSettings, type InputFile, type SourceRange } from './model';
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 const round = (value: number) => Math.round(value * 100) / 100;
@@ -53,16 +53,16 @@ function RangeEditor({ file, settings, disabled, onChange }: { file: InputFile; 
     setLoading(true); setError('');
     const timer = setTimeout(() => {
       started = true;
-      const animation = motion ? [{ size: Number.parseInt(settings.gifSize), frameRate: Number.parseInt(settings.gifFrameRate), colors: settings.colors, dither: settings.dither, ranges: {} }, range] : null;
+      const animation = motion ? [videoAnimationOptions(settings), range] : null;
       void invoke<ArrayBuffer | number[]>('preview_video', { request: { requestId: id, path: file.path, time, animation } }).then(data => {
         if (!active) return;
-        const next = URL.createObjectURL(new Blob([data instanceof ArrayBuffer ? data : new Uint8Array(data)], { type: motion ? 'image/gif' : 'image/bmp' }));
+        const next = URL.createObjectURL(new Blob([data instanceof ArrayBuffer ? data : new Uint8Array(data)], { type: motion ? settings.target === 'animated-webp' ? 'image/webp' : 'image/gif' : 'image/bmp' }));
         if (url.current) URL.revokeObjectURL(url.current);
         url.current = next; setImage(next); setLoading(false);
       }).catch(reason => { if (active) { setLoading(false); setError(String(reason)); } });
     }, motion ? 0 : 90);
     return () => { active = false; clearTimeout(timer); if (started) void invoke('cancel_video_preview', { requestId: id }).catch(() => {}); };
-  }, [file.path, time, motion, range.start, range.end, settings.gifSize, settings.gifFrameRate, settings.colors, settings.dither, disabled, revision, duration]);
+  }, [file.path, time, motion, range.start, range.end, settings.animationSize, settings.animationFrameRate, settings.colors, settings.dither, settings.target, settings.quality, settings.lossless, disabled, revision, duration]);
   useEffect(() => () => { if (url.current) URL.revokeObjectURL(url.current); }, []);
   useEffect(() => {
     if (!motion || loading || error || disabled) return;

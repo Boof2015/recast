@@ -379,7 +379,7 @@ pub fn run_job(
                         .ranges
                         .get(&source)
                         .ok_or_else(|| "Choose a range for this video.".to_string())?;
-                    audio.convert_gif(
+                    audio.convert_animation(
                         backend,
                         Path::new(&source),
                         folder,

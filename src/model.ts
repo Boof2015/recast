@@ -54,8 +54,8 @@ export interface GroupSettings {
   sampleFormat: string;
   audioDither: boolean;
   allowClipping: boolean;
-  gifSize: string;
-  gifFrameRate: string;
+  animationSize: string;
+  animationFrameRate: string;
 }
 
 export interface Destination {
@@ -94,6 +94,7 @@ const videoDestinations: Destination[] = [
   { id: 'webm', label: 'WebM', description: 'Made for the web', category: 'Video' },
   { id: 'mov', label: 'MOV', description: 'QuickTime video', category: 'Video' },
   { id: 'gif', label: 'GIF', description: 'A short animation', category: 'Animation' },
+  { id: 'animated-webp', label: 'WebP', description: 'A short animation', category: 'Animation' },
   ...imageDestinations.filter(format => format.id !== 'gif').map(format => ({ ...format, category: 'Still image' })),
 ];
 
@@ -106,6 +107,14 @@ function imageCatalog(files: InputFile[]): Destination[] {
     ...(animated ? imageDestinations.filter(format => ['gif', 'webp'].includes(format.id)).map(format => ({ ...format, category: 'Animation', description: 'Keep animation' })) : imageDestinations),
     ...imageDestinations.map(format => ({ ...format, id: `frame-${format.id}`, description: format.id === 'gif' ? 'Single frame' : format.description, category: 'Still image', hidden: !animated })),
   ];
+}
+
+export function isVideoAnimationTarget(target: string | null): boolean {
+  return target === 'gif' || target === 'animated-webp';
+}
+export function videoAnimationOptions(settings: GroupSettings, ranges: Record<string, SourceRange> = {}) {
+  return { target: settings.target === 'animated-webp' ? 'webp' : 'gif', quality: settings.quality, lossless: settings.lossless,
+    size: Number.parseInt(settings.animationSize), frameRate: Number.parseInt(settings.animationFrameRate), colors: settings.colors, dither: settings.dither, ranges };
 }
 
 export function isFrameTarget(target: string | null): boolean {
@@ -150,7 +159,7 @@ export function defaultSettings(): Record<MediaKind, GroupSettings> {
     sampleRate: 'Keep source', sampleFormat: 'Keep source', audioDither: true, allowClipping: false,
     mp3Mode: 'vbr', mp3Quality: 'V2 · High', aacBitrate: '192 kbps', opusBitrate: '128 kbps', vorbisQuality: '5 · High',
     videoMode: 'Quality', mkvMode: 'Keep original', movMode: 'Quality', webmMode: 'Quality', targetSize: '10', sizeResolution: 'Auto',
-    gifSize: '480 px', gifFrameRate: '15 fps',
+    animationSize: '480 px', animationFrameRate: '15 fps',
   };
   return { images: { ...settings }, audio: { ...settings }, video: { ...settings } };
 }
@@ -164,13 +173,15 @@ export function videoSettingIssue(settings: GroupSettings, files: InputFile[] = 
     return files.some(file => file.kind === 'video' && file.frameTime != null && !file.frame)
       ? 'Preview the selected frame before converting.' : null;
   }
-  if (settings.target === 'gif') {
+  if (isVideoAnimationTarget(settings.target)) {
     for (const file of files.filter(file => file.kind === 'video')) {
       if (!file.animation) continue;
       const { start, end } = sourceRange(file);
       if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end - start < 0.01 - 1e-8 || end > file.animation.duration + 0.001) return `${file.name}: choose a valid range.`;
-      const factor = Math.min(1, Number.parseInt(settings.gifSize) / Math.max(file.animation.width, file.animation.height));
-      const frames = Math.ceil((end - start) * Number.parseInt(settings.gifFrameRate) - 1e-8);
+      const factor = Math.min(1, Number.parseInt(settings.animationSize) / Math.max(file.animation.width, file.animation.height));
+      const precision = settings.target === 'gif' ? 100 : 1000;
+      const durationMs = Math.round((end - start) * precision) * (1000 / precision);
+      const frames = Math.min(Math.max(1, Math.ceil((end - start) * Number.parseInt(settings.animationFrameRate) - 1e-8)), Math.max(1, Math.floor(durationMs / 20)));
       const pixels = Math.round(file.animation.width * factor) * Math.round(file.animation.height * factor) * frames;
       if (frames > 1000 || pixels > 100_000_000) return `${file.name}: shorten the range, or lower size or frame rate.`;
     }

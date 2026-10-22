@@ -136,7 +136,7 @@ pub async fn preview_video(
                 .tempdir()
                 .map_err(|e| e.to_string())?;
             let output = audio
-                .render_gif(
+                .render_animation(
                     &image,
                     Path::new(&path),
                     work.path(),

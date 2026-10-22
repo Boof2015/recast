@@ -4,7 +4,7 @@ import { invoke, isTauri } from '@tauri-apps/api/core';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { open } from '@tauri-apps/plugin-dialog';
-import { isImageFrameTarget, isFrameTarget, isAudioTarget, selectAudioTrack, videoModeKey, formatBytes, videoSettingIssue, vorbisQualities, opusBitrateChoices, aacBitrateChoices, aacRates, isLossyAudio, audioDescription, videoDescription, audioSampleFormats, audioSettingIssue, audioWillDither, defaultSettings, destinationsFor, formatCounts, kindLabels, kinds, unitLabels, mp3BitrateChoices, mp3Qualities, mp3Rates, type Appearance, type Destination, type GroupSettings, type InputFile, type MediaKind } from './model';
+import { isVideoAnimationTarget, isImageFrameTarget, isFrameTarget, isAudioTarget, selectAudioTrack, videoModeKey, formatBytes, videoSettingIssue, vorbisQualities, opusBitrateChoices, aacBitrateChoices, aacRates, isLossyAudio, audioDescription, videoDescription, audioSampleFormats, audioSettingIssue, audioWillDither, defaultSettings, destinationsFor, formatCounts, kindLabels, kinds, unitLabels, mp3BitrateChoices, mp3Qualities, mp3Rates, type Appearance, type Destination, type GroupSettings, type InputFile, type MediaKind } from './model';
 import { sampleFiles, type Scenario } from './fixtures';
 import { CheckboxSetting, QualitySetting, SelectSetting, SizeSetting } from './controls';
 import { VideoRange } from './VideoRange';
@@ -59,6 +59,8 @@ function ScrollArea({ children, className = '', onScroll }: { children: ReactNod
 function FormatSettings({ kind, destination, value, onChange, disabled, animated, files }: { kind: MediaKind; destination: Destination; value: GroupSettings; onChange: (change: Partial<GroupSettings>) => void; disabled: boolean; animated: boolean; files: InputFile[] }) {
   const target = destination.id.replace(/^frame-/, '');
   const isFrame = kind === 'video' && destination.category === 'Still image';
+  const isAnimation = kind === 'video' && destination.category === 'Animation';
+  const isWebpAnimation = isAnimation && target === 'animated-webp';
   const isImage = kind === 'images' || isFrame;
   const isAudio = kind === 'audio' || destination.category === 'Audio only';
   const isVideo = kind === 'video' && !isAudio;
@@ -67,8 +69,8 @@ function FormatSettings({ kind, destination, value, onChange, disabled, animated
   const mode = value[modeKey];
   const targetSize = videoOutput && mode === 'Target size';
   const copyStreams = videoOutput && mode === 'Keep original';
-  const hasQuality = (isImage && ['webp', 'jpeg', 'avif'].includes(target)) || (videoOutput && mode === 'Quality');
-  const hasLossless = isImage && ['webp', 'avif'].includes(target);
+  const hasQuality = isWebpAnimation || (isImage && ['webp', 'jpeg', 'avif'].includes(target)) || (videoOutput && mode === 'Quality');
+  const hasLossless = isWebpAnimation || (isImage && ['webp', 'avif'].includes(target));
   const lossyInput = files.some(isLossyAudio);
   const sampleFormatLabel = (label: string) => lossyInput && label === 'Keep source' ? 'Auto' : label;
   return <div className="settings-stack">
@@ -112,14 +114,14 @@ function FormatSettings({ kind, destination, value, onChange, disabled, animated
     {videoOutput && target === 'webm' && !copyStreams && files.some(file => file.hasAudio) && <p className="settings-note">Opus encodes at 48,000 Hz · resamples when needed.</p>}
     {targetSize && <p className="settings-note">Size is checked before saving. Audio may be re-encoded.</p>}
     {isVideo && target === 'mp4' && !targetSize && <p className="settings-note">Automatic uses available hardware, with software fallback. Quality and file size vary by encoder. Keeps original timing unless a frame rate is selected. Resolution fits without upscaling. AAC audio is kept; other supported audio is encoded to AAC.</p>}
-    {isVideo && target === 'gif' && <>
-      <SelectSetting label="Size" value={value.gifSize} options={['320 px', '480 px', '720 px', '960 px']} onChange={gifSize => onChange({ gifSize })} />
-      <SelectSetting label="Frame rate" value={value.gifFrameRate} options={['10 fps', '15 fps', '20 fps', '25 fps', '30 fps']} onChange={gifFrameRate => onChange({ gifFrameRate })} />
-      <SelectSetting label="Colors" value={String(value.colors)} options={['256', '128', '64', '32']} onChange={colors => onChange({ colors: Number(colors) })} />
-      <CheckboxSetting label="Dithering" checked={value.dither} onChange={dither => onChange({ dither })} />
+    {isAnimation && <>
+      <SelectSetting label="Size" value={value.animationSize} options={['320 px', '480 px', '720 px', '960 px']} onChange={animationSize => onChange({ animationSize })} />
+      <SelectSetting label="Frame rate" value={value.animationFrameRate} options={['10 fps', '15 fps', '20 fps', '25 fps', '30 fps']} onChange={animationFrameRate => onChange({ animationFrameRate })} />
+      {!isWebpAnimation && <><SelectSetting label="Colors" value={String(value.colors)} options={['256', '128', '64', '32']} onChange={colors => onChange({ colors: Number(colors) })} />
+      <CheckboxSetting label="Dithering" checked={value.dither} onChange={dither => onChange({ dither })} /></>}
       <p className="settings-note">Loops continuously · No audio</p>
     </>}
-    {!isFrame && target !== 'gif' && target !== 'bmp' && <CheckboxSetting label="Keep metadata" checked={value.metadata} onChange={(metadata) => onChange({ metadata })} />}
+    {!isFrame && !isAnimation && target !== 'gif' && target !== 'bmp' && <CheckboxSetting label="Keep metadata" checked={value.metadata} onChange={(metadata) => onChange({ metadata })} />}
     {isAudio && value.metadata && <p className="settings-note">Keeps supported text tags. Artwork, loudness tags, and production metadata are omitted.</p>}
     {isAudio && target === 'alac' && <p className="settings-note">Apple Lossless audio in an .m4a file.</p>}
     {isAudio && target === 'mp3' && <p className="settings-note">{value.mp3Mode === 'vbr' ? 'Bitrate varies with the audio to meet the selected quality.' : 'Bitrate stays fixed; available rates depend on sample rate.'} MP3 encoding is lossy.</p>}
@@ -404,7 +406,7 @@ export default function App() {
               <button className="format-back" onClick={() => updateSettings({ target: null })} aria-label="Change output format"><ArrowLeft size={18} strokeWidth={1.7} /><h2>{selectedFormat.label}</h2></button>
               {activeKind === 'video' && selectedFormat.category !== 'Still image' && videoIssue && <p className="compatibility-message" role="status">{videoIssue}</p>}
               {activeAudioIssue && <p className="compatibility-message" role="status">{activeAudioIssue}</p>}
-              {activeKind === 'video' && selectedFormat.id === 'gif' && <VideoRange files={activeFiles} settings={activeSettings} disabled={busy} onChange={(id, sourceRange) => {
+              {activeKind === 'video' && isVideoAnimationTarget(selectedFormat.id) && <VideoRange files={activeFiles} settings={activeSettings} disabled={busy} onChange={(id, sourceRange) => {
                 if (conversion.busyRef.current) return;
                 conversion.clear();
                 setFiles(current => current.map(file => file.id === id ? { ...file, sourceRange } : file));
