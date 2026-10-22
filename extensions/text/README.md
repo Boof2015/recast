@@ -15,7 +15,7 @@ python3 extensions/text/check.py --package extension-artifacts --output .backend
 
 Install the resulting `.recast-extension` through Settings → Extensions → Install from file. Building downloads only the pinned assets in `dependencies.lock.json`; installed conversion never downloads document content, fonts, or engines. Check outputs and reports are local artifacts, not committed binaries.
 
-The **Extension packages** workflow builds and checks Apple Silicon, Intel Mac, Windows x64, Linux x64, and Linux ARM64. Successful main-branch builds feed the existing **Draft extension release** workflow. That uploads a draft to `Boof2015/recast-extensions`, leaves it unpublished and does not mark it latest. Publish only after reviewing the platform checks and testing installation. Rebuilding the same published/draft version does not replace its assets; increment the extension version for changed packages.
+The **Extension packages** workflow is manual-only: in GitHub Actions, select **Extension packages → Run workflow**, using `main` for release builds. Commits and pull requests do not start extension builds. A manual run builds and checks Apple Silicon, Intel Mac, Windows x64, Linux x64, and Linux ARM64. Successful manual main-branch builds feed the existing **Draft extension release** workflow. That uploads a draft to `Boof2015/recast-extensions`, leaves it unpublished and does not mark it latest. Publish only after reviewing the platform checks and testing installation. Rebuilding the same published/draft version does not replace its assets; increment the extension version for changed packages.
 
 ## Engine and layout
 
