@@ -40,7 +40,8 @@ def check(payload, evidence):
             start=time.monotonic()
             process=subprocess.run([str(worker),'--request',str(work/'request.json')],capture_output=True,text=True,timeout=330)
             response=json.loads((work/'response.json').read_text(encoding='utf-8'))
-            records.append({'file':name,'action':action,'seconds':round(time.monotonic()-start,3),'response':response})
+            engine = json.loads((work/'office-process.json').read_text(encoding='utf-8')) if (work/'office-process.json').exists() else None
+            records.append({'file':name,'action':action,'seconds':round(time.monotonic()-start,3),'workerExit':process.returncode,'engine':engine,'response':response})
             (evidence/'report.json').write_text(json.dumps(records,indent=2)+'\n',encoding='utf-8')
             assert source.read_bytes()==before
             if issue:
@@ -48,7 +49,7 @@ def check(payload, evidence):
                 assert (output.read_bytes() if output.exists() else None)==prior
                 return
             if process.returncode:
-                for diagnostic in ('office.log','response.json'):
+                for diagnostic in ('office.log','office-process.json','response.json'):
                     if (work/diagnostic).exists(): shutil.copyfile(work/diagnostic,evidence/(source.stem+'-'+diagnostic))
             assert process.returncode==0 and not response.get('error'),(name,response,process.stderr)
             if action=='inspect':
