@@ -1,0 +1,154 @@
+{
+  "schemaVersion": 1,
+  "minimumMacOS": "13.0",
+  "source": {
+    "version": "9.0.2",
+    "archive": "ffmpeg-9.0.2.tar.xz",
+    "url": "https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz",
+    "sha256": "8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e"
+  },
+  "dependencies": [
+    {
+      "name": "dav1d",
+      "version": "1.5.3",
+      "archive": "dav1d-1.5.3.tar.gz",
+      "url": "https://codeload.github.com/videolan/dav1d/tar.gz/refs/tags/1.5.3",
+      "sha256": "cbe212b02faf8c6eed5b6d55ef8a6e363aaab83f15112e960701a9c3df813686",
+      "licenses": ["COPYING"]
+    },
+    {
+      "name": "vpx",
+      "version": "1.17.0",
+      "archive": "libvpx-1.17.0.tar.gz",
+      "url": "https://codeload.github.com/webmproject/libvpx/tar.gz/refs/tags/v1.17.0",
+      "sha256": "1020f184046187baa2985dbde38e0691f49c44088bca7a1842b0236c6081dc0a",
+      "licenses": ["LICENSE", "PATENTS"]
+    },
+    {
+      "name": "lame",
+      "version": "4.0",
+      "archive": "lame-4.0.tar.gz",
+      "url": "https://downloads.sourceforge.net/project/lame/lame/4.0/lame-4.0.tar.gz",
+      "sha256": "3df5124d5ad3a98312ffd7ba6a9b36230e4f8a3e66d3ce0f425e336c32d216eb",
+      "licenses": [
+        "COPYING",
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "opus",
+      "version": "1.6.1",
+      "archive": "opus-1.6.1.tar.gz",
+      "url": "https://downloads.xiph.org/releases/opus/opus-1.6.1.tar.gz",
+      "sha256": "6ffcb593207be92584df15b32466ed64bbec99109f007c82205f0194572411a1",
+      "licenses": [
+        "COPYING"
+      ]
+    },
+    {
+      "name": "ogg",
+      "version": "1.3.6",
+      "archive": "libogg-1.3.6.tar.xz",
+      "url": "https://downloads.xiph.org/releases/ogg/libogg-1.3.6.tar.xz",
+      "sha256": "5c8253428e181840cd20d41f3ca16557a9cc04bad4a3d04cce84808677fa1061",
+      "licenses": [
+        "COPYING"
+      ]
+    },
+    {
+      "name": "vorbis",
+      "version": "1.3.7",
+      "archive": "libvorbis-1.3.7.tar.xz",
+      "url": "https://downloads.xiph.org/releases/vorbis/libvorbis-1.3.7.tar.xz",
+      "sha256": "b33cc4934322bcbf6efcbacf49e3ca01aadbea4114ec9589d1b1e9d20f72954b",
+      "licenses": [
+        "COPYING"
+      ]
+    },
+    {
+      "name": "x264",
+      "version": "b35605ace3ddf7c1a5d67a2eb553f034aef41d55",
+      "archive": "x264-b35605ace3ddf7c1a5d67a2eb553f034aef41d55.tar.gz",
+      "url": "https://code.videolan.org/videolan/x264/-/archive/b35605ace3ddf7c1a5d67a2eb553f034aef41d55/x264-b35605ace3ddf7c1a5d67a2eb553f034aef41d55.tar.gz",
+      "sha256": "cd71a7515b0e9a012e1ac9b1f8415bebcaf6fc97d4db32286642ac4c0fbe24f9",
+      "licenses": [
+        "COPYING"
+      ]
+    },
+    {
+      "name": "ffnvcodec",
+      "version": "12.2.72.0",
+      "archive": "nv-codec-headers-12.2.72.0.tar.gz",
+      "url": "https://codeload.github.com/FFmpeg/nv-codec-headers/tar.gz/refs/tags/n12.2.72.0",
+      "sha256": "dbeaec433d93b850714760282f1d0992b1254fc3b5a6cb7d76fc1340a1e47563",
+      "licenses": [
+        "include/ffnvcodec/nvEncodeAPI.h",
+        "include/ffnvcodec/dynlink_cuda.h",
+        "include/ffnvcodec/dynlink_loader.h"
+      ],
+      "systems": [
+        "windows",
+        "linux"
+      ]
+    },
+    {
+      "name": "amf",
+      "version": "1.5.3",
+      "archive": "AMF-headers-v1.5.3.tar.gz",
+      "url": "https://github.com/GPUOpen-LibrariesAndSDKs/AMF/releases/download/v1.5.3/AMF-headers-v1.5.3.tar.gz",
+      "sha256": "0f521ad98041f8001147cded4a660127f18b1c27a801a5cd691bda1fa48381be",
+      "licenses": [
+        "AMF/core/Factory.h",
+        "AMF/components/VideoEncoderVCE.h"
+      ],
+      "systems": [
+        "windows"
+      ]
+    },
+    {
+      "name": "vpl",
+      "version": "2.16.0",
+      "archive": "libvpl-2.16.0.tar.gz",
+      "url": "https://codeload.github.com/intel/libvpl/tar.gz/refs/tags/v2.16.0",
+      "sha256": "d60931937426130ddad9f1975c010543f0da99e67edb1c6070656b7947f633b6",
+      "licenses": [
+        "LICENSE"
+      ],
+      "systems": [
+        "windows"
+      ]
+    },
+    {
+      "name": "drm",
+      "version": "2.4.124",
+      "archive": "libdrm-2.4.124.tar.xz",
+      "url": "https://dri.freedesktop.org/libdrm/libdrm-2.4.124.tar.xz",
+      "sha256": "ac36293f61ca4aafaf4b16a2a7afff312aa4f5c37c9fbd797de9e3c0863ca379",
+      "licenses": [
+        "xf86drm.c",
+        "xf86drmMode.c",
+        "xf86drmHash.c",
+        "xf86drmRandom.c",
+        "xf86drmSL.c",
+        "include/drm/drm.h",
+        "include/drm/drm_mode.h"
+      ],
+      "systems": [
+        "linux"
+      ]
+    },
+    {
+      "name": "va",
+      "version": "2.22.0",
+      "archive": "libva-2.22.0.tar.gz",
+      "url": "https://codeload.github.com/intel/libva/tar.gz/refs/tags/2.22.0",
+      "sha256": "467c418c2640a178c6baad5be2e00d569842123763b80507721ab87eb7af8735",
+      "licenses": [
+        "COPYING"
+      ],
+      "systems": [
+        "linux"
+      ]
+    }
+  ]
+}

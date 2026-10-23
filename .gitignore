@@ -1,0 +1,27 @@
+recast-project-notes-v4.md
+PROJECT_PLAN.md
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/
+.DS_Store
+*.local
+.backend-build/
+src-tauri/resources/image-backend/
+
+__pycache__/
+artifacts/
+src-tauri/resources/.image-backend-*/
+DESIGN.md
+BACKEND.md
+PLATFORM_CHECKS.md
+
+src-tauri/resources/audio-backend/
+src-tauri/resources/.audio-backend-*/
+
+# Downloadable extension engines are release assets, not source.
+*.recast-extension
+extension-artifacts/
+extensions/text/worker/target/
+extensions/README.md
+extensions/office/worker/target/

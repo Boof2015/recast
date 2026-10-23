@@ -1,0 +1,299 @@
+<div id="recast-control-language" aria-label="Recast conversion controls">
+  <style>
+    #recast-control-language {
+      --rcc-canvas: light-dark(#f5f5f5, #292929);
+      --rcc-ink: light-dark(#252525, #f2f2f2);
+      --rcc-secondary: light-dark(#606060, #bdbdbd);
+      --rcc-track: light-dark(#d4d4d4, #606060);
+      --rcc-fill: light-dark(#7a7a7a, #171717);
+      --rcc-thumb: light-dark(#252525, #fafafa);
+      --rcc-control: light-dark(#e2e2e2, #484848);
+      --rcc-hover: light-dark(#d4d4d4, #626262);
+      --rcc-active: light-dark(#292929, #f2f2f2);
+      --rcc-active-ink: light-dark(#fafafa, #252525);
+      --rcc-menu: light-dark(#eaeaea, #3c3c3c);
+      --rcc-track-height: 14px;
+      --rcc-thumb-size: 14px;
+      --rcc-radius: 9px;
+      color: var(--rcc-ink);
+      font: 400 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      max-width: 540px;
+      margin: 0 auto;
+    }
+    #recast-control-language * { box-sizing: border-box; }
+    #recast-control-language [hidden] { display: none !important; }
+    #recast-control-language button, #recast-control-language input { font: inherit; color: inherit; }
+    #recast-control-language button { cursor: pointer; }
+    #recast-control-language .rcc-settings {
+      padding: 24px 26px 26px;
+      border-radius: 16px;
+      background: var(--rcc-canvas);
+    }
+    #recast-control-language .rcc-context { color: var(--rcc-secondary); font-size: 12px; margin: 0 0 6px; }
+    #recast-control-language h3 { font-size: 16px; font-weight: 500; margin: 0 0 26px; }
+    #recast-control-language .rcc-quality-header { display: flex; justify-content: space-between; align-items: center; }
+    #recast-control-language output { font-variant-numeric: tabular-nums; }
+    #recast-control-language .rcc-range {
+      --rcc-progress: 66%;
+      appearance: none;
+      -webkit-appearance: none;
+      display: block;
+      width: 100%;
+      height: 30px;
+      margin: 8px 0 17px;
+      padding: 0;
+      border: 0;
+      border-radius: 5px;
+      background: transparent;
+      cursor: pointer;
+    }
+    #recast-control-language .rcc-range::-webkit-slider-runnable-track {
+      height: var(--rcc-track-height);
+      border-radius: 999px;
+      background: linear-gradient(to right, var(--rcc-fill) 0 var(--rcc-progress), var(--rcc-track) var(--rcc-progress) 100%);
+    }
+    #recast-control-language .rcc-range::-webkit-slider-thumb {
+      appearance: none;
+      -webkit-appearance: none;
+      width: var(--rcc-thumb-size);
+      height: var(--rcc-thumb-size);
+      margin-top: calc((var(--rcc-track-height) - var(--rcc-thumb-size)) / 2);
+      border-radius: 50%;
+      border: 0;
+      background: var(--rcc-thumb);
+    }
+    #recast-control-language .rcc-range::-moz-range-track {
+      height: var(--rcc-track-height);
+      border: 0;
+      border-radius: 999px;
+      background: var(--rcc-track);
+    }
+    #recast-control-language .rcc-range::-moz-range-progress {
+      height: var(--rcc-track-height);
+      border-radius: 999px;
+      background: var(--rcc-fill);
+    }
+    #recast-control-language .rcc-range::-moz-range-thumb {
+      width: var(--rcc-thumb-size);
+      height: var(--rcc-thumb-size);
+      border: 0;
+      border-radius: 50%;
+      background: var(--rcc-thumb);
+    }
+    #recast-control-language .rcc-quality.is-disabled { opacity: .45; }
+    #recast-control-language .rcc-range:disabled { cursor: default; }
+    #recast-control-language .rcc-row {
+      min-height: 45px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+    #recast-control-language label.rcc-row { cursor: pointer; }
+    #recast-control-language .rcc-boolean { position: relative; display: inline-flex; flex: 0 0 auto; }
+    #recast-control-language .rcc-boolean input {
+      appearance: none;
+      -webkit-appearance: none;
+      width: 22px;
+      height: 22px;
+      border: 0;
+      border-radius: 6px;
+      background: var(--rcc-control);
+      margin: 0;
+      cursor: pointer;
+      transition: background-color 140ms ease;
+    }
+    #recast-control-language .rcc-boolean input:checked { background: var(--rcc-active); }
+    #recast-control-language .rcc-boolean .rcc-check {
+      position: absolute;
+      pointer-events: none;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      color: var(--rcc-active-ink);
+      visibility: hidden;
+    }
+    #recast-control-language .rcc-boolean input:checked + .rcc-check { visibility: visible; }
+    #recast-control-language .rcc-check svg { width: 14px; height: 14px; stroke-width: 2.5; }
+    #recast-control-language[data-boolean="switch"] .rcc-boolean input { width: 38px; height: 22px; border-radius: 999px; background: var(--rcc-track); }
+    #recast-control-language[data-boolean="switch"] .rcc-boolean input::after {
+      content: "";
+      display: block;
+      width: 18px;
+      height: 18px;
+      margin: 2px;
+      border-radius: 50%;
+      background: var(--rcc-fill);
+      transition: transform 160ms ease, background-color 160ms ease;
+    }
+    #recast-control-language[data-boolean="switch"] .rcc-boolean input:checked::after {
+      transform: translateX(16px);
+      background: var(--rcc-thumb);
+    }
+    #recast-control-language[data-boolean="switch"] .rcc-check { display: none; }
+    #recast-control-language .rcc-picker { position: relative; flex: 0 0 auto; }
+    #recast-control-language .rcc-trigger {
+      border: 0;
+      padding: 7px 10px 7px 13px;
+      background: var(--rcc-control);
+      border-radius: var(--rcc-radius);
+      display: flex;
+      gap: 15px;
+      align-items: center;
+      min-height: 34px;
+      min-width: 120px;
+      justify-content: space-between;
+    }
+    #recast-control-language .rcc-trigger:hover { background: var(--rcc-hover); }
+    #recast-control-language .rcc-chevron { display: inline-flex; transition: transform 160ms ease; }
+    #recast-control-language .rcc-chevron svg { width: 15px; height: 15px; }
+    #recast-control-language .rcc-trigger[aria-expanded="true"] .rcc-chevron { transform: rotate(180deg); }
+    #recast-control-language .rcc-menu {
+      position: absolute;
+      z-index: 2;
+      right: 0;
+      top: calc(100% + 6px);
+      width: 174px;
+      padding: 5px;
+      border-radius: calc(var(--rcc-radius) + 3px);
+      background: var(--rcc-menu);
+      box-shadow: 0 7px 22px light-dark(#00000016, #00000032);
+    }
+    #recast-control-language .rcc-option {
+      width: 100%;
+      min-height: 34px;
+      border: 0;
+      border-radius: var(--rcc-radius);
+      padding: 7px 9px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: transparent;
+      text-align: left;
+    }
+    #recast-control-language .rcc-option:hover, #recast-control-language .rcc-option:focus-visible { background: var(--rcc-hover); }
+    #recast-control-language .rcc-option .rcc-option-check { display: flex; visibility: hidden; }
+    #recast-control-language .rcc-option[aria-pressed="true"] .rcc-option-check { visibility: visible; }
+    #recast-control-language .rcc-option svg { width: 14px; height: 14px; }
+    #recast-control-language .rcc-menu-space { height: 0; transition: height 160ms ease; }
+    #recast-control-language[data-open="true"] .rcc-menu-space { height: 86px; }
+    @media (pointer: coarse) {
+      #recast-control-language .rcc-row, #recast-control-language .rcc-option, #recast-control-language .rcc-trigger { min-height: 44px; }
+      #recast-control-language .rcc-range { height: 44px; }
+      #recast-control-language[data-open="true"] .rcc-menu-space { height: 120px; }
+    }
+    @media (max-width: 380px) { #recast-control-language .rcc-settings { padding: 22px 18px; } }
+    @media (prefers-reduced-motion: reduce) { #recast-control-language * { transition: none !important; } }
+  </style>
+  <section class="rcc-settings" aria-label="WebP settings">
+    <p class="rcc-context">23 images</p>
+    <h3>WebP</h3>
+    <div class="rcc-quality">
+      <div class="rcc-quality-header"><label for="rcc-quality">Quality</label><output id="rcc-quality-value" for="rcc-quality">66</output></div>
+      <input class="rcc-range" id="rcc-quality" type="range" min="1" max="100" value="66">
+    </div>
+    <label class="rcc-row" for="rcc-lossless">
+      <span>Lossless</span>
+      <span class="rcc-boolean"><input id="rcc-lossless" type="checkbox"><span class="rcc-check"><i data-lucide="check" aria-hidden="true"></i></span></span>
+    </label>
+    <div class="rcc-row">
+      <span id="rcc-resize-label">Resize</span>
+      <div class="rcc-picker">
+        <button type="button" class="rcc-trigger" id="rcc-resize-trigger" aria-expanded="false" aria-controls="rcc-resize-menu" aria-labelledby="rcc-resize-label rcc-resize-value">
+          <span id="rcc-resize-value">Original</span><span class="rcc-chevron"><i data-lucide="chevron-down" aria-hidden="true"></i></span>
+        </button>
+        <div class="rcc-menu" id="rcc-resize-menu" role="group" aria-label="Resize options" hidden>
+          <button type="button" class="rcc-option" aria-pressed="true" data-value="Original"><span>Original</span><span class="rcc-option-check"><i data-lucide="check" aria-hidden="true"></i></span></button>
+          <button type="button" class="rcc-option" aria-pressed="false" data-value="75%"><span>75%</span><span class="rcc-option-check"><i data-lucide="check" aria-hidden="true"></i></span></button>
+          <button type="button" class="rcc-option" aria-pressed="false" data-value="50%"><span>50%</span><span class="rcc-option-check"><i data-lucide="check" aria-hidden="true"></i></span></button>
+          <button type="button" class="rcc-option" aria-pressed="false" data-value="25%"><span>25%</span><span class="rcc-option-check"><i data-lucide="check" aria-hidden="true"></i></span></button>
+        </div>
+      </div>
+    </div>
+    <label class="rcc-row" for="rcc-metadata">
+      <span>Keep metadata</span>
+      <span class="rcc-boolean"><input id="rcc-metadata" type="checkbox" checked><span class="rcc-check"><i data-lucide="check" aria-hidden="true"></i></span></span>
+    </label>
+    <div class="rcc-menu-space" aria-hidden="true"></div>
+  </section>
+  <script>
+    (() => {
+      const root = document.getElementById('recast-control-language');
+      const range = root.querySelector('#rcc-quality');
+      const output = root.querySelector('#rcc-quality-value');
+      const lossless = root.querySelector('#rcc-lossless');
+      const picker = root.querySelector('.rcc-picker');
+      const trigger = root.querySelector('.rcc-trigger');
+      const menu = root.querySelector('.rcc-menu');
+      const options = [...root.querySelectorAll('.rcc-option')];
+      const value = root.querySelector('#rcc-resize-value');
+      const design = { boolean: 'check', track: 14, radius: 9 };
+      function renderDesign() {
+        root.dataset.boolean = design.boolean;
+        root.style.setProperty('--rcc-track-height', `${design.track}px`);
+        root.style.setProperty('--rcc-thumb-size', `${design.track}px`);
+        root.style.setProperty('--rcc-radius', `${design.radius}px`);
+        for (const input of root.querySelectorAll('.rcc-boolean input')) {
+          if (design.boolean === 'switch') input.setAttribute('role', 'switch');
+          else input.removeAttribute('role');
+        }
+      }
+      function updateQuality() {
+        range.style.setProperty('--rcc-progress', `${((Number(range.value) - 1) / 99) * 100}%`);
+        output.value = range.value;
+        range.disabled = lossless.checked;
+        root.querySelector('.rcc-quality').classList.toggle('is-disabled', lossless.checked);
+      }
+      function setOpen(open, focus = false) {
+        menu.hidden = !open;
+        trigger.setAttribute('aria-expanded', String(open));
+        root.dataset.open = String(open);
+        if (focus) {
+          if (open) options.find(option => option.getAttribute('aria-pressed') === 'true').focus();
+          else trigger.focus();
+        }
+      }
+      trigger.addEventListener('click', event => setOpen(menu.hidden, event.detail === 0));
+      trigger.addEventListener('keydown', event => {
+        if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+          event.preventDefault();
+          setOpen(true, true);
+        }
+      });
+      options.forEach(option => option.addEventListener('click', () => {
+        value.textContent = option.dataset.value;
+        options.forEach(candidate => candidate.setAttribute('aria-pressed', String(candidate === option)));
+        setOpen(false, true);
+      }));
+      picker.addEventListener('keydown', event => {
+        if (menu.hidden) return;
+        const index = options.indexOf(document.activeElement);
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          event.stopPropagation();
+          setOpen(false, true);
+        } else if (index !== -1 && ['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+          event.preventDefault();
+          const target = event.key === 'Home' ? 0 : event.key === 'End' ? options.length - 1 : (index + (event.key === 'ArrowDown' ? 1 : -1) + options.length) % options.length;
+          options[target].focus();
+        }
+      });
+      picker.addEventListener('focusout', event => {
+        if (!picker.contains(event.relatedTarget)) setOpen(false);
+      });
+      document.addEventListener('pointerdown', event => {
+        if (!picker.contains(event.target)) setOpen(false);
+      });
+      range.addEventListener('input', updateQuality);
+      lossless.addEventListener('change', updateQuality);
+      updateQuality();
+      renderDesign();
+      if (globalThis.Tweak) {
+        const tweak = new Tweak({ container: root, onChange: renderDesign });
+        tweak.addSelect(design, 'boolean', { label: 'On/off controls', options: [{ label: 'Checked squares', value: 'check' }, { label: 'Switches', value: 'switch' }] });
+        tweak.addSlider(design, 'track', { label: 'Slider thickness', min: 8, max: 18, step: 2, unit: 'px' });
+        tweak.addSlider(design, 'radius', { label: 'Dropdown rounding', min: 5, max: 13, step: 1, unit: 'px' });
+      }
+    })();
+  </script>
+</div>

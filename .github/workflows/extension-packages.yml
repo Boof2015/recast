@@ -1,0 +1,74 @@
+name: Extension packages
+on:
+  workflow_dispatch:
+    inputs:
+      extension:
+        description: Extension to build
+        type: choice
+        required: true
+        default: text
+        options: [text, office]
+permissions:
+  contents: read
+concurrency:
+  group: extension-packages-${{ github.ref }}-${{ inputs.extension }}
+  cancel-in-progress: true
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            platform: macos-arm64
+          - os: macos-15-intel
+            platform: macos-x86_64
+          - os: windows-2022
+            platform: windows-x86_64
+          - os: ubuntu-22.04
+            platform: linux-x86_64
+          - os: ubuntu-24.04-arm
+            platform: linux-arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '13.0'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Rust toolchain
+        run: rustup toolchain install 1.98.1 --profile minimal --component rustfmt,clippy
+      - run: rustup default 1.98.1
+      - name: Linux Office runtime libraries
+        if: inputs.extension == 'office' && runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libcairo2 libcups2 libdbus-1-3 libfontconfig1 libfreetype6 libglib2.0-0 libice6 libsm6 libx11-6 libxext6 libxinerama1 libxrender1 libnss3
+      - uses: actions/cache@v4
+        with:
+          path: .backend-build/extension-downloads
+          key: ${{ inputs.extension }}-engine-downloads-${{ hashFiles('extensions/*/dependencies.lock.json') }}
+      - run: cargo fetch --locked --manifest-path extensions/${{ inputs.extension }}/worker/Cargo.toml
+      - run: cargo fmt --manifest-path extensions/${{ inputs.extension }}/worker/Cargo.toml --check
+      - run: cargo clippy --locked --manifest-path extensions/${{ inputs.extension }}/worker/Cargo.toml --all-targets -j 2 -- -D warnings
+      - run: cargo test --locked --manifest-path extensions/${{ inputs.extension }}/worker/Cargo.toml -j 2
+      - name: Build extension
+        run: python extensions/${{ inputs.extension }}/build.py --output extension-artifacts
+      - name: Independently check package outputs
+        shell: bash
+        run: |
+          python -m pip install pypdf==6.21.2
+          python extensions/${{ inputs.extension }}/check.py --package extension-artifacts --output .backend-build/${{ inputs.extension }}-checks
+      - uses: actions/upload-artifact@v4
+        with:
+          name: extension-package-${{ inputs.extension }}-${{ matrix.platform }}
+          path: extension-artifacts/*.recast-extension
+          if-no-files-found: error
+          compression-level: 0
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: extension-checks-${{ inputs.extension }}-${{ matrix.platform }}
+          path: .backend-build/${{ inputs.extension }}-checks
+          if-no-files-found: ignore
+          include-hidden-files: true

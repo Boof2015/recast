@@ -1,0 +1,646 @@
+use crate::image_format::ImageFormat;
+use serde::Serialize;
+use std::{
+    fs::File,
+    io::{Read, Seek, SeekFrom},
+    path::Path,
+};
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InputFile {
+    pub id: String,
+    pub name: String,
+    pub path: String,
+    pub kind: String,
+    format: String,
+    bytes: u64,
+    // Unknown is never treated as true.
+    has_audio: Option<bool>,
+    targets: Vec<String>,
+    conversion_issue: Option<String>,
+    animated: bool,
+    pub audio: Option<crate::audio_backend::AudioInfo>,
+    pub audio_tracks: Vec<crate::audio_extract::AudioTrack>,
+    pub selected_audio_track: Option<u32>,
+    pub video: Option<crate::video_backend::VideoInfo>,
+    pub animation: Option<crate::video_animation::AnimationInfo>,
+    target_issues: std::collections::HashMap<String, String>,
+    pub sequence: Option<crate::animation::Sequence>,
+    pub extension_targets: Vec<crate::providers::Destination>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct InputError {
+    name: String,
+    message: String,
+}
+
+#[derive(Debug, Serialize, Default)]
+pub struct Inspection {
+    files: Vec<InputFile>,
+    errors: Vec<InputError>,
+}
+
+pub fn inspect(path: &Path) -> Result<InputFile, String> {
+    let mut file = File::open(path).map_err(|_| "This file could not be opened.")?;
+    let metadata = file
+        .metadata()
+        .map_err(|_| "This file could not be read.")?;
+    if !metadata.is_file() {
+        return Err("Choose individual files, rather than a folder.".into());
+    }
+    let mut header = [0u8; 8192];
+    let read = file
+        .read(&mut header)
+        .map_err(|_| "This file could not be read.")?;
+    if header[..read].starts_with(b"BA") {
+        return Err("BMP bitmap arrays are not supported. Choose a single-image BMP.".into());
+    }
+    let is_tiff = crate::tiff::has_signature(&header[..read]);
+    let detected = infer::get(&header[..read]);
+    // infer only recognizes classic TIFF; inspect BigTIFF by its full signature.
+    let (mime, extension) = if read >= 12
+        && [&b"RIFF"[..], &b"RF64"[..], &b"BW64"[..]].contains(&&header[..4])
+        && &header[8..12] == b"WAVE"
+    {
+        ("audio/wav", "wav")
+    } else if header[..read].starts_with(b"OggS") {
+        ("audio/ogg", "ogg")
+    } else if is_tiff {
+        ("image/tiff", "tiff")
+    } else if crate::avif::has_signature(&header[..read]) {
+        ("image/avif", "avif")
+    } else if crate::aac::has_adts_signature(&header[..read]) {
+        ("audio/aac", "aac")
+    } else if crate::mp3::has_signature(&header[..read]) {
+        ("audio/mpeg", "mp3")
+    } else {
+        let detected = detected.ok_or("This file type is not recognized yet.")?;
+        (detected.mime_type(), detected.extension())
+    };
+    let kind = match mime.split('/').next() {
+        Some("image") => "images",
+        Some("audio") => "audio",
+        Some("video") => "video",
+        _ => return Err("This file type is not supported in the current prototype.".into()),
+    };
+    let canonical = path
+        .canonicalize()
+        .map_err(|_| "This file is no longer available.")?;
+    let path_string = canonical.to_string_lossy().into_owned();
+    let sequence_result = match extension {
+        "gif" => crate::animation::inspect_gif(&mut file).map(Some),
+        "webp" => crate::animation::inspect_webp(&mut file),
+        _ => Ok(None),
+    };
+    let sequence = sequence_result.as_ref().ok().cloned().flatten();
+    let conversion_issue = match extension {
+        "jpg" => None,
+        "png" => png_conversion_issue(&mut file),
+        "gif" | "webp" => sequence_result.err(),
+        "bmp" => bmp_conversion_issue(&mut file),
+        "tiff" => crate::tiff::inspect(&mut file).err(),
+        "avif" => crate::avif::inspect(&mut file).err(),
+        _ => Some(
+            "This build converts PNG, JPEG, WebP, BMP, TIFF, AVIF, and GIF images, including GIF/WebP animations. This file is not supported yet."
+                .into(),
+        ),
+    };
+    let target_issues: std::collections::HashMap<String, String> = ImageFormat::ALL
+        .into_iter()
+        .filter_map(|format| {
+            sequence
+                .as_ref()?
+                .target_issue(format.id())
+                .map(|issue| (format.id().into(), issue))
+        })
+        .collect();
+    let mut targets: Vec<String> = if conversion_issue.is_none() {
+        ImageFormat::ALL
+            .into_iter()
+            .filter(|format| !target_issues.contains_key(format.id()))
+            .map(|format| format.id().into())
+            .collect()
+    } else {
+        vec![]
+    };
+    // Still-frame destinations are explicit, separate from motion-preserving
+    // targets. Ordinary images also support them for mixed image batches.
+    if conversion_issue.is_none() && kind == "images" {
+        targets.extend(ImageFormat::ALL.map(|format| format!("frame-{}", format.id())));
+    }
+    Ok(InputFile {
+        extension_targets: Vec::new(),
+        id: path_string.clone(),
+        name: path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned(),
+        path: path_string,
+        kind: kind.into(),
+        format: match extension {
+            "jpg" => "JPEG".into(),
+            "webp" => "WebP".into(),
+            extension => extension.to_uppercase(),
+        },
+        bytes: metadata.len(),
+        has_audio: None,
+        audio: None,
+        audio_tracks: Vec::new(),
+        selected_audio_track: None,
+        video: None,
+        animation: None,
+        targets,
+        conversion_issue,
+        animated: sequence.as_ref().is_some_and(|s| s.animated()),
+        target_issues,
+        sequence,
+    })
+}
+
+fn bmp_conversion_issue(file: &mut File) -> Option<String> {
+    let mut check = || -> std::io::Result<Option<String>> {
+        let invalid = || std::io::Error::new(std::io::ErrorKind::InvalidData, "Incomplete BMP");
+        file.rewind()?;
+        let length = file.metadata()?.len();
+        let mut header = [0; 18];
+        file.read_exact(&mut header)?;
+        let file_size = u64::from(u32::from_le_bytes(header[2..6].try_into().unwrap()));
+        let offset = u64::from(u32::from_le_bytes(header[10..14].try_into().unwrap()));
+        let dib_size = u32::from_le_bytes(header[14..18].try_into().unwrap());
+        // A normal BMP has one file header and one bitmap. This also rejects
+        // ordinary concatenated BMPs instead of sending a sequence to an encoder.
+        if &header[..2] != b"BM"
+            || file_size != length
+            || ![12, 40, 52, 56, 64, 78, 108, 124].contains(&dib_size)
+            || offset < 14 + u64::from(dib_size)
+            || offset >= length
+        {
+            return Err(invalid());
+        }
+        let mut dib = [0; 124];
+        dib[..4].copy_from_slice(&header[14..18]);
+        file.read_exact(&mut dib[4..dib_size as usize])?;
+        let (width, height, planes, bits, compression) = if dib_size == 12 {
+            (
+                i32::from(u16::from_le_bytes(dib[4..6].try_into().unwrap())),
+                i32::from(u16::from_le_bytes(dib[6..8].try_into().unwrap())),
+                u16::from_le_bytes(dib[8..10].try_into().unwrap()),
+                u16::from_le_bytes(dib[10..12].try_into().unwrap()),
+                0,
+            )
+        } else {
+            (
+                i32::from_le_bytes(dib[4..8].try_into().unwrap()),
+                i32::from_le_bytes(dib[8..12].try_into().unwrap()),
+                u16::from_le_bytes(dib[12..14].try_into().unwrap()),
+                u16::from_le_bytes(dib[14..16].try_into().unwrap()),
+                u32::from_le_bytes(dib[16..20].try_into().unwrap()),
+            )
+        };
+        // Embedded PNG/JPEG can hide a different container (including APNG).
+        // Supporting those wrappers needs their own inspection path first.
+        if [4, 5].contains(&compression) {
+            return Ok(Some("BMP files containing embedded PNG or JPEG are not supported yet. Remove this file to convert the rest.".into()));
+        }
+        if width <= 0
+            || height == 0
+            || planes != 1
+            || ![1, 4, 8, 16, 24, 32].contains(&bits)
+            || ![0, 1, 2, 3, 6].contains(&compression)
+        {
+            return Err(invalid());
+        }
+        if [0, 3, 6].contains(&compression) {
+            let row_bytes = (width as u64 * u64::from(bits)).div_ceil(32) * 4;
+            let pixel_end = offset + row_bytes * u64::from(height.unsigned_abs());
+            if pixel_end > length {
+                return Err(invalid());
+            }
+        }
+        Ok(None)
+    };
+    check().unwrap_or_else(|_| {
+        Some("This BMP is incomplete, unreadable, or contains more than one bitmap.".into())
+    })
+}
+
+// APNG must not silently become a still image. acTL precedes the first IDAT.
+fn png_conversion_issue(file: &mut File) -> Option<String> {
+    let mut check = || -> Result<bool, std::io::Error> {
+        file.seek(SeekFrom::Start(8))?;
+        let length = file.metadata()?.len();
+        loop {
+            let mut chunk = [0; 8];
+            file.read_exact(&mut chunk)?;
+            let count = u32::from_be_bytes(chunk[..4].try_into().unwrap()) as u64;
+            if &chunk[4..] == b"acTL" {
+                return Ok(true);
+            }
+            if &chunk[4..] == b"IDAT" {
+                return Ok(false);
+            }
+            if &chunk[4..] == b"IEND" || file.stream_position()?.saturating_add(count + 4) > length
+            {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Incomplete PNG",
+                ));
+            }
+            file.seek(SeekFrom::Current((count + 4) as i64))?;
+        }
+    };
+    match check() {
+        Ok(false) => None,
+        Ok(true) => Some(
+            "Animated PNG conversion is not supported yet. Remove this file to convert the rest."
+                .into(),
+        ),
+        Err(_) => Some("This PNG is incomplete or unreadable.".into()),
+    }
+}
+
+pub fn require_supported(path: &Path) -> Result<InputFile, String> {
+    let input = inspect(path)?;
+    if let Some(issue) = &input.conversion_issue {
+        return Err(issue.clone());
+    }
+    Ok(input)
+}
+
+pub fn require_target(path: &Path, target: &str) -> Result<InputFile, String> {
+    let input = require_supported(path)?;
+    if let Some(issue) = input.target_issues.get(target) {
+        return Err(issue.clone());
+    }
+    if !input.targets.iter().any(|candidate| candidate == target) {
+        return Err("This file does not support the selected output format.".into());
+    }
+    Ok(input)
+}
+
+pub fn inspect_with_audio(
+    path: &Path,
+    backend: &crate::audio_backend::AudioBackend,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Result<InputFile, String> {
+    let mut input = inspect(path)?;
+    // MP4 and Matroska may carry audio alone. Classify actual streams first.
+    let shared_container = matches!(
+        input.format.as_str(),
+        "MP4" | "MOV" | "M4V" | "M4A" | "3GP" | "MKV" | "WEBM"
+    );
+    if input.kind == "video" || shared_container {
+        match backend.probe_media(path, cancel) {
+            Ok(probe) if crate::audio_extract::has_video(&probe) => {
+                input.kind = "video".into();
+                input.audio_tracks = crate::audio_extract::tracks(&probe);
+                input.has_audio = Some(!input.audio_tracks.is_empty());
+                let video = crate::video_backend::parse(probe.clone());
+                input.targets.clear();
+                input.target_issues.clear();
+                match crate::video_animation::inspect(&probe) {
+                    Ok(info) => {
+                        input.animation = Some(info);
+                        input.targets.extend(["gif".into(), "animated-webp".into()]);
+                        input
+                            .targets
+                            .extend(crate::video_frame::TARGETS.map(String::from));
+                    }
+                    Err(issue) => {
+                        input.target_issues.insert("gif".into(), issue.clone());
+                        input
+                            .target_issues
+                            .insert("animated-webp".into(), issue.clone());
+                        for target in crate::video_frame::TARGETS {
+                            input.target_issues.insert(target.into(), issue.clone());
+                        }
+                    }
+                }
+                for target in ["mp4", "mkv", "mov", "webm"] {
+                    let issue = match &video {
+                        Ok(Some(video)) => video.target_issue(target),
+                        Err(issue) => Some(issue.clone()),
+                        _ => Some("This video is not supported yet.".into()),
+                    };
+                    if let Some(issue) = issue {
+                        input.target_issues.insert(target.into(), issue);
+                    } else {
+                        input.targets.push(target.into());
+                    }
+                }
+                match crate::audio_extract::selected_track(&probe, None) {
+                    Ok(track) => {
+                        input.selected_audio_track = Some(track.index);
+                        input.audio = track.audio;
+                        input.targets.extend(track.targets);
+                        input.target_issues.extend(track.target_issues);
+                    }
+                    Err(issue) => {
+                        for target in crate::audio_extract::TARGETS {
+                            input.target_issues.insert(target.into(), issue.clone());
+                        }
+                    }
+                }
+                // A video-encoding restriction must not hide a valid audio
+                // destination (HDR, chapters, or unsupported pixels, for example).
+                input.conversion_issue = if input.targets.is_empty() {
+                    input.target_issues.get("mp4").cloned()
+                } else {
+                    None
+                };
+                input.video = video.ok().flatten();
+                return Ok(input);
+            }
+            Ok(_) => (),
+            Err(crate::image_backend::ConversionError::Failed(message)) => {
+                input.conversion_issue = Some(message);
+                return Ok(input);
+            }
+            Err(_) => return Err("Video inspection was cancelled.".into()),
+        }
+    }
+    if input.kind == "audio" || input.kind == "video" || shared_container {
+        match backend.inspect(path, cancel) {
+            Ok(audio) => {
+                input.kind = "audio".into();
+                input.format = if ["alac", "aac", "opus", "vorbis"].contains(&audio.codec.as_str())
+                {
+                    audio.codec.to_uppercase()
+                } else {
+                    audio.container.to_uppercase()
+                };
+                input.has_audio = Some(true);
+                input.target_issues.clear();
+                input.targets = ["wav", "flac", "alac", "mp3", "m4a", "opus", "ogg"]
+                    .into_iter()
+                    .filter_map(|target| {
+                        if let Some(issue) = audio.target_issue(target) {
+                            input.target_issues.insert(target.into(), issue);
+                            None
+                        } else {
+                            Some(target.into())
+                        }
+                    })
+                    .collect();
+                input.conversion_issue = None;
+                input.audio = Some(audio);
+            }
+            Err(crate::image_backend::ConversionError::Failed(message)) => {
+                input.conversion_issue = Some(message)
+            }
+            Err(crate::image_backend::ConversionError::Cancelled) => {
+                return Err("Audio inspection was cancelled.".into())
+            }
+            Err(crate::image_backend::ConversionError::Clipping) => {
+                return Err("This audio needs an explicit clipping choice.".into())
+            }
+        }
+    }
+    Ok(input)
+}
+
+impl InputFile {
+    pub fn require_frame_target(
+        &self,
+        options: &crate::video_frame::FrameOptions,
+    ) -> Result<(), String> {
+        options.validate()?;
+        if !self.targets.contains(&options.image.target) {
+            return Err(self
+                .target_issues
+                .get(&options.image.target)
+                .cloned()
+                .unwrap_or_else(|| "This video cannot be converted to a still image yet.".into()));
+        }
+        Ok(())
+    }
+    pub fn require_animation_target(
+        &self,
+        options: &crate::video_animation::AnimationOptions,
+    ) -> Result<(), String> {
+        options.validate()?;
+        let info = self.animation.as_ref().ok_or_else(|| {
+            self.target_issues
+                .get(options.target_id())
+                .cloned()
+                .unwrap_or_else(|| "This video cannot be converted to an animation yet.".into())
+        })?;
+        let range = options
+            .ranges
+            .get(&self.path)
+            .ok_or("Choose a range for this video.")?;
+        options.resolve(info, *range)?;
+        Ok(())
+    }
+    pub fn require_video_audio_target(
+        &self,
+        options: &crate::audio_extract::VideoAudioOptions,
+    ) -> Result<(), String> {
+        let selected = options
+            .tracks
+            .get(&self.path)
+            .copied()
+            .or(self.selected_audio_track);
+        let track = self.audio_tracks.iter().find(|t| Some(t.index) == selected)
+            .ok_or_else(|| if self.audio_tracks.is_empty() {
+                "This video has no audio track. Remove it to convert the rest to audio, or choose a video format.".to_string()
+            } else { "The selected audio track is no longer available. Add this video again to choose a track.".to_string() })?;
+        options.audio.resolve(track.supported()?)?;
+        Ok(())
+    }
+
+    pub fn require_video_target(
+        &self,
+        options: &crate::video_backend::VideoOptions,
+    ) -> Result<(), String> {
+        options.validate()?;
+        if let Some(issue) = &self.conversion_issue {
+            return Err(issue.clone());
+        }
+        self.video
+            .as_ref()
+            .ok_or("This file is not supported video.")?
+            .require_options(options)
+    }
+
+    pub fn require_audio_target(
+        &self,
+        options: &crate::audio_backend::AudioOptions,
+    ) -> Result<(), String> {
+        if let Some(issue) = &self.conversion_issue {
+            return Err(issue.clone());
+        }
+        let audio = self
+            .audio
+            .as_ref()
+            .ok_or("This file is not supported audio.")?;
+        options.resolve(audio)?;
+        Ok(())
+    }
+}
+
+#[tauri::command]
+pub async fn inspect_inputs(
+    paths: Vec<String>,
+    audio: tauri::State<'_, crate::audio_backend::AudioBackend>,
+    extensions: tauri::State<'_, crate::extensions::ExtensionManager>,
+    window: tauri::WebviewWindow,
+) -> Result<Inspection, String> {
+    let guard = extensions.begin_read(window.label())?;
+    let extensions = extensions.inner().clone();
+    let audio = audio.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut result = Inspection::default();
+        let providers = extensions
+            .providers(guard.cancelled())
+            .unwrap_or_else(|message| {
+                result.errors.push(InputError {
+                    name: "Extensions".into(),
+                    message,
+                });
+                Vec::new()
+            });
+        for path in paths {
+            match inspect_with_providers(Path::new(&path), &audio, guard.cancelled(), &providers) {
+                Ok(file) => result.files.push(file),
+                Err(message) => result.errors.push(InputError {
+                    name: Path::new(&path)
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned(),
+                    message,
+                }),
+            }
+        }
+        result
+    })
+    .await
+    .map_err(|_| "File inspection could not finish.".into())
+}
+
+pub fn inspect_with_providers(
+    path: &Path,
+    audio: &crate::audio_backend::AudioBackend,
+    cancel: &std::sync::atomic::AtomicBool,
+    providers: &[std::sync::Arc<crate::providers::Provider>],
+) -> Result<InputFile, String> {
+    let base = inspect_with_audio(path, audio, cancel);
+    let kind = base.as_ref().ok().map(|input| input.kind.as_str());
+    let extension = path
+        .extension()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_ascii_lowercase();
+    let candidates: Vec<_> = providers
+        .iter()
+        .filter(|provider| provider.matches(path, kind))
+        .collect();
+    if candidates.is_empty()
+        && base.is_err()
+        && !["md", "markdown", "txt", "docx"].contains(&extension.as_str())
+    {
+        return base;
+    }
+    let mut input = match base {
+        Ok(input) => input,
+        Err(_) => {
+            let canonical = path
+                .canonicalize()
+                .map_err(|_| "This file is no longer available.")?;
+            let metadata = canonical
+                .metadata()
+                .map_err(|_| "This file could not be read.")?;
+            if !metadata.is_file() {
+                return Err("Choose individual files, rather than a folder.".into());
+            }
+            let path = canonical.to_string_lossy().into_owned();
+            InputFile {
+                id: path.clone(),
+                path,
+                name: canonical
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned(),
+                kind: "documents".into(),
+                format: extension.to_uppercase(),
+                bytes: metadata.len(),
+                has_audio: None,
+                targets: vec![],
+                conversion_issue: Some(format!(
+                    "Install {} in Settings → Extensions to convert this file.",
+                    if extension == "docx" {
+                        "Office"
+                    } else {
+                        "Text & Markdown"
+                    }
+                )),
+                animated: false,
+                audio: None,
+                audio_tracks: vec![],
+                selected_audio_track: None,
+                video: None,
+                animation: None,
+                target_issues: Default::default(),
+                sequence: None,
+                extension_targets: vec![],
+            }
+        }
+    };
+    for provider in candidates {
+        match provider.inspect(Path::new(&input.path), cancel) {
+            Ok((format, targets)) => {
+                if input.targets.is_empty() {
+                    input.kind = format.kind;
+                    input.format = format.label;
+                }
+                input
+                    .targets
+                    .extend(targets.iter().map(|target| target.id.clone()));
+                input.extension_targets.extend(targets);
+            }
+            Err(issue) => {
+                if input.targets.is_empty() {
+                    input.conversion_issue = Some(issue);
+                }
+            }
+        }
+    }
+    if !input.targets.is_empty() {
+        input.conversion_issue = None;
+    }
+    Ok(input)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn detects_content_despite_a_misleading_extension() {
+        let mut file = tempfile::Builder::new().suffix(".mp3").tempfile().unwrap();
+        file.write_all(b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR").unwrap();
+        let input = inspect(file.path()).unwrap();
+        assert_eq!(input.kind, "images");
+        assert_eq!(input.format, "PNG");
+        assert_eq!(input.has_audio, None);
+    }
+
+    #[test]
+    fn rejects_unrecognized_content_without_trusting_the_name() {
+        let mut file = tempfile::Builder::new().suffix(".png").tempfile().unwrap();
+        file.write_all(b"This is not an image.").unwrap();
+        assert!(inspect(file.path()).is_err());
+    }
+
+    #[test]
+    fn rejects_directories() {
+        let directory = tempfile::tempdir().unwrap();
+        assert!(inspect(directory.path()).is_err());
+    }
+}
