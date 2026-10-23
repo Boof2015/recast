@@ -4,6 +4,7 @@ import { invoke, isTauri } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { open } from '@tauri-apps/plugin-dialog';
 import { formatBytes } from './model';
+import { ActivityBar } from './ActivityBar';
 
 type PackageInfo = {
   id: string; name: string; version: string; description: string; publisher: string;
@@ -97,13 +98,13 @@ export function ExtensionSettings({ onClose }: { onClose: () => void }) {
     </nav>
     <section className="extensions-content">
       <header className="extensions-heading"><div><h2>Extensions</h2><p>Add more conversion formats.</p></div><button className="quiet-button" onClick={() => void choosePackage()} disabled={!!working}><FolderOpen size={15} />Install from file</button></header>
+      {error && <div className="extension-feedback" role="alert"><span>{error}</span><button className="icon-button" aria-label="Dismiss error" onClick={() => setError('')}><X size={14} /></button></div>}
+      <div role="status" className="extension-status">{working ? <><div className="extension-operation"><span>{cancelling ? 'Cancelling…' : working}</span><ActivityBar label={cancelling ? 'Cancelling…' : working} /></div><button className="quiet-button" disabled={cancelling} onClick={() => { setCancelling(true); void invoke('extensions_cancel').catch(error => setError(String(error))); }}>Cancel</button></> : message}</div>
       <div className="extensions-scroll">
-        {error && <div className="extension-feedback" role="alert"><span>{error}</span><button className="icon-button" aria-label="Dismiss error" onClick={() => setError('')}><X size={14} /></button></div>}
-        <div role="status" className="extension-status">{working ? <><span className="extension-activity" aria-hidden="true" /><span>{cancelling ? 'Cancelling…' : working}</span><button className="quiet-button" disabled={cancelling} onClick={() => { setCancelling(true); void invoke('extensions_cancel').catch(error => setError(String(error))); }}>Cancel</button></> : message}</div>
         {review && <section className="extension-review" aria-label="Review local extension">
           <div className="extension-title"><h3>{review.package.name}</h3><span>{review.package.version}</span></div>
           <p>{review.package.description}</p>
-          <p className="extension-meta">{review.package.publisher} · Local file · {formatBytes(review.package.installedBytes)} installed</p>
+          <p className="extension-meta">{review.package.publisher} · Local file · {formatBytes(review.package.installedBytes)} when installed</p>
           <p className="extension-trust">Local publisher identity isn’t verified. Only install packages you trust.</p>
           <div className="extension-actions"><button className="quiet-button" disabled={!!working} onClick={() => setReview(null)}>Cancel</button><button className="primary-button" disabled={!!working} onClick={() => void installLocal()}>Install</button></div>
         </section>}
@@ -117,7 +118,7 @@ export function ExtensionSettings({ onClose }: { onClose: () => void }) {
         <section className="extension-group" aria-label="Available extensions">
           <header className="extension-group-heading"><h3>Available</h3><button className="quiet-button" disabled={!!working} onClick={() => void run('Checking for extensions…', async () => { setAvailable(await invoke<Offer[]>('extensions_catalog')); })}><RefreshCw size={13} />Check for extensions</button></header>
           {available === null ? <p className="extension-empty">Check for published extensions from Recast.</p> : visibleOffers?.length === 0 ? <p className="extension-empty">{installed.length ? 'No additional extensions available for this device.' : 'No extensions published for this device yet.'}</p> : visibleOffers?.map(offer => <article className="extension-row" key={offer.sha256}>
-            <div className="extension-details"><div className="extension-title"><h4>{offer.package.name}</h4><span>{offer.package.version}</span></div><p>{offer.package.description}</p><p className="extension-meta">{formatBytes(offer.downloadBytes)} download · {formatBytes(offer.package.installedBytes)} installed</p></div>
+            <div className="extension-details"><div className="extension-title"><h4>{offer.package.name}</h4><span>{offer.package.version}</span></div><p>{offer.package.description}</p><p className="extension-meta">{formatBytes(offer.downloadBytes)} download · {formatBytes(offer.package.installedBytes)} when installed</p></div>
             <button className="quiet-button" disabled={!!working} onClick={() => void install(offer)}><Download size={14} />Install</button>
           </article>)}
         </section>

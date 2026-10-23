@@ -541,7 +541,7 @@ pub fn inspect_with_providers(
         .collect();
     if candidates.is_empty()
         && base.is_err()
-        && !["md", "markdown", "txt"].contains(&extension.as_str())
+        && !["md", "markdown", "txt", "docx"].contains(&extension.as_str())
     {
         return base;
     }
@@ -571,9 +571,14 @@ pub fn inspect_with_providers(
                 bytes: metadata.len(),
                 has_audio: None,
                 targets: vec![],
-                conversion_issue: Some(
-                    "Install Text & Markdown in Settings → Extensions to convert this file.".into(),
-                ),
+                conversion_issue: Some(format!(
+                    "Install {} in Settings → Extensions to convert this file.",
+                    if extension == "docx" {
+                        "Office"
+                    } else {
+                        "Text & Markdown"
+                    }
+                )),
                 animated: false,
                 audio: None,
                 audio_tracks: vec![],

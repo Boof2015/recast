@@ -1,0 +1,22 @@
+[package]
+name = "recast-office-worker"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+quick-xml = "0.39"
+zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+url = "2"
+percent-encoding = "2"
+lopdf = { version = "0.46", default-features = false }
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+opt-level = "s"
+lto = "thin"
+strip = true

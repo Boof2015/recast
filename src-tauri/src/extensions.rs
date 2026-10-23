@@ -1058,6 +1058,83 @@ mod tests {
         assert!(!manager.busy(None));
     }
     #[test]
+    #[ignore = "requires RECAST_TEST_OFFICE_EXTENSION, RECAST_TEST_TEXT_EXTENSION and RECAST_TEST_DOCX"]
+    fn packaged_office_and_text_share_pdf_and_preserve_sources_and_outputs() {
+        let root = tempfile::tempdir().unwrap();
+        let cancel = AtomicBool::new(false);
+        let manager = ExtensionManager::new(root.path().to_path_buf());
+        for variable in ["RECAST_TEST_OFFICE_EXTENSION", "RECAST_TEST_TEXT_EXTENSION"] {
+            let archive = PathBuf::from(std::env::var_os(variable).expect(variable));
+            let (copy, _, hash) = snapshot(&archive, &cancel).unwrap();
+            install_snapshot(root.path(), copy.as_file(), &hash, "local", None, &cancel).unwrap();
+        }
+        let providers = manager.providers(&cancel).unwrap();
+        let docs = tempfile::tempdir().unwrap();
+        let word = docs.path().join("layout.docx");
+        let markdown = docs.path().join("notes.md");
+        fs::copy(
+            PathBuf::from(std::env::var_os("RECAST_TEST_DOCX").unwrap()),
+            &word,
+        )
+        .unwrap();
+        fs::write(&markdown, "# Mixed batch\n\nOne PDF per document.").unwrap();
+        let backend = crate::audio_backend::AudioBackend {
+            root: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/audio-backend"),
+        };
+        let mut group = crate::providers::GroupSelections::default();
+        for source in [&word, &markdown] {
+            let before = fs::read(source).unwrap();
+            let inspected =
+                crate::inputs::inspect_with_providers(source, &backend, &cancel, &providers)
+                    .unwrap();
+            assert_eq!(inspected.kind, "documents");
+            let destination = inspected
+                .extension_targets
+                .iter()
+                .find(|d| d.extension == "pdf")
+                .unwrap();
+            let selection = crate::providers::Selection {
+                key: destination.provider_key.clone(),
+                target: destination.provider_target.clone(),
+                settings: destination
+                    .settings
+                    .iter()
+                    .map(|s| (s.id.clone(), s.default.clone()))
+                    .collect(),
+            };
+            let provider = crate::providers::selected(&providers, &selection).unwrap();
+            group
+                .check(
+                    "documents",
+                    provider.target(&selection).unwrap(),
+                    &selection,
+                )
+                .unwrap();
+            let existing = source.with_extension("pdf");
+            fs::write(&existing, b"existing PDF").unwrap();
+            let output = provider
+                .convert(source, None, &selection, &cancel, |_, _| {})
+                .unwrap();
+            assert_ne!(PathBuf::from(&output.path), existing);
+            assert!(fs::read(&output.path).unwrap().starts_with(b"%PDF-"));
+            assert_eq!(fs::read(&existing).unwrap(), b"existing PDF");
+            assert_eq!(fs::read(source).unwrap(), before);
+            assert!(manager.remove_unused(&provider.key).is_err());
+        }
+        assert!(fs::read_dir(docs.path()).unwrap().all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".recast-")));
+        let keys: Vec<_> = providers.iter().map(|p| p.key.clone()).collect();
+        drop(providers);
+        for key in keys {
+            manager.remove_unused(&key).unwrap();
+        }
+        assert!(list(root.path()).unwrap().is_empty());
+    }
+
+    #[test]
     #[ignore = "requires RECAST_TEST_TEXT_EXTENSION pointing at the actual package"]
     fn packaged_text_provider_installs_converts_and_preserves_existing_files() {
         let archive = PathBuf::from(

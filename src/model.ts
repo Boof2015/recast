@@ -68,6 +68,8 @@ export interface Destination {
   hidden?: boolean;
   providerKey?: string;
   providerTarget?: string;
+  extension?: string;
+  providerRoutes?: Record<string, Destination>;
   settings?: { id: string; label: string; choices: string[]; default: string }[];
 }
 
@@ -79,6 +81,31 @@ export function isExtensionTarget(target: string | null): boolean { return !!tar
 export function extensionValues(format: Destination, settings: GroupSettings): Record<string, string> {
   const saved = settings.extensionSettings[format.id] ?? {};
   return Object.fromEntries((format.settings ?? []).map(setting => [setting.id, setting.choices.includes(saved[setting.id]) ? saved[setting.id] : setting.default]));
+}
+
+// Keep a stable PDF choice as document inputs are added or removed, provided
+// every input has an unambiguous PDF provider. Each provider retains its own
+// applicable group controls. Ambiguous routes stay explicit provider choices.
+function sharedPdf(files: InputFile[]): Destination[] {
+  if (!files.length) return [];
+  const routes: Record<string, Destination> = {};
+  for (const file of files) {
+    const pdfs = file.extensionTargets?.filter(format => format.extension === 'pdf' && file.targets?.includes(format.id)) ?? [];
+    if (pdfs.length !== 1) return [];
+    routes[file.path] = pdfs[0];
+  }
+  const unique = [...new Map(Object.values(routes).map(route => [route.id, route])).values()];
+  return [{ id: 'extension:shared:pdf', label: 'PDF', description: unique.length === 1 ? unique[0].description : 'Ready to share', category: unique.length === 1 ? unique[0].category : 'Document', extension: 'pdf', providerRoutes: routes,
+    settings: unique.flatMap(route => (route.settings ?? []).map(setting => ({ ...setting, id: `${route.id}:${setting.id}`, label: unique.length === 1 ? setting.label : `${setting.label} · ${route.category}` }))),
+  }];
+}
+export function extensionSelection(format: Destination, file: InputFile, group: GroupSettings) {
+  const route = format.providerRoutes?.[file.path] ?? format;
+  if (!route.providerKey || !route.providerTarget) throw new Error('Choose an available extension output.');
+  const values = extensionValues(format, group);
+  return { key: route.providerKey, target: route.providerTarget,
+    settings: Object.fromEntries((route.settings ?? []).map(setting => [setting.id, values[format.providerRoutes ? `${route.id}:${setting.id}` : setting.id]])),
+  };
 }
 
 const imageDestinations: Destination[] = [
@@ -148,11 +175,13 @@ export function selectAudioTrack(file: InputFile, index: number): InputFile {
 // Preview fixtures use the full planned catalog. Real file targets are inspected
 // by Rust and intersected here: every file must support the whole-group target.
 export function destinationsFor(kind: MediaKind, files: InputFile[], preview = false): Destination[] {
-  const extensions = files[0]?.extensionTargets?.filter(format => files.every(file => file.extensionTargets?.some(other => other.id === format.id && other.providerKey === format.providerKey))) ?? [];
+  const common = files[0]?.extensionTargets?.filter(format => files.every(file => file.extensionTargets?.some(other => other.id === format.id && other.providerKey === format.providerKey))) ?? [];
+  const pdf = kind === 'documents' ? sharedPdf(files) : [];
+  const extensions = [...common.filter(format => !pdf.length || format.extension !== 'pdf'), ...pdf];
   if (!preview) {
     if (!files.length) return [];
     const catalog = [...(kind === 'images' ? imageCatalog(files) : kind === 'audio' ? audioDestinations : kind === 'documents' ? [] : [...videoDestinations, ...audioDestinations.map(format => ({ ...format, category: 'Audio only' }))]), ...extensions];
-    return catalog.filter(format => files.every(file => file.targets?.includes(format.id)));
+    return catalog.filter(format => files.every(file => format.providerRoutes?.[file.path] || file.targets?.includes(format.id)));
   }
   if (kind === 'images') return [...imageCatalog(files), ...extensions];
   if (kind === 'audio') return [...audioDestinations, ...extensions];

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Channel, invoke, isTauri } from '@tauri-apps/api/core';
-import { destinationsFor, extensionValues, isExtensionTarget, isVideoAnimationTarget, videoAnimationOptions, sourceRange, isAudioTarget, isFrameTarget, isImageFrameTarget, videoModeKey, audioSampleFormats, type GroupSettings, type InputFile, type MediaKind } from './model';
+import { destinationsFor, extensionSelection, isExtensionTarget, isVideoAnimationTarget, videoAnimationOptions, sourceRange, isAudioTarget, isFrameTarget, isImageFrameTarget, videoModeKey, audioSampleFormats, type GroupSettings, type InputFile, type MediaKind } from './model';
 
 function imageOptions(settings: GroupSettings) {
   return { target: settings.target?.replace(/^frame-/, ''), quality: settings.quality, lossless: settings.lossless, resize: settings.resize === 'Original' ? 100 : Number.parseInt(settings.resize, 10), metadata: settings.metadata, background: settings.background, colors: settings.colors, dither: settings.dither };
@@ -82,8 +82,8 @@ export function useConversion() {
             const group = groups[file.kind];
             if (!isExtensionTarget(group.target)) return [];
             const format = destinationsFor(file.kind, files.filter(other => other.kind === file.kind)).find(format => format.id === group.target);
-            if (!format?.providerKey) throw new Error('Choose an available extension output.');
-            return [[file.path, { key: format.providerKey, target: format.providerTarget, settings: extensionValues(format, group) }]];
+            if (!format) throw new Error('Choose an available extension output.');
+            return [[file.path, extensionSelection(format, file, group)]];
           })),
           imageOptions: files.some(file => file.kind === 'images') && !isImageFrameTarget(settings.target) && !isExtensionTarget(settings.target) ? imageOptions(settings) : null,
           imageFrameOptions: files.some(file => file.kind === 'images') && isImageFrameTarget(settings.target) ? { image: imageOptions(settings), frames: Object.fromEntries(files.filter(file => file.kind === 'images' && file.animated && file.frame).map(file => [file.path, file.frame])) } : null,

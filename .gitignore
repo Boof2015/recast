@@ -24,3 +24,4 @@ src-tauri/resources/.audio-backend-*/
 extension-artifacts/
 extensions/text/worker/target/
 extensions/README.md
+extensions/office/worker/target/

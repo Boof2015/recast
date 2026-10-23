@@ -578,11 +578,11 @@ pub async fn start_conversion(
         {
             audio_check.verify()?;
         }
-        let mut extension_groups = HashMap::new();
+        let mut extension_groups = crate::providers::GroupSelections::default();
         for path in &preflight.paths {
             if let Some(selection) = preflight.extension_options.get(path) {
                 let provider = crate::providers::selected(&preflight.providers, selection)?;
-                provider.target(selection)?;
+                let target = provider.target(selection)?;
                 let (input, targets) = provider.inspect(Path::new(path), cancelled)?;
                 if !targets
                     .iter()
@@ -590,13 +590,7 @@ pub async fn start_conversion(
                 {
                     return Err("This file does not support the selected extension output.".into());
                 }
-                let identity = serde_json::to_string(selection).map_err(|e| e.to_string())?;
-                if extension_groups
-                    .insert(input.kind.clone(), identity.clone())
-                    .is_some_and(|previous| previous != identity)
-                {
-                    return Err("Choose one output and settings for the whole group.".into());
-                }
+                extension_groups.check(&input.kind, target, selection)?;
                 let core_selected = match input.kind.as_str() {
                     "images" => {
                         preflight.image_options.is_some() || preflight.image_frame_options.is_some()

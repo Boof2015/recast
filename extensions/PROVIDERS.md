@@ -53,4 +53,6 @@ The worker must validate its completed output and preserve its source. It writes
 
 Installation/removal emits `recast:extensions-changed`; open batches re-inspect their files when idle. Conversion validates the selection again before starting. A package used by a batch cannot be removed until the batch is cleared. Updating installs a new immutable version without changing an existing retry. Window close and application quit cancel inspections as well as conversions and wait for worker cleanup.
 
-See [Text & Markdown](text/README.md) for a working adapter and cross-platform package checks.
+Document providers declaring PDF output may share a group destination even when different providers handle different input files. Recast creates this shared choice only when each input has exactly one available PDF route. Settings are scoped visibly to the relevant provider and remain consistent across its files; each request still names the exact pinned provider and target. Other output types keep their explicit provider choices.
+
+See [Text & Markdown](text/README.md) and [Office](office/README.md) for working adapters and cross-platform package checks.

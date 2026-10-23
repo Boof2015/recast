@@ -61,7 +61,42 @@ pub struct Destination {
     pub category: String,
     pub provider_key: String,
     pub provider_target: String,
+    pub extension: String,
     pub settings: Vec<Setting>,
+}
+// A shared PDF group may use multiple document providers. Settings still
+// apply uniformly to every file handled by a given provider/target.
+#[derive(Default)]
+pub struct GroupSelections {
+    outputs: BTreeMap<String, String>,
+    settings: BTreeMap<(String, String), String>,
+}
+impl GroupSelections {
+    pub fn check(
+        &mut self,
+        kind: &str,
+        target: &Target,
+        selection: &Selection,
+    ) -> Result<(), String> {
+        let selection_id = serde_json::to_string(selection).map_err(|e| e.to_string())?;
+        let output_id = if kind == "documents" && target.extension == "pdf" {
+            "shared-pdf".to_string()
+        } else {
+            selection_id.clone()
+        };
+        if self
+            .outputs
+            .insert(kind.into(), output_id.clone())
+            .is_some_and(|old| old != output_id)
+            || self
+                .settings
+                .insert((kind.into(), selection.key.clone()), selection_id.clone())
+                .is_some_and(|old| old != selection_id)
+        {
+            return Err("Choose one output and settings for the whole group.".into());
+        }
+        Ok(())
+    }
 }
 #[derive(Debug)]
 pub struct Provider {
@@ -197,6 +232,7 @@ impl Provider {
             category: self.name.clone(),
             provider_key: self.key.clone(),
             provider_target: target.id.clone(),
+            extension: target.extension.clone(),
             settings: target.settings.clone(),
         }
     }
@@ -529,6 +565,41 @@ pub(crate) fn test_descriptor() -> Descriptor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mixed_document_pdf_keeps_each_providers_group_settings_consistent() {
+        let mut group = GroupSelections::default();
+        let text = test_descriptor().targets.remove(0);
+        let mut office = text.clone();
+        office.settings.clear();
+        let text_selection = Selection {
+            key: "text".into(),
+            target: "pdf".into(),
+            settings: BTreeMap::from([("page-size".into(), "Letter".into())]),
+        };
+        let office_selection = Selection {
+            key: "office".into(),
+            target: "pdf".into(),
+            settings: BTreeMap::new(),
+        };
+        group.check("documents", &text, &text_selection).unwrap();
+        group
+            .check("documents", &office, &office_selection)
+            .unwrap();
+        group.check("documents", &text, &text_selection).unwrap();
+        let mut changed = text_selection.clone();
+        changed.settings.insert("page-size".into(), "A4".into());
+        assert!(group.check("documents", &text, &changed).is_err());
+        let mut group = GroupSelections::default();
+        group.check("documents", &text, &text_selection).unwrap();
+        office.extension = "docx".into();
+        assert!(group
+            .check("documents", &office, &office_selection)
+            .is_err());
+        let mut group = GroupSelections::default();
+        group.check("images", &text, &text_selection).unwrap();
+        assert!(group.check("images", &text, &office_selection).is_err());
+    }
 
     #[test]
     fn descriptors_reject_unsafe_execution_and_ambiguous_capabilities() {

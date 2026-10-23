@@ -10,6 +10,7 @@ import { CheckboxSetting, QualitySetting, SelectSetting, SizeSetting } from './c
 import { VideoRange } from './VideoRange';
 import { FramePicker } from './FramePicker';
 import { ExtensionSettings } from './ExtensionSettings';
+import { ActivityBar } from './ActivityBar';
 import { ColorSetting } from './ColorSetting';
 import { GroupStack } from './GroupStack';
 import { useConversion, type FileResult } from './useConversion';
@@ -58,7 +59,7 @@ function ScrollArea({ children, className = '', onScroll }: { children: ReactNod
 }
 
 function FormatSettings({ kind, destination, value, onChange, disabled, animated, files }: { kind: MediaKind; destination: Destination; value: GroupSettings; onChange: (change: Partial<GroupSettings>) => void; disabled: boolean; animated: boolean; files: InputFile[] }) {
-  if (destination.providerKey) {
+  if (destination.providerKey || destination.providerRoutes) {
     const values = extensionValues(destination, value);
     return <div className="settings-stack">{destination.settings?.map(setting => <SelectSetting key={setting.id} label={setting.label} value={values[setting.id]} options={setting.choices} onChange={next => onChange({ extensionSettings: { ...value.extensionSettings, [destination.id]: { ...values, [setting.id]: next } } })} />)}</div>;
   }
@@ -406,6 +407,7 @@ export default function App() {
       <h1>Drop files here</h1>
       <p>Convert files. All on your device.</p>
       <button className="primary-button choose-files" onClick={() => void chooseFiles()} disabled={inspecting}>{inspecting ? 'Reading files…' : 'Choose files'}<Plus size={16} /></button>
+      <div className="empty-activity">{inspecting && <ActivityBar label="Reading files…" />}</div>
     </main> : <>
       <main className="workspace" ref={workspaceRef}>
         <section className="input-region" aria-label="Input files">
@@ -497,12 +499,12 @@ export default function App() {
         <div className="batch-total">
           <div className="batch-status-row">
             <span className="batch-status" role="status" aria-live="polite" aria-atomic="true">
-              <span>{job || conversion.starting ? jobText : `${files.length} files`}</span>
+              <span>{inspecting ? 'Reading files…' : job || conversion.starting ? jobText : `${files.length} files`}</span>
               {currentPhase && <span className="batch-phase" title={currentPhase}>{currentPhase}</span>}
             </span>
             {busy && progressPercent != null && <span className="batch-percent" aria-hidden="true">{progressPercent}%</span>}
           </div>
-          {busy && <div className="batch-progress">
+          {inspecting ? <ActivityBar label="Reading files…" /> : busy && <div className="batch-progress">
             <span className="progress-activity" aria-hidden="true" />
             <progress aria-label="Batch progress" aria-valuetext={progressPercent != null ? `${progressPercent}% of batch complete. ${currentPhase}` : `${completedUnits} of ${progressTotal} files complete. ${currentPhase || jobText}`} max={progressTotal} value={progressValue} />
           </div>}
