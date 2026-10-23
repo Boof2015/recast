@@ -5,6 +5,50 @@ use tauri::{
 };
 use tauri_plugin_dialog::DialogExt;
 
+#[cfg(target_os = "windows")]
+mod windows_shortcuts;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DesktopAction {
+    NewWindow,
+    AddFiles,
+    Settings,
+    #[cfg(target_os = "windows")]
+    Minimize,
+}
+
+fn dispatch_action(app: &AppHandle, source: Option<String>, action: DesktopAction) {
+    let app = app.clone();
+    // WebView2 blocks its input callback until it returns. Window creation must
+    // also run outside synchronous menu callbacks to avoid a Windows deadlock.
+    tauri::async_runtime::spawn_blocking(move || {
+        let window = source.and_then(|label| app.get_webview_window(&label));
+        let result = match action {
+            DesktopAction::NewWindow => new_window(&app, window.as_ref()).map(|_| ()),
+            DesktopAction::AddFiles | DesktopAction::Settings => {
+                if let Some(window) = window {
+                    let event = if action == DesktopAction::AddFiles {
+                        "recast:add-files"
+                    } else {
+                        "recast:settings"
+                    };
+                    app.emit_to(EventTarget::window(window.label()), event, ())
+                } else {
+                    Ok(())
+                }
+            }
+            #[cfg(target_os = "windows")]
+            DesktopAction::Minimize => window.map_or(Ok(()), |window| window.minimize()),
+        };
+        if let Err(error) = result {
+            app.dialog()
+                .message(format!("The window action could not be completed. {error}"))
+                .title("Recast")
+                .show(|_| {});
+        }
+    });
+}
+
 fn focused_window(app: &AppHandle) -> Option<WebviewWindow> {
     app.webview_windows()
         .into_values()
@@ -15,9 +59,10 @@ pub fn prepare_window(window: &WebviewWindow) -> tauri::Result<()> {
     #[cfg(target_os = "windows")]
     {
         window.set_decorations(false)?;
-        // Keep the native menu attached for accelerators, but present it from
-        // the Recast button instead of dedicating a second row to it.
+        // Present the native menu from the Recast button. WebView2 needs its
+        // own accelerator handler when keyboard focus is inside the page.
         window.hide_menu()?;
+        windows_shortcuts::install(window)?;
     }
     #[cfg(not(target_os = "windows"))]
     let _ = window;
@@ -76,12 +121,12 @@ fn cascade_position(
     PhysicalPosition::new(x as i32, y as i32)
 }
 
-pub fn new_window(app: &AppHandle) -> tauri::Result<WebviewWindow> {
+fn new_window(app: &AppHandle, source: Option<&WebviewWindow>) -> tauri::Result<WebviewWindow> {
     // Use the same configuration as the first window, including platform
     // overrides, minimum size, and the development preview URL.
     let mut config = app.config().app.windows[0].clone();
     config.label = format!("batch-{}", uuid::Uuid::new_v4());
-    let anchor = focused_window(app).and_then(|window| {
+    let anchor = source.and_then(|window| {
         Some((
             window.outer_position().ok()?,
             window.current_monitor().ok()??,
@@ -176,27 +221,15 @@ pub fn install_menu(app: &AppHandle) -> tauri::Result<()> {
         popup
     };
     app.set_menu(menu)?;
-    app.on_menu_event(|app, event| match event.id().as_ref() {
-        "new-window" => {
-            if let Err(error) = new_window(app) {
-                app.dialog()
-                    .message(format!("A new window could not be opened. {error}"))
-                    .title("Recast")
-                    .show(|_| {});
-            }
-        }
-        "add-files" => {
-            if let Some(window) = focused_window(app) {
-                // A targeted event prevents every open batch from opening a picker.
-                let _ = app.emit_to(EventTarget::window(window.label()), "recast:add-files", ());
-            }
-        }
-        "settings" => {
-            if let Some(window) = focused_window(app) {
-                let _ = app.emit_to(EventTarget::window(window.label()), "recast:settings", ());
-            }
-        }
-        _ => {}
+    app.on_menu_event(|app, event| {
+        let action = match event.id().as_ref() {
+            "new-window" => DesktopAction::NewWindow,
+            "add-files" => DesktopAction::AddFiles,
+            "settings" => DesktopAction::Settings,
+            _ => return,
+        };
+        let source = focused_window(app).map(|window| window.label().to_owned());
+        dispatch_action(app, source, action);
     });
     Ok(())
 }
