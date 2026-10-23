@@ -1,0 +1,75 @@
+name: Prepare converter backends
+description: Reuse exact compiled converters, audit them, and build missing versions from pinned sources.
+inputs:
+  runner:
+    description: Runner image label, kept separate from other OS baselines.
+    required: true
+  rebuild:
+    description: Ignore compiled caches for a fresh build (source downloads can still be reused).
+    default: 'false'
+  msys2-root:
+    description: MSYS2 location on Windows, for the binary dependency audit.
+    default: ''
+runs:
+  using: composite
+  steps:
+    # Exact matches only: never run a converter built from a different recipe.
+    # Cache the small, complete resources, not multi-GB compiler work directories.
+    - uses: actions/cache/restore@v4
+      id: image
+      with:
+        path: src-tauri/resources/image-backend
+        key: image-worker-v1-${{ inputs.runner }}-${{ runner.arch }}-${{ hashFiles('scripts/prepare-image-backend.py', 'scripts/image-backend.lock.json', 'scripts/image-policy.xml', 'scripts/sRGB.icc') }}
+        lookup-only: ${{ inputs.rebuild == 'true' }}
+    - uses: actions/cache/restore@v4
+      id: audio
+      with:
+        path: src-tauri/resources/audio-backend
+        key: audio-worker-v1-${{ inputs.runner }}-${{ runner.arch }}-${{ hashFiles('scripts/prepare-audio-backend.py', 'scripts/prepare-image-backend.py', 'scripts/audio-backend.lock.json', 'scripts/image-backend.lock.json') }}
+        lookup-only: ${{ inputs.rebuild == 'true' }}
+    - uses: actions/cache@v4
+      if: inputs.rebuild == 'true' || steps.image.outputs.cache-hit != 'true' || steps.audio.outputs.cache-hit != 'true'
+      with:
+        path: .backend-build/downloads
+        key: converter-sources-${{ runner.os }}-${{ hashFiles('scripts/image-backend.lock.json', 'scripts/audio-backend.lock.json') }}
+        restore-keys: converter-sources-${{ runner.os }}-
+    - name: Build image converter
+      if: runner.os != 'Windows' && (inputs.rebuild == 'true' || steps.image.outputs.cache-hit != 'true')
+      shell: bash
+      run: python3 scripts/prepare-image-backend.py
+    - name: Build audio/video converters
+      if: runner.os != 'Windows' && (inputs.rebuild == 'true' || steps.audio.outputs.cache-hit != 'true')
+      shell: bash
+      run: python3 scripts/prepare-audio-backend.py
+    - name: Build Windows image converter
+      if: runner.os == 'Windows' && (inputs.rebuild == 'true' || steps.image.outputs.cache-hit != 'true')
+      shell: msys2 {0}
+      run: /usr/bin/python scripts/prepare-image-backend.py
+    - name: Build Windows audio/video converters
+      if: runner.os == 'Windows' && (inputs.rebuild == 'true' || steps.audio.outputs.cache-hit != 'true')
+      shell: msys2 {0}
+      run: /usr/bin/python scripts/prepare-audio-backend.py
+    - name: Audit prepared converters
+      if: runner.os != 'Windows'
+      shell: bash
+      run: python3 scripts/check-package.py --resources src-tauri/resources
+    - name: Audit prepared Windows converters
+      if: runner.os == 'Windows'
+      shell: pwsh
+      env:
+        MSYS2_ROOT: ${{ inputs.msys2-root }}
+      run: |
+        $env:PATH += ";$env:MSYS2_ROOT\ucrt64\bin"
+        python scripts/check-package.py --resources src-tauri/resources
+    # Save after the audit so a later app lint/test failure doesn't discard a
+    # successful native build. Forced rebuilds never overwrite existing caches.
+    - uses: actions/cache/save@v4
+      if: steps.image.outputs.cache-hit != 'true'
+      with:
+        path: src-tauri/resources/image-backend
+        key: ${{ steps.image.outputs.cache-primary-key }}
+    - uses: actions/cache/save@v4
+      if: steps.audio.outputs.cache-hit != 'true'
+      with:
+        path: src-tauri/resources/audio-backend
+        key: ${{ steps.audio.outputs.cache-primary-key }}

@@ -131,4 +131,6 @@ Native tests use the real bundled converters and require `backend:prepare`. `npm
 
 Bundled converter sources and hashes are recorded in [image-backend.lock.json](scripts/image-backend.lock.json) and [audio-backend.lock.json](scripts/audio-backend.lock.json). Builds include source and license notices for their dependencies, including the GPL-enabled FFmpeg/x264 worker.
 
-The [platform workflow](.github/workflows/platform-checks.yml) builds and checks Windows x86_64, Linux x86_64/ARM64, and both Mac architectures.
+The [Platform checks workflow](.github/workflows/platform-checks.yml) runs frontend, build-recipe, Rust, and real conversion checks on pushes and pull requests, covering Windows x86_64, Linux x86_64/ARM64, and both Mac architectures. Compiled converters and Rust dependencies are cached.
+
+Run [Platform packages](.github/workflows/platform-packages.yml) manually for installable test/release artifacts and package audits. Its **Rebuild converters** option bypasses compiled converter caches for a fresh source build. Extension packages also remain manual.

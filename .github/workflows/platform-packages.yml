@@ -1,0 +1,16 @@
+name: Platform packages
+on:
+  workflow_dispatch:
+    inputs:
+      rebuild-backends:
+        description: Rebuild converters from source instead of using compiled caches
+        type: boolean
+        default: false
+permissions:
+  contents: read
+jobs:
+  packages:
+    uses: ./.github/workflows/platform-checks.yml
+    with:
+      packages: true
+      rebuild-backends: ${{ inputs.rebuild-backends }}

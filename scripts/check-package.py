@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Inspect a built package and run real-worker tests against its extracted resources."""
+"""Audit prepared converters, or audit a package and test its extracted workers."""
 import argparse
 import hashlib
 import importlib.util
@@ -60,20 +60,24 @@ def check_audio_manifest(resources):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--package', required=True, type=Path, help='.app, .deb, NSIS .exe, or directory containing one package')
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument('--package', type=Path, help='.app, .deb, NSIS .exe, or directory containing one package')
+    source.add_argument('--resources', type=Path, help='audit prepared converter resources without packaging or running Cargo tests')
     parser.add_argument('--output', type=Path, help='copy package and verification report into this artifact directory')
     args = parser.parse_args()
-    package = args.package.resolve()
-    if package.is_dir() and package.suffix != '.app':
+    package = args.package.resolve() if args.package else None
+    if package and package.is_dir() and package.suffix != '.app':
         candidates = [p for p in package.iterdir() if p.suffix in ('.app', '.deb', '.exe')]
         if len(candidates) != 1:
             raise SystemExit(f'Expected exactly one package in {package}; found {candidates}')
         package = candidates[0]
     lock = json.loads((ROOT / 'scripts/image-backend.lock.json').read_text())
-    report = {'package': package.name, 'host': platform.platform(), 'checks': []}
+    report = {'package': package.name if package else None, 'host': platform.platform(), 'checks': []}
     with tempfile.TemporaryDirectory(prefix='recast-package-') as temporary:
         unpacked = Path(temporary) / 'unpacked'
-        if package.suffix == '.app':
+        if package is None:
+            unpacked = args.resources.resolve()
+        elif package.suffix == '.app':
             unpacked = package
         elif package.suffix == '.deb':
             command(['dpkg-deb', '-x', str(package), str(unpacked)])
@@ -116,7 +120,7 @@ def main():
             raise SystemExit('Audio and image workers target different platforms.')
         report['audio'] = {name: builder.audit(audio_resources / name, audio_manifest['system'], audio_manifest['architecture']) for name in audio_manifest['binaries']}
         report['checks'].append('audio executable hashes, source manifest, dependency audit, and license inventory')
-        if package.suffix == '.app':
+        if package and package.suffix == '.app':
             import plistlib
             plist = plistlib.loads((package / 'Contents/Info.plist').read_bytes())
             if plist.get('LSMinimumSystemVersion') != lock['minimumMacOS']:
@@ -129,20 +133,22 @@ def main():
         for name in audio_manifest['binaries']:
             command([str(audio_resources / name), '-version'], env=env)
         report['checks'].append('image/audio workers and inspector start with a system-only PATH')
-        env = os.environ.copy()
-        env['RECAST_TEST_BACKEND'] = str(resources)
-        env['RECAST_TEST_AUDIO_BACKEND'] = str(audio_resources)
-        command(['cargo', 'test', '--locked', '--manifest-path', str(ROOT / 'src-tauri/Cargo.toml')], cwd=ROOT, env=env)
-        report['checks'].append('real conversion and job tests against extracted worker')
+        if package:
+            env = os.environ.copy()
+            env['RECAST_TEST_BACKEND'] = str(resources)
+            env['RECAST_TEST_AUDIO_BACKEND'] = str(audio_resources)
+            command(['cargo', 'test', '--locked', '--manifest-path', str(ROOT / 'src-tauri/Cargo.toml')], cwd=ROOT, env=env)
+            report['checks'].append('real conversion and job tests against extracted worker')
     print(json.dumps(report, indent=2))
     if args.output:
         args.output.mkdir(parents=True, exist_ok=True)
         (args.output / 'package-check.json').write_text(json.dumps(report, indent=2) + '\n')
-        target = args.output / package.name
-        if package.suffix == '.app':
-            command(['ditto', '-c', '-k', '--keepParent', str(package), str(target.with_suffix('.app.zip'))])
-        else:
-            shutil.copy2(package, target)
+        if package:
+            target = args.output / package.name
+            if package.suffix == '.app':
+                command(['ditto', '-c', '-k', '--keepParent', str(package), str(target.with_suffix('.app.zip'))])
+            else:
+                shutil.copy2(package, target)
 
 
 if __name__ == '__main__':
