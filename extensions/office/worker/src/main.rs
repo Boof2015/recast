@@ -1,4 +1,6 @@
 mod docx;
+#[cfg(test)]
+mod tests;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -7,7 +9,7 @@ use std::{
     fs::{self, File},
     io::Read,
     path::{Path, PathBuf},
-    process::{Child, Command, Stdio},
+    process::{Child, Command, ExitStatus, Stdio},
     thread,
     time::{Duration, Instant},
 };
@@ -101,6 +103,54 @@ impl Drop for Process {
         let _ = self.0.wait();
     }
 }
+fn run_office(
+    command: &mut Command,
+    work: &Path,
+    log: &Path,
+    timeout: Duration,
+) -> Result<ExitStatus> {
+    // LibreOffice's launcher restarts soffice.bin after exit 81 when a new
+    // profile needs initialization (desktop/exithelper.h). We launch the engine
+    // directly so cancellation can kill/reap it; handle that one normal restart
+    // here, keeping the same profile, arguments, log and overall deadline.
+    let started = Instant::now();
+    let mut attempts = Vec::new();
+    loop {
+        let check = || -> Result<()> {
+            cancelled(work)?;
+            if started.elapsed() >= timeout {
+                return Err("This document took too long to render.".into());
+            }
+            if fs::metadata(log).is_ok_and(|m| m.len() > 1024 * 1024) {
+                return Err("The Office engine produced too much diagnostic output.".into());
+            }
+            Ok(())
+        };
+        check()?;
+        let mut process = Process(
+            command
+                .spawn()
+                .map_err(|e| format!("The Office engine could not start: {e}"))?,
+        );
+        let status = loop {
+            check()?;
+            if let Some(status) = process.0.try_wait().map_err(error)? {
+                break status;
+            }
+            thread::sleep(Duration::from_millis(35));
+        };
+        attempts.push(json!({"exitCode":status.code(),"status":status.to_string()}));
+        fs::write(
+            work.join("office-process.json"),
+            serde_json::to_vec(&json!({"attempts":attempts})).map_err(error)?,
+        )
+        .map_err(error)?;
+        // Never retry crashes, ordinary conversion failures or a restart loop.
+        if status.code() != Some(81) || attempts.len() >= 2 {
+            return Ok(status);
+        }
+    }
+}
 fn render(root: &Path, engine: &Engine, work: &Path) -> Result<()> {
     let executable = root.join(&engine.executable);
     if !executable.is_file() {
@@ -156,25 +206,7 @@ fn render(root: &Path, engine: &Engine, work: &Path) -> Result<()> {
         use std::os::windows::process::CommandExt;
         command.creation_flags(0x08000000);
     }
-    let mut process = Process(
-        command
-            .spawn()
-            .map_err(|e| format!("The Office engine could not start: {e}"))?,
-    );
-    let started = Instant::now();
-    let status = loop {
-        cancelled(work)?;
-        if started.elapsed() > Duration::from_secs(300) {
-            return Err("This document took too long to render.".into());
-        }
-        if fs::metadata(&log).is_ok_and(|m| m.len() > 1024 * 1024) {
-            return Err("The Office engine produced too much diagnostic output.".into());
-        }
-        if let Some(status) = process.0.try_wait().map_err(error)? {
-            break status;
-        }
-        thread::sleep(Duration::from_millis(35));
-    };
+    let status = run_office(&mut command, work, &log, Duration::from_secs(300))?;
     cancelled(work)?;
     let diagnostic = String::from_utf8_lossy(&read(&log, 1024 * 1024)?).to_string();
     if !status.success()
