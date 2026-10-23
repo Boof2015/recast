@@ -417,16 +417,22 @@ fn mov_explicit_frame_rate_mixed_batches_and_retry_preserve_successes() {
 #[test]
 fn mov_automatic_encoder_validates_quality_and_size_outputs() {
     let dir = tempfile::tempdir().unwrap();
-    let source = copy("apple-vfr-rotated.mov", &dir.path().join("rotated.mov"));
+    let source = hardware_video(
+        &fixture("apple-vfr-rotated.mov"),
+        &dir.path().join("rotated.mov"),
+    );
     for mut options in [
         settings(false),
         VideoOptions {
             target: "mov".into(),
-            ..size_options(100_000)
+            ..size_options(2_000_000)
         },
     ] {
         options.acceleration = crate::video_backend::Acceleration::Automatic;
         let output = convert(&source, &options);
+        if let Some(limit) = options.size_limit {
+            assert!(output.bytes <= limit);
+        }
         if let Ok(required) = std::env::var("RECAST_REQUIRE_HARDWARE") {
             assert!(output.details.unwrap().contains(&required));
             assert!(output.warnings.is_empty());

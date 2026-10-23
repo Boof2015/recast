@@ -31,6 +31,57 @@ fn video_options() -> VideoOptions {
         copy_streams: false,
     }
 }
+
+#[test]
+#[ignore = "manual recording check; set RECAST_VIDEO_SOURCE, RECAST_VIDEO_OUTPUT, and optionally RECAST_VIDEO_OPTIONS JSON"]
+fn video_real_file_check() {
+    use sha2::{Digest, Sha256};
+
+    let source = PathBuf::from(std::env::var_os("RECAST_VIDEO_SOURCE").expect("source path"));
+    let folder = PathBuf::from(std::env::var_os("RECAST_VIDEO_OUTPUT").expect("output folder"));
+    let options = std::env::var("RECAST_VIDEO_OPTIONS")
+        .map(|json| serde_json::from_str::<VideoOptions>(&json).expect("video options JSON"))
+        .unwrap_or_else(|_| video_options());
+    fs::create_dir_all(&folder).unwrap();
+    let before = Sha256::digest(fs::read(&source).unwrap());
+    let mut phases = Vec::new();
+    let started = Instant::now();
+    let result = audio_backend().convert_video(
+        &source,
+        Some(&folder),
+        &options,
+        &AtomicBool::new(false),
+        |_, phase| {
+            if phases.last().is_none_or(|previous| previous != phase) {
+                eprintln!("{:.1}s {phase}", started.elapsed().as_secs_f64());
+                phases.push(phase.to_string());
+            }
+        },
+    );
+    let report = match &result {
+        Ok(output) => serde_json::json!({
+            "ok": true, "path": output.path, "bytes": output.bytes,
+            "details": output.details, "warnings": output.warnings,
+            "probe": probe(Path::new(&output.path)),
+        }),
+        Err(error) => serde_json::json!({ "ok": false, "error": format!("{error:?}") }),
+    };
+    fs::write(
+        folder.join("result.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "result": report, "phases": phases, "seconds": started.elapsed().as_secs_f64(),
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(Sha256::digest(fs::read(&source).unwrap()), before);
+    no_partials(&folder);
+    let output = result.expect("recording conversion failed; see result.json");
+    if let Ok(required) = std::env::var("RECAST_REQUIRE_HARDWARE") {
+        assert!(output.details.as_deref().unwrap_or("").contains(&required));
+    }
+}
+
 fn ffmpeg(args: &[&str]) {
     let result = audio_backend()
         .command("ffmpeg")
@@ -72,6 +123,63 @@ fn probe(path: &Path) -> Value {
     assert!(result.status.success());
     serde_json::from_slice(&result.stdout).unwrap()
 }
+
+fn hardware_video(source: &Path, destination: &Path) -> PathBuf {
+    // The tiny independent fixtures are below NVENC's minimum dimensions.
+    // Enlarge their pictures while retaining VFR timestamps, rotation and tracks.
+    let mut args = vec![
+        "-noautorotate",
+        "-i",
+        source.to_str().unwrap(),
+        "-map",
+        "0",
+        "-c",
+        "copy",
+        "-vf",
+        "scale=iw*16:ih*16,setsar=1",
+        "-pix_fmt",
+        "yuv420p",
+        "-threads:v",
+        "2",
+        "-enc_time_base:v",
+        "demux",
+        "-fps_mode",
+        "passthrough",
+    ];
+    if destination
+        .extension()
+        .is_some_and(|extension| extension == "webm")
+    {
+        args.extend([
+            "-c:v",
+            "libvpx-vp9",
+            "-deadline",
+            "good",
+            "-cpu-used",
+            "8",
+            "-lag-in-frames",
+            "0",
+        ]);
+    } else {
+        args.extend(["-c:v", "libx264", "-bf", "0"]);
+    }
+    args.push(destination.to_str().unwrap());
+    ffmpeg(&args);
+    let info = audio_backend()
+        .inspect_video(destination, &AtomicBool::new(false))
+        .unwrap()
+        .unwrap();
+    assert!(info.width >= 320 && info.height >= 192);
+    let original = audio_backend()
+        .inspect_video(source, &AtomicBool::new(false))
+        .unwrap()
+        .unwrap();
+    assert_eq!(info.rotation, original.rotation);
+    assert_eq!(info.audio_tracks, original.audio_tracks);
+    assert_eq!(info.subtitle_tracks, original.subtitle_tracks);
+    destination.canonicalize().unwrap()
+}
+
 fn make_video(dir: &Path, name: &str, rate: &str, audio: Option<&str>) -> PathBuf {
     let raw = dir.join("frames.rgb");
     let mut file = fs::File::create(&raw).unwrap();
@@ -130,6 +238,118 @@ fn convert(source: &Path, options: &VideoOptions) -> crate::image_backend::Outpu
     audio_backend()
         .convert_video(source, None, options, &AtomicBool::new(false), |_, _| {})
         .unwrap()
+}
+
+fn decoded_audio(path: &Path, track: usize) -> Vec<u8> {
+    let result = audio_backend()
+        .command("ffmpeg")
+        .args(["-v", "error", "-nostdin", "-i"])
+        .arg(path)
+        .args([
+            "-map",
+            &format!("0:a:{track}"),
+            "-c:a",
+            "pcm_f64le",
+            "-f",
+            "f64le",
+            "-",
+        ])
+        .output()
+        .unwrap();
+    assert!(result.status.success());
+    assert!(!result.stdout.is_empty());
+    result.stdout
+}
+
+#[test]
+fn mp4_restores_matroska_aac_clocks_without_trimming_samples() {
+    let dir = tempfile::tempdir().unwrap();
+    for (rate, offset) in [("48000", "0"), ("44100", "0.25"), ("8000", "2.25")] {
+        let source = dir.path().join(format!("recording-{rate}-{offset}.mkv"));
+        ffmpeg(&[
+            "-i",
+            fixture("apple-h264.mp4").to_str().unwrap(),
+            "-i",
+            fixture("apple-aac-lc.m4a").to_str().unwrap(),
+            "-itsoffset",
+            offset,
+            "-i",
+            fixture("apple-aac-lc.m4a").to_str().unwrap(),
+            "-map",
+            "0:v",
+            "-map",
+            "1:a",
+            "-map",
+            "2:a",
+            "-c:v",
+            "copy",
+            "-c:a",
+            "aac",
+            "-ar:a:0",
+            "48000",
+            "-ar:a:1",
+            rate,
+            source.to_str().unwrap(),
+        ]);
+        let before = fs::read(&source).unwrap();
+        for metadata in [true, false] {
+            let output = convert(
+                &source,
+                &VideoOptions {
+                    metadata,
+                    ..video_options()
+                },
+            );
+            let data = probe(Path::new(&output.path));
+            assert_eq!(data["streams"][1]["sample_rate"], "48000");
+            assert_eq!(data["streams"][2]["sample_rate"], rate);
+            for track in 0..2 {
+                assert_eq!(
+                    decoded_audio(&source, track),
+                    decoded_audio(Path::new(&output.path), track),
+                    "AAC samples changed at {rate} Hz, offset {offset}, track {track}"
+                );
+            }
+        }
+        assert_eq!(fs::read(&source).unwrap(), before);
+    }
+    no_partials(dir.path());
+}
+
+#[test]
+fn mp4_refuses_to_collapse_gaps_in_copied_matroska_aac() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("gapped.mkv");
+    ffmpeg(&[
+        "-i",
+        fixture("apple-h264.mp4").to_str().unwrap(),
+        "-i",
+        fixture("apple-aac-lc.m4a").to_str().unwrap(),
+        "-map",
+        "0:v",
+        "-map",
+        "1:a",
+        "-c:v",
+        "copy",
+        "-c:a",
+        "aac",
+        "-bsf:a",
+        "setts=ts=TS+gte(N\\,10)*0.1/TB",
+        source.to_str().unwrap(),
+    ]);
+    let result = audio_backend().convert_video(
+        &source,
+        None,
+        &video_options(),
+        &AtomicBool::new(false),
+        |_, _| {},
+    );
+    assert!(
+        matches!(result, Err(ConversionError::Failed(ref error))
+            if error.contains("timing gaps") && error.contains("MP4")),
+        "{result:?}"
+    );
+    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
 }
 
 fn size_options(limit: u64) -> VideoOptions {
@@ -375,13 +595,14 @@ fn video_size_rejects_impossible_limits_and_rechecks_bytes_before_publication() 
 #[test]
 fn video_size_automatic_reports_encoder_and_keeps_each_output_under_limit() {
     let dir = tempfile::tempdir().unwrap();
-    let mut settings = size_options(300_000);
+    let mut settings = size_options(2_000_000);
     settings.acceleration = crate::video_backend::Acceleration::Automatic;
-    let source = make_video(dir.path(), "source.mp4", "30", Some("copy"));
+    let small = make_video(dir.path(), "small.mp4", "30", Some("copy"));
+    let source = hardware_video(&small, &dir.path().join("source.mp4"));
     let output = convert(&source, &settings);
-    assert!(output.bytes <= 300_000);
+    assert!(output.bytes <= 2_000_000);
     let details = output.details.unwrap();
-    assert!(details.contains("0.30 MB limit"));
+    assert!(details.contains("2.00 MB limit"));
     if let Ok(required) = std::env::var("RECAST_REQUIRE_HARDWARE") {
         assert!(
             details.contains(&required),
@@ -914,7 +1135,7 @@ fn video_automatic_encodes_and_reports_the_actual_engine() {
         "video-captions.mp4",
         "video-vp9-opus.webm",
     ] {
-        let source = copy(name, &dir.path().join(name));
+        let source = hardware_video(&fixture(name), &dir.path().join(name));
         let output = convert(&source, &options);
         let details = output.details.as_deref().unwrap();
         eprintln!(
@@ -952,7 +1173,7 @@ fn video_automatic_encodes_and_reports_the_actual_engine() {
 #[test]
 fn video_automatic_quality_extremes_resize_and_explicit_fps() {
     let dir = tempfile::tempdir().unwrap();
-    let source = copy("apple-h264.mp4", &dir.path().join("source.mp4"));
+    let source = hardware_video(&fixture("apple-h264.mp4"), &dir.path().join("source.mp4"));
     let mut options = video_options();
     options.acceleration = crate::video_backend::Acceleration::Automatic;
     options.resolution = Some(480);
@@ -961,6 +1182,9 @@ fn video_automatic_quality_extremes_resize_and_explicit_fps() {
         options.quality = quality;
         let output = convert(&source, &options);
         eprintln!("Automatic quality {quality}: {output:?}");
+        let data = probe(Path::new(&output.path));
+        assert_eq!(data["streams"][0]["height"], 480);
+        assert_eq!(data["streams"][0]["avg_frame_rate"], "24/1");
         if let Ok(required) = std::env::var("RECAST_REQUIRE_HARDWARE") {
             assert!(
                 output.details.as_ref().unwrap().contains(&required),
@@ -968,6 +1192,25 @@ fn video_automatic_quality_extremes_resize_and_explicit_fps() {
             );
         }
     }
+    no_partials(dir.path());
+}
+
+#[test]
+fn video_automatic_small_input_keeps_dimensions_with_optional_fallback() {
+    // Small real inputs must still convert, even on hardware whose minimum
+    // dimensions exceed theirs. Required-hardware checks use the larger fixtures.
+    let dir = tempfile::tempdir().unwrap();
+    let source = copy("apple-h264.mp4", &dir.path().join("small.mp4"));
+    let output = convert(
+        &source,
+        &VideoOptions {
+            acceleration: crate::video_backend::Acceleration::Automatic,
+            ..video_options()
+        },
+    );
+    let data = probe(Path::new(&output.path));
+    assert_eq!(data["streams"][0]["width"], 64);
+    assert_eq!(data["streams"][0]["height"], 48);
     no_partials(dir.path());
 }
 

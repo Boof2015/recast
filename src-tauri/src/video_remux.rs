@@ -146,9 +146,10 @@ impl AudioBackend {
         job: &VideoJob<'_>,
         command: &mut Command,
     ) -> Result<(), ConversionError> {
-        if job.options.target != "mov" {
+        if !["mp4", "mov"].contains(&job.options.target.as_str()) {
             return Ok(());
         }
+        let target = job.options.target.to_uppercase();
         for (i, audio) in streams(&job.info.probe)
             .filter(|s| s["codec_type"] == "audio")
             .enumerate()
@@ -165,15 +166,15 @@ impl AudioBackend {
             }
             let stats = &job.source_stats[&(i + 1)];
             if stats.discontinuity > 0.00101 {
-                return Err("This audio track has timing gaps that MOV cannot retain. Choose MKV to keep its timing.".to_string().into());
+                return Err(format!("This audio track has timing gaps that {target} cannot retain. Choose MKV to keep its timing.").into());
             }
             let rate = num(&audio["sample_rate"]).unwrap() as u32;
             let end = stats.start + stats.samples as f64 / f64::from(rate);
             let filter = if matroska_framed {
                 // Reconstruct the exact AAC/ALAC sample clock from its frame length,
                 // decoded start/count, and priming. Millisecond packet times are
-                // insufficient to express a sample-accurate MOV edit list.
-                let frame = if audio["codec_name"] == "aac" { aac_frame_samples(audio) } else { alac_frame_samples(audio) }.ok_or_else(|| "This audio configuration cannot be copied to MOV yet. Choose Target size to re-encode it, or MKV to retain it.".to_string())?;
+                // insufficient to express a sample-accurate MP4/MOV edit list.
+                let frame = if audio["codec_name"] == "aac" { aac_frame_samples(audio) } else { alac_frame_samples(audio) }.ok_or_else(|| format!("This audio configuration cannot be copied to {target} yet. Choose Target size to re-encode it, or MKV to retain it."))?;
                 let priming = num(&audio["initial_padding"]).unwrap_or(0.0) as u32;
                 let start = (stats.start * f64::from(rate)).round() as i64 - i64::from(priming);
                 format!("setts=time_base=1/{rate}:prescale=1:ts={start}+N*{frame}:duration=if(eq(NEXT_PTS\\,NOPTS)\\,round({end:.9}*SR)-({start}+N*{frame})\\,{frame})")

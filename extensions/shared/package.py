@@ -170,11 +170,11 @@ def release(directory, source_commit, require_all=True):
         offers.append({'package': package, 'sha256': digest(path), 'downloadBytes': path.stat().st_size, 'url': ASSETS + tag + '/' + path.name})
     require(not require_all or seen == PLATFORMS, 'All five platform packages are required before drafting a release')
     index = directory / 'extension-release.json'
-    index.write_text(json.dumps({'schemaVersion': 1, 'packages': offers}, indent=2) + '\n')
+    index.write_text(json.dumps({'schemaVersion': 1, 'packages': offers}, indent=2) + '\n', encoding='utf-8')
     checksums = directory / 'SHA256SUMS'
-    checksums.write_text(''.join(f"{offer['sha256']}  {Path(offer['url']).name}\n" for offer in offers) + f'{digest(index)}  {index.name}\n')
+    checksums.write_text(''.join(f"{offer['sha256']}  {Path(offer['url']).name}\n" for offer in offers) + f'{digest(index)}  {index.name}\n', encoding='utf-8')
     notes = directory / 'release-notes.md'
-    notes.write_text(f"{common['description']}\n\nSource: https://github.com/Boof2015/recast/commit/{source_commit}\n\nInstall the package for your platform in **Recast → Settings → Extensions → Install from file**.\n\nThis draft is for testing. Publish manually only after verifying the packages on all supported platforms.\n")
+    notes.write_text(f"{common['description']}\n\nSource: https://github.com/Boof2015/recast/commit/{source_commit}\n\nInstall the package for your platform in **Recast → Settings → Extensions → Install from file**.\n\nThis draft is for testing. Publish manually only after verifying the packages on all supported platforms.\n", encoding='utf-8')
     return {'tag': tag, 'title': f"{common['name']} {common['version']}", 'assets': [str(path) for path in packages] + [str(index), str(checksums)], 'notes': str(notes)}
 
 
@@ -189,7 +189,7 @@ def main():
     check.add_argument('package', type=Path)
     args = parser.parse_args()
     if args.command == 'build':
-        print(build(json.loads(args.metadata.read_text()), args.payload, args.output))
+        print(build(json.loads(args.metadata.read_text(encoding='utf-8')), args.payload, args.output))
     else:
         verify(args.package)
         print('Package verified.')

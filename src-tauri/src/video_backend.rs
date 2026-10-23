@@ -97,19 +97,17 @@ impl VideoOptions {
         if ["mkv", "webm"].contains(&self.target.as_str()) {
             command.args(["-default_mode", "passthrough"]);
         } else {
-            // A MOV edit expressed in rounded microseconds can expose an extra
+            // An MP4/MOV edit expressed in rounded microseconds can expose an extra
             // sample in AVFoundation. Use an exact common audio clock, with at
             // least microsecond precision for the video timeline.
             let mut clock = 1_u64;
-            if self.target == "mov" {
-                for audio in streams(&info.probe).filter(|s| s["codec_type"] == "audio") {
-                    let rate = num(&audio["sample_rate"]).unwrap() as u64;
-                    let (mut a, mut b) = (clock, rate);
-                    while b != 0 {
-                        (a, b) = (b, a % b);
-                    }
-                    clock = (clock / a).checked_mul(rate).filter(|value| *value <= i32::MAX as u64).ok_or_else(|| "These audio sample rates cannot share an exact MOV timeline. Choose MKV to retain them.".to_string())?;
+            for audio in streams(&info.probe).filter(|s| s["codec_type"] == "audio") {
+                let rate = num(&audio["sample_rate"]).unwrap() as u64;
+                let (mut a, mut b) = (clock, rate);
+                while b != 0 {
+                    (a, b) = (b, a % b);
                 }
+                clock = (clock / a).checked_mul(rate).filter(|value| *value <= i32::MAX as u64).ok_or_else(|| format!("These audio sample rates cannot share an exact {} timeline. Choose MKV to retain them.", self.target.to_uppercase()))?;
             }
             clock *= 1_000_000_u64.div_ceil(clock);
             command.args([

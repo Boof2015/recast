@@ -1,6 +1,7 @@
 import copy
 import errno
 import json
+import os
 import stat
 import subprocess
 import sys
@@ -136,3 +137,25 @@ class ExtensionPackages(unittest.TestCase):
         self.build('linux-arm64')
         with self.assertRaises(ValueError):
             package.release(self.root / 'out', 'a' * 40)
+
+    def test_release_writes_utf8_with_a_non_utf8_default_encoding(self):
+        self.metadata['description'] = 'Convert café → 日本語'
+        for platform in package.PLATFORMS:
+            self.build(platform)
+        output = self.root / 'out'
+        # Disable Python's UTF-8 mode and locale coercion. Unix uses ASCII in
+        # the C locale; Windows retains its native legacy code page.
+        result = subprocess.run([
+            sys.executable, '-X', 'utf8=0', '-c',
+            'import sys; sys.path.insert(0, sys.argv[1]); import package; package.release(sys.argv[2], "a" * 40)',
+            str(SHARED), str(output),
+        ], env=dict(os.environ, LC_ALL='C', PYTHONCOERCECLOCALE='0', PYTHONUTF8='0'),
+            capture_output=True, encoding='utf-8', errors='replace')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        notes = (output / 'release-notes.md').read_text(encoding='utf-8')
+        self.assertIn(self.metadata['description'], notes)
+        self.assertIn('Recast → Settings → Extensions', notes)
+        index = json.loads((output / 'extension-release.json').read_text(encoding='utf-8'))
+        self.assertEqual(index['packages'][0]['package']['description'], self.metadata['description'])
+        self.assertIn(package.digest(output / 'extension-release.json'),
+                      (output / 'SHA256SUMS').read_text(encoding='utf-8'))
