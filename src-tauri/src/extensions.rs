@@ -113,6 +113,13 @@ pub struct Lease {
     _pin: Arc<()>,
 }
 
+enum ProviderFilter<'a> {
+    #[cfg(test)]
+    All,
+    Paths(&'a [String]),
+    Keys(&'a [String]),
+}
+
 impl ExtensionManager {
     pub fn new(root: PathBuf) -> Self {
         Self {
@@ -208,11 +215,33 @@ impl ExtensionManager {
         action()
     }
 
-    pub fn providers(
+    pub fn providers_for_paths(
         &self,
+        paths: &[String],
         cancelled: &AtomicBool,
     ) -> Result<Vec<Arc<crate::providers::Provider>>> {
-        let mut leases = self.leases.lock().unwrap();
+        self.load_providers(ProviderFilter::Paths(paths), cancelled)
+    }
+
+    pub fn providers_for_keys(
+        &self,
+        keys: &[String],
+        cancelled: &AtomicBool,
+    ) -> Result<Vec<Arc<crate::providers::Provider>>> {
+        self.load_providers(ProviderFilter::Keys(keys), cancelled)
+    }
+
+    #[cfg(test)]
+    fn providers(&self, cancelled: &AtomicBool) -> Result<Vec<Arc<crate::providers::Provider>>> {
+        self.load_providers(ProviderFilter::All, cancelled)
+    }
+
+    fn load_providers(
+        &self,
+        filter: ProviderFilter<'_>,
+        cancelled: &AtomicBool,
+    ) -> Result<Vec<Arc<crate::providers::Provider>>> {
+        check_cancel(cancelled)?;
         let mut providers = Vec::new();
         let mut seen = HashSet::new();
         let mut installed = list(&self.root)?;
@@ -228,9 +257,26 @@ impl ExtensionManager {
                 .then_with(|| a.key.cmp(&b.key))
         });
         for installed in installed {
+            check_cancel(cancelled)?;
             if seen.contains(&installed.package.id) {
                 continue;
             }
+            if let ProviderFilter::Keys(keys) = &filter {
+                if !keys.contains(&installed.key) {
+                    continue;
+                }
+            }
+            // Pin while reading, without holding the removal mutex through a
+            // large payload audit and blocking unrelated windows' inspections.
+            let lease = {
+                let mut leases = self.leases.lock().unwrap();
+                let pin = leases
+                    .get(&installed.key)
+                    .and_then(Weak::upgrade)
+                    .unwrap_or_else(|| Arc::new(()));
+                leases.insert(installed.key.clone(), Arc::downgrade(&pin));
+                Lease { _pin: pin }
+            };
             let directory = self.root.join(&installed.key);
             let root = directory.join("payload");
             let bytes =
@@ -247,7 +293,21 @@ impl ExtensionManager {
             {
                 continue;
             }
+            let descriptor = provider_descriptor(&root, &manifest)?;
+            // Select the newest provider before checking input types, so an
+            // older version cannot silently restore a removed capability.
+            seen.insert(installed.package.id.clone());
+            if let ProviderFilter::Paths(paths) = &filter {
+                if !paths
+                    .iter()
+                    .any(|path| descriptor.matches(Path::new(path), None))
+                {
+                    continue;
+                }
+            }
+            let canonical_root = root.canonicalize().map_err(io)?;
             for entry in &manifest.files {
+                check_cancel(cancelled)?;
                 let path = root.join(&entry.path);
                 let metadata = fs::symlink_metadata(&path).map_err(io)?;
                 if !metadata.file_type().is_file()
@@ -255,7 +315,7 @@ impl ExtensionManager {
                     || !path
                         .canonicalize()
                         .map_err(io)?
-                        .starts_with(root.canonicalize().map_err(io)?)
+                        .starts_with(&canonical_root)
                 {
                     return Err(
                         "An installed extension file has changed. Reinstall the extension.".into(),
@@ -271,13 +331,6 @@ impl ExtensionManager {
                     return Err("An installed extension failed its integrity check. Reinstall the extension.".into());
                 }
             }
-            let descriptor = provider_descriptor(&root, &manifest)?;
-            seen.insert(installed.package.id.clone());
-            let pin = leases
-                .get(&installed.key)
-                .and_then(Weak::upgrade)
-                .unwrap_or_else(|| Arc::new(()));
-            leases.insert(installed.key.clone(), Arc::downgrade(&pin));
             providers.push(Arc::new(crate::providers::Provider {
                 key: installed.key.clone(),
                 id: installed.package.id,
@@ -285,7 +338,7 @@ impl ExtensionManager {
                 version: installed.package.version,
                 root,
                 descriptor,
-                _lease: Lease { _pin: pin },
+                _lease: lease,
             }));
         }
         Ok(providers)
@@ -513,10 +566,28 @@ fn open_archive(file: &File) -> Result<ZipArchive<File>> {
     ZipArchive::new(file).map_err(|_| "The file is not a valid Recast extension package.".into())
 }
 fn provider_descriptor(root: &Path, manifest: &Manifest) -> Result<crate::providers::Descriptor> {
-    let descriptor: crate::providers::Descriptor = serde_json::from_slice(
-        &crate::providers::read_bounded(&root.join("provider.json"), 128 * 1024)?,
-    )
-    .map_err(io)?;
+    let path = root.join("provider.json");
+    if !fs::symlink_metadata(&path).map_err(io)?.is_file()
+        || !path
+            .canonicalize()
+            .map_err(io)?
+            .starts_with(root.canonicalize().map_err(io)?)
+    {
+        return Err("The conversion provider descriptor is not a regular extension file.".into());
+    }
+    let bytes = crate::providers::read_bounded(&path, 128 * 1024)?;
+    // Capability discovery only needs this small file, but it must still match
+    // the verified inventory before it can decide which payloads to load.
+    let entry = manifest
+        .files
+        .iter()
+        .find(|entry| entry.path == "provider.json")
+        .ok_or("The conversion provider descriptor is not declared.")?;
+    if entry.bytes != bytes.len() as u64 || entry.sha256 != format!("{:x}", Sha256::digest(&bytes))
+    {
+        return Err("The conversion provider descriptor failed its integrity check. Reinstall the extension.".into());
+    }
+    let descriptor: crate::providers::Descriptor = serde_json::from_slice(&bytes).map_err(io)?;
     descriptor.validate()?;
     if !manifest
         .files
@@ -967,8 +1038,16 @@ mod tests {
         version: &str,
         descriptor: &crate::providers::Descriptor,
     ) -> tempfile::NamedTempFile {
+        named_provider_archive("test.extension", version, descriptor)
+    }
+    fn named_provider_archive(
+        id: &str,
+        version: &str,
+        descriptor: &crate::providers::Descriptor,
+    ) -> tempfile::NamedTempFile {
         let descriptor = serde_json::to_vec(descriptor).unwrap();
         let mut manifest = manifest();
+        manifest.package.id = id.into();
         manifest.package.version = version.into();
         manifest.package.installed_bytes += descriptor.len() as u64;
         manifest.files.push(Entry {
@@ -1039,6 +1118,147 @@ mod tests {
         assert!(error.contains("not declared"));
         assert!(list(dir.path()).unwrap().is_empty());
     }
+
+    #[test]
+    fn unrelated_payloads_are_not_read_or_pinned_and_matching_payloads_are_verified() {
+        let root = tempfile::tempdir().unwrap();
+        let cancel = AtomicBool::new(false);
+        let manager = ExtensionManager::new(root.path().to_path_buf());
+        let descriptor = crate::providers::test_descriptor();
+        let installed = install_test(
+            root.path(),
+            &provider_archive("1.0.0", &descriptor),
+            &cancel,
+        )
+        .unwrap();
+        let worker = root.path().join(&installed.key).join("payload/bin/worker");
+        fs::write(&worker, b"other").unwrap(); // Same length, wrong checksum.
+        let paths = vec!["photo.PNG".into(), "music.flac".into(), "movie.mp4".into()];
+        assert!(manager
+            .providers_for_paths(&paths, &cancel)
+            .unwrap()
+            .is_empty());
+        assert!(manager.providers_for_keys(&[], &cancel).unwrap().is_empty());
+        // Matching is case-insensitive and a mixed batch still verifies its
+        // document provider. A cached or size-only check must not pass here.
+        let mut mixed = paths;
+        mixed.push("notes.TXT".into());
+        assert!(manager
+            .providers_for_paths(&mixed, &cancel)
+            .unwrap_err()
+            .contains("integrity"));
+        assert!(manager
+            .providers_for_keys(std::slice::from_ref(&installed.key), &cancel)
+            .unwrap_err()
+            .contains("integrity"));
+        fs::write(&worker, b"hello").unwrap();
+        let providers = manager.providers_for_paths(&mixed, &cancel).unwrap();
+        assert_eq!(providers.len(), 1);
+        assert!(manager.remove_unused(&installed.key).is_err());
+        drop(providers);
+        assert!(manager
+            .providers_for_paths(&["photo.png".into()], &cancel)
+            .unwrap()
+            .is_empty());
+        manager.remove_unused(&installed.key).unwrap();
+        assert!(manager
+            .providers_for_paths(&mixed, &cancel)
+            .unwrap()
+            .is_empty());
+        assert!(manager
+            .providers_for_paths(&mixed, &AtomicBool::new(true))
+            .unwrap_err()
+            .contains("Cancelled"));
+    }
+
+    #[test]
+    fn discovery_checks_descriptor_integrity_before_filtering() {
+        let root = tempfile::tempdir().unwrap();
+        let cancel = AtomicBool::new(false);
+        let manager = ExtensionManager::new(root.path().to_path_buf());
+        let descriptor = crate::providers::test_descriptor();
+        let installed = install_test(
+            root.path(),
+            &provider_archive("1.0.0", &descriptor),
+            &cancel,
+        )
+        .unwrap();
+        let path = root
+            .path()
+            .join(&installed.key)
+            .join("payload/provider.json");
+        let changed = fs::read_to_string(&path).unwrap().replace("txt", "png");
+        fs::write(path, changed).unwrap();
+        assert!(manager
+            .providers_for_paths(&["notes.txt".into()], &cancel)
+            .unwrap_err()
+            .contains("integrity"));
+    }
+
+    #[test]
+    fn image_provider_capabilities_are_discovered_alongside_core_formats() {
+        let root = tempfile::tempdir().unwrap();
+        let cancel = AtomicBool::new(false);
+        let manager = ExtensionManager::new(root.path().to_path_buf());
+        let mut descriptor = crate::providers::test_descriptor();
+        descriptor.inputs[0].kind = "images".into();
+        descriptor.inputs[0].extensions = vec!["png".into()];
+        install_test(
+            root.path(),
+            &provider_archive("1.0.0", &descriptor),
+            &cancel,
+        )
+        .unwrap();
+        let providers = manager
+            .providers_for_paths(&["photo.PNG".into()], &cancel)
+            .unwrap();
+        assert_eq!(providers.len(), 1);
+        assert!(providers[0].matches(Path::new("photo.PNG"), Some("images")));
+        assert!(!providers[0].matches(Path::new("photo.PNG"), Some("video")));
+    }
+
+    #[test]
+    fn discovery_uses_latest_capabilities_but_preflight_loads_only_selected_packages() {
+        let root = tempfile::tempdir().unwrap();
+        let cancel = AtomicBool::new(false);
+        let manager = ExtensionManager::new(root.path().to_path_buf());
+        let mut descriptor = crate::providers::test_descriptor();
+        let old = install_test(
+            root.path(),
+            &provider_archive("1.0.0", &descriptor),
+            &cancel,
+        )
+        .unwrap();
+        descriptor.inputs[0].extensions = vec!["md".into()];
+        let new = install_test(
+            root.path(),
+            &provider_archive("1.1.0", &descriptor),
+            &cancel,
+        )
+        .unwrap();
+        assert!(manager
+            .providers_for_paths(&["notes.txt".into()], &cancel)
+            .unwrap()
+            .is_empty());
+        let current = manager
+            .providers_for_paths(&["notes.md".into()], &cancel)
+            .unwrap();
+        assert_eq!(current[0].key, new.key);
+        // An explicitly pinned old selection remains usable, without auditing
+        // an unrelated package (or switching that selection to a new version).
+        let other = install_test(
+            root.path(),
+            &named_provider_archive("test.other", "1.0.0", &descriptor),
+            &cancel,
+        )
+        .unwrap();
+        fs::remove_file(root.path().join(other.key).join("payload/bin/worker")).unwrap();
+        let selected = manager
+            .providers_for_keys(std::slice::from_ref(&old.key), &cancel)
+            .unwrap();
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].key, old.key);
+    }
     #[test]
     fn independent_inspections_cancel_on_their_own_window_close() {
         let manager = ExtensionManager::new(PathBuf::new());
@@ -1068,7 +1288,18 @@ mod tests {
             let (copy, _, hash) = snapshot(&archive, &cancel).unwrap();
             install_snapshot(root.path(), copy.as_file(), &hash, "local", None, &cancel).unwrap();
         }
+        let started = std::time::Instant::now();
         let providers = manager.providers(&cancel).unwrap();
+        let full_audit = started.elapsed();
+        let started = std::time::Instant::now();
+        let unrelated = manager
+            .providers_for_paths(
+                &["picture.png".into(), "sound.wav".into(), "movie.mp4".into()],
+                &cancel,
+            )
+            .unwrap();
+        eprintln!("Installed Office + Text: full payload audit {full_audit:?}; unrelated-file discovery {:?}", started.elapsed());
+        assert!(unrelated.is_empty());
         let docs = tempfile::tempdir().unwrap();
         let word = docs.path().join("layout.docx");
         let markdown = docs.path().join("notes.md");
@@ -1152,6 +1383,63 @@ mod tests {
         for key in keys {
             manager.remove_unused(&key).unwrap();
         }
+        assert!(list(root.path()).unwrap().is_empty());
+    }
+
+    #[test]
+    #[ignore = "requires RECAST_TEST_EXAMPLE_EXTENSION pointing at the example package"]
+    fn packaged_example_provider_installs_discovers_and_converts() {
+        let archive = PathBuf::from(
+            std::env::var_os("RECAST_TEST_EXAMPLE_EXTENSION")
+                .expect("Set RECAST_TEST_EXAMPLE_EXTENSION"),
+        );
+        let root = tempfile::tempdir().unwrap();
+        let cancel = AtomicBool::new(false);
+        let (copy, _, hash) = snapshot(&archive, &cancel).unwrap();
+        let installed =
+            install_snapshot(root.path(), copy.as_file(), &hash, "local", None, &cancel).unwrap();
+        let manager = ExtensionManager::new(root.path().to_path_buf());
+        let providers = manager.providers(&cancel).unwrap();
+        assert_eq!(providers.len(), 1);
+        let provider = &providers[0];
+        let docs = tempfile::tempdir().unwrap();
+        let source = docs.path().join("notes.txt");
+        let original = "<script>literal text</script> & café\n";
+        fs::write(&source, original).unwrap();
+        let existing = docs.path().join("notes.html");
+        fs::write(&existing, "existing page").unwrap();
+        let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let backend = crate::audio_backend::AudioBackend {
+            root: repo.join("resources/audio-backend"),
+        };
+        let inspected =
+            crate::inputs::inspect_with_providers(&source, &backend, &cancel, &providers).unwrap();
+        assert_eq!(inspected.extension_targets.len(), 1);
+        let (input, targets) = provider.inspect(&source, &cancel).unwrap();
+        assert_eq!(input.kind, "documents");
+        assert_eq!(targets.len(), 1);
+        let selection = crate::providers::Selection {
+            key: provider.key.clone(),
+            target: "html".into(),
+            settings: BTreeMap::from([("theme".into(), "Dark".into())]),
+        };
+        let output = provider
+            .convert(&source, None, &selection, &cancel, |_, _| {})
+            .unwrap();
+        let html = fs::read_to_string(&output.path).unwrap();
+        assert!(html.contains("&lt;script&gt;literal text&lt;/script&gt; &amp; café"));
+        assert!(html.contains("color-scheme: dark"));
+        assert_ne!(PathBuf::from(&output.path), existing);
+        assert_eq!(fs::read_to_string(&existing).unwrap(), "existing page");
+        assert_eq!(fs::read_to_string(&source).unwrap(), original);
+        assert!(fs::read_dir(docs.path()).unwrap().all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".recast-")));
+        assert!(manager.remove_unused(&installed.key).is_err());
+        drop(providers);
+        manager.remove_unused(&installed.key).unwrap();
         assert!(list(root.path()).unwrap().is_empty());
     }
 

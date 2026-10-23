@@ -137,6 +137,17 @@ fn id(value: &str) -> bool {
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || b"-".contains(&c))
 }
 impl Descriptor {
+    pub fn matches(&self, path: &Path, kind: Option<&str>) -> bool {
+        let extension = path
+            .extension()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_ascii_lowercase();
+        self.inputs.iter().any(|input| {
+            kind.is_none_or(|kind| input.kind == kind) && input.extensions.contains(&extension)
+        })
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         if self.protocol_version != 1
             || !crate::extensions::portable_path(&self.executable)
@@ -193,14 +204,7 @@ impl Descriptor {
 }
 impl Provider {
     pub fn matches(&self, path: &Path, kind: Option<&str>) -> bool {
-        let extension = path
-            .extension()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_ascii_lowercase();
-        self.descriptor.inputs.iter().any(|input| {
-            kind.is_none_or(|kind| input.kind == kind) && input.extensions.contains(&extension)
-        })
+        self.descriptor.matches(path, kind)
     }
     pub fn target(&self, selection: &Selection) -> Result<&Target, String> {
         if selection.key != self.key {

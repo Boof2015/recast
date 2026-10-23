@@ -23,5 +23,5 @@ src-tauri/resources/.audio-backend-*/
 *.recast-extension
 extension-artifacts/
 extensions/text/worker/target/
-extensions/README.md
 extensions/office/worker/target/
+extensions/example/worker/target/

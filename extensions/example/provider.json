@@ -1,0 +1,19 @@
+{
+  "protocolVersion": 1,
+  "executable": "bin/recast-example-worker",
+  "inputs": [
+    { "id": "text", "label": "Text", "kind": "documents", "extensions": ["txt"] }
+  ],
+  "targets": [
+    {
+      "id": "html",
+      "label": "HTML",
+      "description": "Plain text as a web page",
+      "extension": "html",
+      "inputs": ["text"],
+      "settings": [
+        { "id": "theme", "label": "Theme", "choices": ["Light", "Dark"], "default": "Light" }
+      ]
+    }
+  ]
+}

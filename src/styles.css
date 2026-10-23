@@ -144,6 +144,13 @@ h1, h2, h3, p { margin: 0; }
 option { background: var(--mass); color: var(--ink); }
 .setting-value { color: var(--secondary); }
 .settings-note { color: var(--secondary); font-size: 12px; line-height: 1.5; margin-top: 3px; }
+.settings-details { color: var(--secondary); font-size: 12px; line-height: 1.5; }
+.settings-details > summary { display: flex; align-items: center; gap: 6px; width: fit-content; padding: 3px 0; border-radius: 3px; list-style: none; cursor: pointer; user-select: none; touch-action: manipulation; }
+.settings-details > summary::-webkit-details-marker { display: none; }
+.settings-details > summary:hover { color: var(--ink); }
+.settings-details > summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.settings-details[open] > summary > svg { transform: rotate(180deg); }
+.settings-details > div { display: grid; gap: 8px; padding-top: 10px; }
 .destination-browser > h2 { margin-bottom: 20px; }
 .destination-category + .destination-category { margin-top: 20px; }
 .destination-category h3 { color: var(--secondary); font-size: 11px; font-weight: 500; margin-bottom: 6px; }

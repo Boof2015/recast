@@ -548,13 +548,12 @@ pub async fn start_conversion(
             .map(|guard| guard.cancelled())
             .unwrap_or(&cancelled);
         if !preflight.extension_options.is_empty() {
-            preflight.providers = extensions.providers(cancelled)?;
-            preflight.providers.retain(|provider| {
-                preflight
-                    .extension_options
-                    .values()
-                    .any(|selection| selection.key == provider.key)
-            });
+            let keys = preflight
+                .extension_options
+                .values()
+                .map(|selection| selection.key.clone())
+                .collect::<Vec<_>>();
+            preflight.providers = extensions.providers_for_keys(&keys, cancelled)?;
             if preflight
                 .extension_options
                 .keys()

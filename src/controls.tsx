@@ -32,9 +32,9 @@ export function SizeSetting({ value, onChange }: { value: string; onChange: (val
   const id = useId();
   const invalid = !/^\d+(\.\d*)?$/.test(value) || Number(value) < 0.1 || Number(value) > 10000;
   return <div className="setting-row">
-    <label htmlFor={id}>Maximum size</label>
+    <label htmlFor={id}>Size limit per file</label>
     <span className="size-control">
-      <input id={id} aria-label="Maximum size (MB)" aria-invalid={invalid} type="text" inputMode="decimal" value={value} onChange={event => onChange(event.target.value)} />
+      <input id={id} aria-label="Size limit per file (MB)" aria-invalid={invalid} type="text" inputMode="decimal" value={value} onChange={event => onChange(event.target.value)} />
       <span title="1 MB = 1,000,000 bytes">MB</span>
     </span>
   </div>;

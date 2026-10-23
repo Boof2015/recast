@@ -495,7 +495,7 @@ pub async fn inspect_inputs(
     tauri::async_runtime::spawn_blocking(move || {
         let mut result = Inspection::default();
         let providers = extensions
-            .providers(guard.cancelled())
+            .providers_for_paths(&paths, guard.cancelled())
             .unwrap_or_else(|message| {
                 result.errors.push(InputError {
                     name: "Extensions".into(),

@@ -1,0 +1,6 @@
+Recast extension example
+
+This stays plain text, including <tags>, "quotes" & symbols.
+Unicode works too: café — 日本語.
+
+    Indentation and line breaks are kept.

@@ -21,6 +21,8 @@ The host discovers a `provider.json` in an installed package's payload. That fil
 
 Input kinds are `images`, `audio`, `video`, and `documents`. Extensions nominate candidates; the worker must inspect the actual source. Each inspection may offer a subset of declared targets. Recast intersects those offers across the group, so one incompatible file blocks that destination. Providers can add conversions for an existing kind. Core conversions keep their own implementation and controls. Protocol 1 supports select controls; arbitrary HTML and scripts cannot be injected into the UI.
 
+Opening files checks each provider's small descriptor against its inventory, then verifies and loads only providers declaring a matching input extension. Unrelated engine payloads are not scanned or started. Conversion preflight verifies only the explicitly selected package versions. Relevant payloads still receive full checksum verification before use.
+
 ## Requests and responses
 
 Recast launches `<payload>/<executable> --request <absolute-request-path>` with its current directory set to a private temporary workspace. Arguments never go through a shell. The UTF-8 JSON request is:
@@ -55,4 +57,4 @@ Installation/removal emits `recast:extensions-changed`; open batches re-inspect 
 
 Document providers declaring PDF output may share a group destination even when different providers handle different input files. Recast creates this shared choice only when each input has exactly one available PDF route. Settings are scoped visibly to the relevant provider and remain consistent across its files; each request still names the exact pinned provider and target. Other output types keep their explicit provider choices.
 
-See [Text & Markdown](text/README.md) and [Office](office/README.md) for working adapters and cross-platform package checks.
+Start with the [small TXT → HTML example](example/README.md) to build your own provider. See [Text & Markdown](text/README.md) and [Office](office/README.md) for adapters that bundle larger engines and their cross-platform package checks.
