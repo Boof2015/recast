@@ -541,7 +541,7 @@ pub fn inspect_with_providers(
         .collect();
     if candidates.is_empty()
         && base.is_err()
-        && !["md", "markdown", "txt", "docx"].contains(&extension.as_str())
+        && !["md", "markdown", "txt", "docx", "doc", "odt", "rtf"].contains(&extension.as_str())
     {
         return base;
     }
@@ -573,7 +573,7 @@ pub fn inspect_with_providers(
                 targets: vec![],
                 conversion_issue: Some(format!(
                     "Install {} in Settings → Extensions to convert this file.",
-                    if extension == "docx" {
+                    if ["docx", "doc", "odt", "rtf"].contains(&extension.as_str()) {
                         "Office"
                     } else {
                         "Text & Markdown"
@@ -642,5 +642,26 @@ mod tests {
     fn rejects_directories() {
         let directory = tempfile::tempdir().unwrap();
         assert!(inspect(directory.path()).is_err());
+    }
+
+    #[test]
+    fn office_formats_explain_the_missing_extension() {
+        let backend = crate::audio_backend::AudioBackend {
+            root: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("resources/audio-backend"),
+        };
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        for extension in ["docx", "doc", "odt", "rtf"] {
+            let mut file = tempfile::Builder::new()
+                .suffix(&format!(".{extension}"))
+                .tempfile()
+                .unwrap();
+            file.write_all(b"Office input requiring its extension")
+                .unwrap();
+            let input = inspect_with_providers(file.path(), &backend, &cancel, &[]).unwrap();
+            assert_eq!(input.kind, "documents");
+            assert!(input.targets.is_empty());
+            assert!(input.conversion_issue.unwrap().contains("Install Office"));
+        }
     }
 }

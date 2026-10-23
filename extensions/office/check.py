@@ -28,9 +28,20 @@ def check(payload, evidence):
     comments['word/comments.xml'] = f'<w:comments xmlns:w="{fixtures.W}"><w:comment w:id="1" w:author="Recast">'+fixtures.paragraph('A review comment.')+'</w:comment></w:comments>'
     fixtures.write(sources/'comments.docx', comments)
     fixtures.write(sources/'résumé 你好.docx', fixtures.parts())
+    (sources/'layout.rtf').write_bytes(fixtures.rtf())
+    fixtures.write(sources/'layout.odt', fixtures.odt())
+    fixtures.write(sources/'blank.odt', fixtures.odt('<text:p text:style-name="First"/>'))
+    fixtures.write(sources/'comments.odt', fixtures.odt('<text:p text:style-name="First">A note<office:annotation><dc:creator>Recast</dc:creator><text:p>A review comment.</text:p></office:annotation></text:p>'))
+    (sources/'blank.rtf').write_bytes(fixtures.rtf(r'\pard\par'))
+    (sources/'comments.rtf').write_bytes(fixtures.rtf(r'\pard A note{\*\annotation A review comment.}\par'))
+    (sources/'unicode.rtf').write_bytes(fixtures.rtf(r'\pard '+fixtures.rtf_text('Café — Ελληνικά — Русский')+r'\par'))
+    fixtures.write(sources/'unicode.odt', fixtures.odt('<text:p text:style-name="First">Café — Ελληνικά — Русский</text:p>'))
+    for name in ['layout','tracked','linked']:
+        shutil.copyfile(Path(__file__).parent/'testdata'/(name+'.doc'),sources/(name+'.doc'))
+    shutil.copyfile(sources/'layout.doc',sources/'résumé 你好.DOC')
 
     def run(name, action='convert', issue=None, settings=None, cancel=False):
-        source=sources/name; before=source.read_bytes(); output=outputs/(source.stem+'.pdf')
+        source=sources/name; before=source.read_bytes(); output=outputs/(source.name+'.pdf')
         prior=output.read_bytes() if output.exists() else None
         with tempfile.TemporaryDirectory(prefix='office request ', dir=evidence) as directory:
             work=Path(directory).resolve()
@@ -53,31 +64,55 @@ def check(payload, evidence):
                     if (work/diagnostic).exists(): shutil.copyfile(work/diagnostic,evidence/(source.stem+'-'+diagnostic))
             assert process.returncode==0 and not response.get('error'),(name,response,process.stderr)
             if action=='inspect':
-                assert response['input']=='docx' and response['targets']==['pdf'];return
+                assert response['input']==source.suffix.lower()[1:] and response['targets']==['pdf'];return
             pdf=PdfReader(output,strict=True);assert not pdf.is_encrypted
             text='\n'.join(page.extract_text() for page in pdf.pages)
             output.with_suffix('.txt').write_text(text,encoding='utf-8')
-            if name=='layout.docx':
+            if source.stem=='layout':
                 assert len(pdf.pages)==2,len(pdf.pages)
                 for page,(w,h) in zip(pdf.pages,[(419.55,595.3),(792,612)]):
                     assert abs(float(page.mediabox.width)-w)<.15 and abs(float(page.mediabox.height)-h)<.15,page.mediabox
                     assert 'RECAST HEADER' in page.extract_text() and 'RECAST FOOTER' in page.extract_text()
                 for word in ['Portrait section','Landscape section','Paper','12','Footnote retained.','Working hyperlink']: assert word in text,(word,text)
-                assert 'E=mc2' in ''.join(text.split()), text
+                if source.suffix in ['.docx','.odt']: assert 'E=mc2' in ''.join(text.split()), text
                 assert any('/Image'==obj.get_object().get('/Subtype') for page in pdf.pages for obj in page['/Resources'].get('/XObject',{}).get_object().values())
                 assert any(a.get_object().get('/A',{}).get('/URI')=='https://example.com/' or a.get_object().get('/A',{}).get('/URI')=='https://example.com' for page in pdf.pages for a in page.get('/Annots',[]))
-            elif name=='blank.docx': assert len(pdf.pages)==1
+            elif source.stem=='blank': assert len(pdf.pages)==1
             elif name=='long.docx': assert len(pdf.pages)>3 and 'Paragraph 119.' in text
-            elif name=='unicode.docx':
-                for expected in ['Café','Ελληνικά','Русский','你好世界','こんにちは','🙂']: assert expected in text,(expected,text)
+            elif source.stem=='unicode':
+                expected_words = ['Café','Ελληνικά','Русский'] + (['你好世界','こんにちは','🙂'] if source.suffix=='.docx' else [])
+                for expected in expected_words: assert expected in text,(expected,text)
                 assert '\ufffd' not in text
-            elif name=='comments.docx': assert response['warnings']==['Document comments are not included in the PDF.']
+            if source.stem=='comments': assert response['warnings']==['Document comments are not included in the PDF.']
+            else: assert not response['warnings'],response
         return output
 
-    for name in ['layout.docx','blank.docx','unicode.docx','long.docx','comments.docx','résumé 你好.docx']:
+    for name in ['layout.docx','blank.docx','unicode.docx','long.docx','comments.docx','résumé 你好.docx','layout.doc','layout.odt','layout.rtf','blank.odt','blank.rtf','unicode.odt','unicode.rtf','comments.odt','comments.rtf','résumé 你好.DOC']:
         run(name,'inspect');run(name)
     run('layout.docx',settings={'page-size':'A4'},issue='original layout')
     run('layout.docx',cancel=True,issue='Cancelled')
+    for kind in ['doc','odt','rtf']: run('layout.'+kind,cancel=True,issue='Cancelled')
+    run('tracked.doc','inspect',issue='tracked changes')
+    run('linked.doc','inspect',issue='external fields')
+    for name,data,issue in [
+        ('truncated.rtf',b'{\\rtf1 unfinished','incomplete'),
+        ('binary.rtf',b'{\\rtf1\\bin500 x}','truncated'),
+        ('object.rtf',fixtures.rtf(r'{\object\objemb{\*\objdata 0102}}'),'objects'),
+        ('tracked.rtf',fixtures.rtf(r'\revised Inserted text'),'tracked changes'),
+        ('linked.rtf',fixtures.rtf(r'{\field{\*\fldinst INCL\u85?DETEXT "missing"}}'),'external fields'),
+        ('not-word.doc',b'not a document','readable'),
+    ]:
+        (sources/name).write_bytes(data);run(name,'inspect',issue)
+    for name,mutate,issue in [
+        ('encrypted',lambda d:d.update({'META-INF/manifest.xml':d['META-INF/manifest.xml'].replace('</manifest:manifest>','<manifest:encryption-data/></manifest:manifest>')}),'Encrypted'),
+        ('missing-image',lambda d:d.pop('Pictures/strip.png'),'missing a referenced'),
+        ('external-image',lambda d:d.update({'content.xml':d['content.xml'].replace('Pictures/strip.png','https://example.com/strip.png')}),'external resource'),
+        ('script',lambda d:d.update({'Scripts/script.py':b'not executable'}),'scripts'),
+        ('tracked',lambda d:d.update({'content.xml':d['content.xml'].replace('<office:text>','<office:text><text:tracked-changes><text:changed-region/></text:tracked-changes>')}),'tracked changes'),
+        ('embedded',lambda d:d.update({'META-INF/manifest.xml':d['META-INF/manifest.xml'].replace('application/vnd.oasis.opendocument.formula','application/vnd.oasis.opendocument.spreadsheet')}),'objects'),
+        ('truncated',lambda d:d.update({'content.xml':d['content.xml'][:-10]}),'XML'),
+    ]:
+        data=fixtures.odt();mutate(data);fixtures.write(sources/(name+'.odt'),data);run(name+'.odt','inspect',issue)
     for name,data,issue in [
         ('not-docx.docx',b'not a zip','readable DOCX'),('encrypted.docx',b'\xd0\xcf\x11\xe0'+b'\0'*20,'Encrypted'),
     ]:

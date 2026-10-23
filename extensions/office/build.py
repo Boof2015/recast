@@ -152,14 +152,14 @@ def build(output, stage_only=False):
     (payload / 'licenses/SOURCES.json').write_text(json.dumps(lock, indent=2) + '\n', encoding='utf-8')
     (payload / 'licenses/LibreOffice.txt').write_text('LibreOffice is distributed under MPL 2.0 and other licenses. Complete upstream notices are retained inside office/. Source for LibreOffice ' + lock['libreoffice']['version'] + ': https://download.documentfoundation.org/libreoffice/src/' + lock['libreoffice']['version'] + '/\n', encoding='utf-8')
     descriptor = {'protocolVersion':1, 'executable':'bin/' + worker,
-        'inputs':[{'id':'docx','label':'DOCX','kind':'documents','extensions':['docx']}],
-        'targets':[{'id':'pdf','label':'PDF','description':'Keep document layout','extension':'pdf','inputs':['docx'],'settings':[]}]}
+        'inputs':[{'id':kind,'label':kind.upper(),'kind':'documents','extensions':[kind]} for kind in ['docx','doc','odt','rtf']],
+        'targets':[{'id':'pdf','label':'PDF','description':'Keep document layout','extension':'pdf','inputs':['docx','doc','odt','rtf'],'settings':[]}]}
     (payload / 'provider.json').write_text(json.dumps(descriptor, indent=2) + '\n', encoding='utf-8')
     audit(payload, system)
     if stage_only:
         print(payload, flush=True)
         return payload
-    metadata = {'id':'recast.office','name':'Office','version':lock['version'],'description':'Convert DOCX documents to PDF using LibreOffice.','publisher':'Recast','platform':system,'minimumAppVersion':'0.1.0'}
+    metadata = {'id':'recast.office','name':'Office','version':lock['version'],'description':'Convert DOCX, DOC, ODT, and RTF documents to PDF using LibreOffice.','publisher':'Recast','platform':system,'minimumAppVersion':'0.1.0'}
     path = package.build(metadata, payload, output)
     print(path, flush=True)
     return path

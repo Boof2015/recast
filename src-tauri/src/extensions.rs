@@ -1082,7 +1082,22 @@ mod tests {
             root: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/audio-backend"),
         };
         let mut group = crate::providers::GroupSelections::default();
-        for source in [&word, &markdown] {
+        let mut sources = vec![word, markdown];
+        // An optional fixture directory exercises the expanded Office routes in
+        // the same installed-provider batch, including duplicate output stems.
+        if let Some(directory) = std::env::var_os("RECAST_TEST_OFFICE_FIXTURES") {
+            for extension in ["doc", "odt", "rtf"] {
+                let source = docs.path().join(format!("layout.{extension}"));
+                fs::copy(
+                    PathBuf::from(&directory).join(format!("layout.{extension}")),
+                    &source,
+                )
+                .unwrap();
+                sources.push(source);
+            }
+        }
+        let mut completed = Vec::<(PathBuf, Vec<u8>)>::new();
+        for source in &sources {
             let before = fs::read(source).unwrap();
             let inspected =
                 crate::inputs::inspect_with_providers(source, &backend, &cancel, &providers)
@@ -1116,7 +1131,13 @@ mod tests {
                 .convert(source, None, &selection, &cancel, |_, _| {})
                 .unwrap();
             assert_ne!(PathBuf::from(&output.path), existing);
-            assert!(fs::read(&output.path).unwrap().starts_with(b"%PDF-"));
+            let bytes = fs::read(&output.path).unwrap();
+            assert!(bytes.starts_with(b"%PDF-"));
+            for (path, contents) in &completed {
+                assert_ne!(PathBuf::from(&output.path), *path);
+                assert_eq!(fs::read(path).unwrap(), *contents);
+            }
+            completed.push((PathBuf::from(&output.path), bytes));
             assert_eq!(fs::read(&existing).unwrap(), b"existing PDF");
             assert_eq!(fs::read(source).unwrap(), before);
             assert!(manager.remove_unused(&provider.key).is_err());

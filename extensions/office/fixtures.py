@@ -49,3 +49,55 @@ def parts(body=None):
 def write(path, data):
     with zipfile.ZipFile(path, 'w', zipfile.ZIP_DEFLATED) as archive:
         for name, content in data.items(): archive.writestr(name, content)
+
+
+def rtf_text(value):
+    result = []
+    for unit in struct.unpack('<' + 'H' * (len(value.encode('utf-16-le')) // 2), value.encode('utf-16-le')):
+        if unit in (92, 123, 125): result.append('\\' + chr(unit))
+        elif 32 <= unit < 127: result.append(chr(unit))
+        else: result.append('\\u' + str(unit if unit < 32768 else unit - 65536) + '?')
+    return ''.join(result)
+
+
+def rtf(body=None):
+    """Independent RTF layout; also the source used for checked-in DOC fixtures."""
+    header = r'{\rtf1\ansi\ansicpg1252\deff0{\fonttbl{\f0 Liberation Sans;}}\uc1\f0\fs24\paperw8391\paperh11906\margl720\margr720\margt720\margb720\headery300\footery300\sectd\pgwsxn8391\pghsxn11906'
+    header += r'{\header\pard RECAST HEADER\par}{\footer\pard RECAST FOOTER\par}'
+    if body is None:
+        body = r'\pard Portrait section\par Original A5 layout. ' + rtf_text('Café and ordinary text.') + r'\par '
+        for a,b in [('Item','Quantity'),('Paper','12'),('Ink','3')]:
+            body += r'\trowd\cellx3000\cellx6000\intbl ' + a + r'\cell ' + b + r'\cell\row '
+        body += r'\pard{\pict\pngblip\picw120\pich24\picwgoal3600\pichgoal720 ' + png().hex() + r'}\par '
+        body += r'{\field{\*\fldinst HYPERLINK "https://example.com"}{\fldrslt Working hyperlink}}\par '
+        body += r'Note\chftn{\footnote\pard\plain\f0\fs20 Footnote retained.}\par '
+        body += r'\sect\sectd\sbkpage\lndscpsxn\pgwsxn15840\pghsxn12240\marglsxn720\margrsxn720\margtsxn720\margbsxn720\headery300\footery300\pard Landscape section\par Original Letter landscape layout.\par '
+    return (header + body + '}').encode('ascii')
+
+
+ODT_NS = 'xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0" xmlns:dc="http://purl.org/dc/elements/1.1/"'
+
+
+def odt(body=None):
+    """Minimal ODF 1.3 package generated without a document editor."""
+    styles = f'<office:document-styles {ODT_NS} office:version="1.3"><office:styles><style:default-style style:family="paragraph"><style:text-properties fo:font-family="Liberation Sans" fo:font-size="12pt"/></style:default-style></office:styles><office:automatic-styles>'
+    for name,w,h in [('A5','14.8cm','21cm'),('Wide','27.94cm','21.59cm')]:
+        styles += f'<style:page-layout style:name="{name}"><style:page-layout-properties fo:page-width="{w}" fo:page-height="{h}" fo:margin="1.27cm" style:print-orientation="'+('landscape' if name=='Wide' else 'portrait')+'"/><style:header-style><style:header-footer-properties fo:min-height="0.5cm"/></style:header-style><style:footer-style><style:header-footer-properties fo:min-height="0.5cm"/></style:footer-style></style:page-layout>'
+    styles += '</office:automatic-styles><office:master-styles>'
+    for name,layout in [('Portrait','A5'),('Landscape','Wide')]:
+        styles += f'<style:master-page style:name="{name}" style:page-layout-name="{layout}"><style:header><text:p>RECAST HEADER</text:p></style:header><style:footer><text:p>RECAST FOOTER</text:p></style:footer></style:master-page>'
+    styles += '</office:master-styles></office:document-styles>'
+    if body is None:
+        body = '<text:p text:style-name="First">Portrait section</text:p><text:p>Original A5 layout. Café and ordinary text.</text:p><table:table table:name="Supplies"><table:table-column table:number-columns-repeated="2"/>'
+        for row in [('Item','Quantity'),('Paper','12'),('Ink','3')]:
+            body += '<table:table-row>'+''.join('<table:table-cell office:value-type="string"><text:p>'+cell+'</text:p></table:table-cell>' for cell in row)+'</table:table-row>'
+        body += '</table:table><text:p><draw:frame text:anchor-type="as-char" svg:width="6.35cm" svg:height="1.27cm"><draw:image xlink:href="Pictures/strip.png" xlink:type="simple" xlink:show="embed" xlink:actuate="onLoad"/></draw:frame></text:p>'
+        body += '<text:p><text:a xlink:href="https://example.com" xlink:type="simple">Working hyperlink</text:a></text:p><text:p>Note<text:note text:id="footnote" text:note-class="footnote"><text:note-citation>1</text:note-citation><text:note-body><text:p>Footnote retained.</text:p></text:note-body></text:note></text:p>'
+        body += '<text:p><draw:frame text:anchor-type="as-char" svg:width="2cm" svg:height="0.7cm"><draw:object xlink:href="./Object1" xlink:type="simple" xlink:show="embed" xlink:actuate="onLoad"/></draw:frame></text:p>'
+        body += '<text:p text:style-name="NewSection">Landscape section</text:p><text:p>Original Letter landscape layout.</text:p>'
+    content = f'<office:document-content {ODT_NS} office:version="1.3"><office:automatic-styles><style:style style:name="First" style:family="paragraph" style:master-page-name="Portrait"/><style:style style:name="NewSection" style:family="paragraph" style:master-page-name="Landscape"><style:paragraph-properties fo:break-before="page"/></style:style></office:automatic-styles><office:body><office:text>{body}</office:text></office:body></office:document-content>'
+    formula = '<math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>E</mi><mo>=</mo><mi>m</mi><msup><mi>c</mi><mn>2</mn></msup></mrow><annotation encoding="StarMath 5.0">E = m c^2</annotation></semantics></math>'
+    manifest = '<manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0" manifest:version="1.3">'
+    for name,mime in [('/','application/vnd.oasis.opendocument.text'),('content.xml','text/xml'),('styles.xml','text/xml'),('Pictures/strip.png','image/png'),('Object1/','application/vnd.oasis.opendocument.formula'),('Object1/content.xml','text/xml')]:
+        manifest += f'<manifest:file-entry manifest:full-path="{name}" manifest:media-type="{mime}"/>'
+    return {'mimetype':'application/vnd.oasis.opendocument.text', 'META-INF/manifest.xml':manifest+'</manifest:manifest>', 'content.xml':content, 'styles.xml':styles, 'Pictures/strip.png':png(), 'Object1/content.xml':formula}

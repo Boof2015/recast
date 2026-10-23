@@ -1,6 +1,6 @@
 [package]
 name = "recast-office-worker"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 
 [dependencies]
@@ -12,6 +12,7 @@ zip = { version = "9", default-features = false, features = ["deflate-flate2-zli
 url = "2"
 percent-encoding = "2"
 lopdf = { version = "0.46", default-features = false }
+cfb = "0.15"
 
 [dev-dependencies]
 tempfile = "3"

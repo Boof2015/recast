@@ -1,4 +1,8 @@
+mod doc;
+mod documents;
 mod docx;
+mod odt;
+mod rtf;
 #[cfg(test)]
 mod tests;
 use serde::Deserialize;
@@ -151,7 +155,7 @@ fn run_office(
         }
     }
 }
-fn render(root: &Path, engine: &Engine, work: &Path) -> Result<()> {
+fn render(root: &Path, engine: &Engine, work: &Path, kind: &str) -> Result<()> {
     let executable = root.join(&engine.executable);
     if !executable.is_file() {
         return Err("The Office engine is missing. Reinstall the extension.".into());
@@ -188,7 +192,7 @@ fn render(root: &Path, engine: &Engine, work: &Path) -> Result<()> {
         .arg(filter)
         .arg("--outdir")
         .arg(&out)
-        .arg(work.join("document.docx"))
+        .arg(work.join(format!("document.{kind}")))
         .current_dir(work)
         .stdin(Stdio::null())
         .stdout(file.try_clone().map_err(error)?)
@@ -253,9 +257,9 @@ fn handle(request: &Request, root: &Path) -> Result<Value> {
     }
     cancelled(&request.workspace)?;
     let original = read(&request.source, MAX_SOURCE)?;
-    let document = docx::inspect(&original)?;
+    let (kind, document) = documents::inspect(&original)?;
     if request.action == "inspect" {
-        return Ok(json!({"protocolVersion":1,"input":"docx","targets":["pdf"]}));
+        return Ok(json!({"protocolVersion":1,"input":kind,"targets":["pdf"]}));
     }
     if request.action != "convert"
         || request.target.as_deref() != Some("pdf")
@@ -274,9 +278,9 @@ fn handle(request: &Request, root: &Path) -> Result<Value> {
     }
     let work = &request.workspace;
     progress(work, 0.1, "Preparing document")?;
-    fs::write(work.join("document.docx"), &original).map_err(error)?;
+    fs::write(work.join(format!("document.{kind}")), &original).map_err(error)?;
     progress(work, 0.25, "Rendering PDF")?;
-    render(root, &engine, work)?;
+    render(root, &engine, work, kind)?;
     progress(work, 0.9, "Checking PDF")?;
     let rendered = work.join("rendered/document.pdf");
     validate_pdf(&rendered)?;

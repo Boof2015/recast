@@ -78,11 +78,11 @@ Both animation outputs default to a 480-pixel long edge and 15 fps. GIF offers p
 
 Install **Text & Markdown** from **Settings → Extensions** to convert `.md`, `.markdown`, and UTF-8 `.txt` files to **PDF or DOCX**. Choose A4 or Letter paper, then convert them alongside your other files. Markdown supports headings, lists, tables, code, math, footnotes, links, and relative PNG/JPEG images. Plain text stays literal. PDF fonts are bundled with the extension; DOCX appearance also depends on the fonts available in the app used to open it.
 
-Install **Office** to convert `.docx` documents to **PDF** while retaining their existing page layout. Mixed Markdown/TXT and DOCX batches can share PDF output. LibreOffice renders the documents locally; unusual Word features and unavailable fonts can affect fidelity. Encrypted files, tracked changes, macros, linked resources and embedded Office objects need an unencrypted, self-contained DOCX copy with changes resolved. Review comments are omitted with a warning.
+Install **Office** to convert `.docx`, Word 97–2003 `.doc`, `.odt`, and `.rtf` documents to **PDF** while retaining their existing page layout. They can share PDF output with Markdown/TXT in one batch. LibreOffice renders the documents locally; unusual document features and unavailable fonts can affect fidelity. Encrypted files, tracked changes, macros, linked resources and embedded Office objects need an unencrypted, self-contained copy with changes resolved. Review comments are omitted with a warning.
 
 Extensions download separately and work offline after installation. You can also choose **Install from file** for a local `.recast-extension` package. Installed formats appear automatically. Image, audio, and video conversion are included in Recast itself.
 
-Text & Markdown accepts UTF-8 files up to 16 MiB and local images up to 64 MiB each / 128 MiB total. Remote images, raw HTML/TeX/Typst, custom templates, citations, and missing PDF glyphs receive an explanation instead of an incomplete export. DOCX input uses Office; other Office input formats are not enabled yet.
+Text & Markdown accepts UTF-8 files up to 16 MiB and local images up to 64 MiB each / 128 MiB total. Remote images, raw HTML/TeX/Typst, custom templates, citations, and missing PDF glyphs receive an explanation instead of an incomplete export. Office accepts documents up to 256 MiB. Presentations, spreadsheets, and PDF input are not enabled yet.
 
 ## Batches
 
