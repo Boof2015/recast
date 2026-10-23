@@ -3,5 +3,12 @@
   "identifier": "main-window",
   "description": "Local input selection and desktop window controls.",
   "windows": ["main", "batch-*"],
-  "permissions": ["core:default", "core:window:allow-start-dragging", "dialog:allow-open"]
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging",
+    "core:window:allow-minimize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-close",
+    "dialog:allow-open"
+  ]
 }

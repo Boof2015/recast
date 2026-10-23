@@ -11,6 +11,27 @@ fn focused_window(app: &AppHandle) -> Option<WebviewWindow> {
         .find(|window| window.is_focused().unwrap_or(false))
 }
 
+pub fn prepare_window(window: &WebviewWindow) -> tauri::Result<()> {
+    #[cfg(target_os = "windows")]
+    {
+        window.set_decorations(false)?;
+        // Keep the native menu attached for accelerators, but present it from
+        // the Recast button instead of dedicating a second row to it.
+        window.hide_menu()?;
+    }
+    #[cfg(not(target_os = "windows"))]
+    let _ = window;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn show_app_menu(window: WebviewWindow, x: f64, y: f64) -> Result<(), String> {
+    let menu = window.menu().ok_or("The app menu is unavailable.")?;
+    window
+        .popup_menu_at(&menu, tauri::LogicalPosition::new(x, y))
+        .map_err(|error| error.to_string())
+}
+
 fn cascade_position(
     anchor: PhysicalPosition<i32>,
     size: PhysicalSize<u32>,
@@ -76,6 +97,7 @@ pub fn new_window(app: &AppHandle) -> tauri::Result<WebviewWindow> {
         .visible(false)
         .focused(false)
         .build()?;
+    prepare_window(&window)?;
     if let Some((position, monitor)) = anchor {
         // Move while hidden, before measuring the actual outer frame on the
         // target display. Physical coordinates also support negative origins.
@@ -138,6 +160,21 @@ pub fn install_menu(app: &AppHandle) -> tauri::Result<()> {
     }
     #[cfg(not(target_os = "macos"))]
     file.insert(&settings, 2)?;
+    #[cfg(target_os = "windows")]
+    let menu = {
+        // The popup starts with useful actions rather than another File menu.
+        let popup = Menu::new(app)?;
+        for item in file.items()? {
+            popup.append(&item)?;
+        }
+        popup.append(&PredefinedMenuItem::separator(app)?)?;
+        for item in menu.items()? {
+            if item.id() != file.id() {
+                popup.append(&item)?;
+            }
+        }
+        popup
+    };
     app.set_menu(menu)?;
     app.on_menu_event(|app, event| match event.id().as_ref() {
         "new-window" => {

@@ -31,9 +31,22 @@ button { transition: background-color 140ms ease, color 140ms ease; }
 svg { flex-shrink: 0; }
 h1, h2, h3, p { margin: 0; }
 .app-shell { height: 100vh; height: 100dvh; min-height: 520px; display: flex; flex-direction: column; padding: 0 16px; position: relative; }
-.window-bar { height: 44px; flex-shrink: 0; display: flex; align-items: center; justify-content: space-between; padding-left: 64px; -webkit-user-select: none; user-select: none; }
-.app-name { font-size: 12px; font-weight: 500; color: var(--secondary); }
+.window-bar { height: 48px; flex-shrink: 0; display: flex; align-items: center; margin: 0 -16px; padding: 0 16px; -webkit-user-select: none; user-select: none; }
+.window-bar[data-platform="macos"] { padding-left: 80px; }
+.window-bar[data-platform="windows"] { padding: 0 0 0 12px; }
+.app-name { font-size: 12px; font-weight: 600; letter-spacing: .1px; color: var(--ink); }
+.app-menu-button { display: inline-flex; align-items: center; gap: 9px; height: 30px; padding: 0 8px; border-radius: 7px; color: var(--secondary); }
+.app-menu-button:hover { background: var(--hover); }
+.window-drag-space { align-self: stretch; flex: 1; min-width: 32px; }
 .window-actions { display: flex; align-items: center; gap: 8px; }
+.window-controls { align-self: stretch; display: flex; position: relative; margin-left: 16px; padding-left: 9px; }
+.window-controls::before { content: ''; position: absolute; left: 0; top: 16px; bottom: 16px; width: 1px; background: var(--subtle); opacity: .5; }
+.window-control { display: grid; place-items: center; width: 46px; padding: 0; color: var(--secondary); cursor: default; }
+.window-control:hover { background: var(--hover); color: var(--ink); }
+.window-control:focus-visible { outline-offset: -4px; }
+.window-close:hover { background: #c42b1c; color: white; }
+.window-bar[data-focused="false"] .app-name, .window-bar[data-focused="false"] .window-control { color: var(--muted); }
+.window-bar[data-focused="false"] .window-close:hover { color: white; }
 .icon-button { display: grid; place-items: center; width: 28px; height: 28px; color: var(--secondary); border-radius: 7px; padding: 0; }
 .icon-button:hover, .quiet-button:hover { background: var(--hover); color: var(--ink); }
 .quiet-button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 6px 8px; border-radius: 7px; font-size: 12px; color: var(--secondary); }

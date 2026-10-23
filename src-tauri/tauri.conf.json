@@ -13,6 +13,7 @@
     "windows": [{
       "label": "main",
       "title": "Recast",
+      "visible": false,
       "width": 1120,
       "height": 620,
       "minWidth": 860,

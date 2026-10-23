@@ -45,6 +45,10 @@ pub fn run() {
             };
             app.manage(audio_backend::AudioBackend { root });
             desktop::install_menu(app.handle())?;
+            for window in app.webview_windows().into_values() {
+                desktop::prepare_window(&window)?;
+                window.show()?;
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -81,6 +85,7 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            desktop::show_app_menu,
             inputs::inspect_inputs,
             jobs::start_conversion,
             jobs::retry_conversion,

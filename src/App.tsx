@@ -11,6 +11,7 @@ import { VideoRange } from './VideoRange';
 import { FramePicker } from './FramePicker';
 import { ExtensionSettings } from './ExtensionSettings';
 import { ActivityBar } from './ActivityBar';
+import { AppHeader } from './AppHeader';
 import { ColorSetting } from './ColorSetting';
 import { GroupStack } from './GroupStack';
 import { useConversion, type FileResult } from './useConversion';
@@ -394,19 +395,16 @@ export default function App() {
 
   const AppearanceIcon = appearance === 'dark' ? Moon : appearance === 'light' ? Sun : Monitor;
   return <div className={`app-shell ${designMode ? 'with-design-tools' : ''}`}>
-    <header className="window-bar" data-tauri-drag-region>
-      <span className="app-name" data-tauri-drag-region>Recast</span>
-      <div className="window-actions">
-        <div className="appearance-control" ref={appearanceRef}>
-          <button className="icon-button" aria-label="Appearance" aria-expanded={appearanceOpen} onClick={() => setAppearanceOpen(!appearanceOpen)}><AppearanceIcon size={17} strokeWidth={1.7} /></button>
-          {appearanceOpen && <div className="appearance-menu" aria-label="Appearance choices">
-            {(['system', 'light', 'dark'] as Appearance[]).map((mode) => <button key={mode} onClick={() => { setAppearance(mode); setAppearanceOpen(false); }}>{mode === 'system' ? <Monitor size={15} /> : mode === 'light' ? <Sun size={15} /> : <Moon size={15} />}<span>{mode[0].toUpperCase() + mode.slice(1)}</span>{appearance === mode && <Check size={14} />}</button>)}
-          </div>}
-        </div>
-        <button ref={settingsButton} className="icon-button" aria-label="Settings" aria-pressed={settingsOpen} disabled={settingsOpen} onClick={() => { setSettingsOpen(true); setAppearanceOpen(false); }}><Settings size={17} strokeWidth={1.7} /></button>
-        {!settingsOpen && files.length > 0 && <button className="quiet-button add-files" onClick={() => void chooseFiles()} disabled={inspecting || busy}><Plus size={16} />{inspecting ? 'Adding…' : 'Add files'}</button>}
+    <AppHeader onMenuOpen={() => setAppearanceOpen(false)} onError={setNotice}>
+      {!settingsOpen && files.length > 0 && <button className="quiet-button add-files" onClick={() => void chooseFiles()} disabled={inspecting || busy}><Plus size={16} />{inspecting ? 'Adding…' : 'Add files'}</button>}
+      <div className="appearance-control" ref={appearanceRef}>
+        <button className="icon-button" aria-label="Appearance" title="Appearance" aria-expanded={appearanceOpen} onClick={() => setAppearanceOpen(!appearanceOpen)}><AppearanceIcon size={17} strokeWidth={1.7} /></button>
+        {appearanceOpen && <div className="appearance-menu" aria-label="Appearance choices">
+          {(['system', 'light', 'dark'] as Appearance[]).map((mode) => <button key={mode} onClick={() => { setAppearance(mode); setAppearanceOpen(false); }}>{mode === 'system' ? <Monitor size={15} /> : mode === 'light' ? <Sun size={15} /> : <Moon size={15} />}<span>{mode[0].toUpperCase() + mode.slice(1)}</span>{appearance === mode && <Check size={14} />}</button>)}
+        </div>}
       </div>
-    </header>
+      <button ref={settingsButton} className="icon-button" aria-label="Settings" title="Settings" aria-pressed={settingsOpen} disabled={settingsOpen} onClick={() => { setSettingsOpen(true); setAppearanceOpen(false); }}><Settings size={17} strokeWidth={1.7} /></button>
+    </AppHeader>
 
     {notice && <div className="notice" role="status"><span>{notice}</span><button className="icon-button" aria-label="Dismiss message" onClick={() => setNotice('')}><X size={15} /></button></div>}
     {conversion.backendError && <div className="notice" role="alert">{conversion.backendError}</div>}
